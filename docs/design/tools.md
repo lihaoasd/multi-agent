@@ -34,7 +34,8 @@
 }
 ```
 
-命名规范：`fs_*`（文件）/`ws_*`（私有工作区）/`cmd_*`（命令）/`memory_*`（记忆）/`session_*`（会话检索）/`artifact_*`（产出物）/`meeting_*`（会议）/`approval_*`（审批）/`task_*`（任务，D15 默认关闭）。
+- **统一策略引擎（D18-⑥）**：`needsApproval` 与 sandbox L2 命令风险表、project.json 策略、信任开关（D17-④）同属 **PolicyEngine** 的数据源；判定输入 (actor, sessionType, tool/command, params, projectPolicy, trust) → allow/approval/deny + ruleId，优先级 **deny > approval > allow**（实现口径见 sandbox.md §5.1）。
+- 命名规范：`fs_*`（文件）/`ws_*`（私有工作区）/`cmd_*`（命令）/`memory_*`（记忆）/`session_*`（会话检索）/`artifact_*`（产出物）/`meeting_*`（会议）/`approval_*`（审批）/`task_*`（任务，D15 默认关闭）。
 > 说明：早期文档中的工具简写（read_file 等）已于 2026-09-08 全库同步为本规范命名（见 docs/changes 修改记录）。
 
 ## 3. 工具分类与内置清单（MVP）
@@ -52,11 +53,12 @@
 | `artifact_rollback` | 回退产出物版本（需审批） | workdir / high | ❌ | user only |
 | `memory_search` | 检索记忆（角色+全局，按权限） | readonly-global / none | ✅ | user+meeting |
 | `memory_append` | 追加长期记忆条目（scope=own 默认） | workspace(记忆) / none | ✅ | user+meeting(仅 own) |
-| `session_search` | 关键词检索本项目会话日志 | readonly-global / none | ✅ | user+meeting |
+| `session_search` | 关键词检索本项目会话日志（受 Agent 可检索集约束，D18-②） | readonly-global / none | ✅ | user+meeting |
 | `approval_query` | 查看自己触发的审批状态 | platform / none | ✅ | user only |
 | `meeting_start` | 发起会议（议题/成员） | platform / none | ✅ | user only |
 | `meeting_advance` | 主持人推进议程/点名/追问 | platform / none | 分动作 | **meeting（仅主持人，H4 定稿）** |
 | `meeting_close` | 主持人总结并结束 | platform / none | ✅ | **meeting（仅主持人，H4 定稿）** |
+| `meeting_ask_user` | 请求用户拍板（question/options；会议转 blocked_waiting_user） | platform / none | — | **meeting（仅主持人，D18-①）** |
 | `task_view`/`task_list` | 查看任务（本人/项目） | platform / none | ✅ | user+meeting（**D15 默认关闭**） |
 | `task_assign` | 创建/指派任务（甲模式，PM） | platform / none | ✅ | user only（**D15 默认关闭**） |
 | `task_update` | 更新任务状态/汇报（甲模式） | platform / none | 分动作 | user only（**D15 默认关闭**） |
@@ -65,7 +67,7 @@
 - `approval_request` 不列为模型工具：审批由执行器在工具命中 high/策略时自动产生（见 sandbox.md §5），Agent 无需也不能"替用户批准"。
 - **会议内（D14-⑩）**：产出与执行类一律不可用（ws_write/workdir_edit/cmd_run/artifact_*/approval_query/meeting_start）；可读：fs 读 workdir+ro://、ws_read 本人私有区、session_search、memory_search、memory_append(own)。
 - **可用根（B4 定稿）**：`fs_*` 的 allowedRoots=[workdir, ro://]（**不含私有区**，读本人私有区一律走 ws_read）；`ws_read`/`ws_write` allowedRoots=[ws-self]。loop runner 的工具可用性校验 = 角色白名单 × 会话类型 × allowedRoots × 主持人身份（H4），与 sandbox §3.2 的工具级可用根一致。
-- **主持人例外（H4 定稿）**：`meeting_advance/meeting_close` 的 availableIn 语义 = `session.type=="meeting"` **且调用者是主持人**；loop runner 的可用性校验 = 白名单 × 会话类型 × 身份（主持人），不能只按会话类型过滤。
+- **主持人例外（H4 定稿 + D18-①）**：`meeting_advance/meeting_close/meeting_ask_user` 的 availableIn 语义 = `session.type=="meeting"` **且调用者是主持人**；loop runner 的可用性校验 = 白名单 × 会话类型 × 身份（主持人），不能只按会话类型过滤；`meeting_ask_user` 另受"同一时刻至多 1 个 pending 决策点"约束（meetings.md §5）。
 - **任务工具（D15）**：`task_*` 四工具已注册但**默认不出现在任何角色矩阵**（乙模式：任务由用户 UI 创建/流转）；config `task.assignByAgent: true` 开启甲模式后按模板授权（PM 可 assign、受派者可 update），用于 A/B 对比。
 - 用户直接操作（右栏回退按钮、任务状态、停用实例等）不经工具注册表。
 
@@ -83,7 +85,7 @@
 | 产出物提交（artifact_submit） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 回退请求（artifact_rollback，审批） | ✅(自己的) | 同上 | 同上 | 同上 | 同上 | ✅ | ✅ | ✅ |
 | 任务（task_*） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| 会议（meeting_start/advance/close） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 会议（meeting_start/advance/close/ask_user） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 全局记忆写入（memory_append scope=global） | ✅² | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ¹ qa 执行测试命令与写自动化测试文件；如需改业务代码由 dev 或授权后做。

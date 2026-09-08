@@ -23,7 +23,7 @@ agent_haness/                    # 平台仓库
 │   └── projects/
 │       └── <projectId>/         # 【运行时项目文件夹】＝ 拷贝即迁移的最小单元
 │           ├── project.json            # 元数据 + 团队 + 策略（见 §3）
-│           ├── runtime.state.json      # 派发运行时态（可重建的 cache）
+│           ├── runtime.state.json      # 派发运行时态：含 dispatcher occupancy（运行期占用唯一真相，启动重建基线，D18-④）；其余为可重建 cache
 │           ├── sessions/
 │           │   ├── <sessionId>.meta.json
 │           │   └── <sessionId>.log.jsonl     # 会话全量事件日志（append-only）
@@ -85,7 +85,8 @@ agent_haness/                    # 平台仓库
   "state": "…",                          // 状态按会话类型分列（D16-①/②）：
                                          //   user:  active | suspended(Agent 被会议占用/重启恢复期挂起) | archived(实例停用只读,D14-9；重新启用回 active)
                                          //   meeting: queued(排队不占槽) | proposed(邀请征询占槽) | open | blocked_waiting_user | closed
-                                         // waiting_user 已废弃：审批等待只体现在 Agent 状态 waiting，会话仍 active（见 agent-runtime §2）
+                                         // waiting_user 已废弃：审批等待只体现在 Agent 状态 waiting，会话仍 active（见 agent-runtime §2）；
+                                         // user suspended 为 occupancy 派生投影（D18-④），可留缓存、非真相源
   "agenda": null,                        // meeting 议程（meetings.md）
   "createdAt": "…", "updatedAt": "…", "closedAt": null,
   "lastSeq": 1234,                       // log 已写到的最大序号（跨轮转仍单调，见 §9）
@@ -105,6 +106,8 @@ agent_haness/                    # 平台仓库
   "content": { "text": "…", "blocks": [] },      // 富文本块（md/artifact/approval 卡片引用）
   "model": "deepseek-chat", "loopStep": "act" }
 ```
+
+> **单一事件规范（D18-⑤d）**：本表 kind 集为规范事件（kind+payload+scope: session/project/agent）的**存储投影**；同一事件同时驱动 WS 推送（api/contract.md §3）、索引/摘要与「需你处理」待办条，实现期以统一事件总线为准，不得另起旁路事件词汇。
 
 事件 kind 全集（前端渲染与恢复都依赖它）：
 
@@ -173,6 +176,8 @@ agent_haness/                    # 平台仓库
   "previewRef": null,   // doc 类提交审批的只读预览引用（文本预览/文件信息，D16-⑥）
   "status": "pending|approved|rejected|expired", "requestedAt": "…", "decidedAt": null }
 ```
+
+> **双写主从与对账（D18-⑤a）**：approvals/artifacts/tasks 等**业务记录文件先原子写**（成功=事实生效），随后向会话 log 追加对应事件（kind=tool_result/approval_*/artifact/…，审计投影；追加失败记自检告警、不阻断主流程）；启动自检比对 log 尾部并补齐缺失投影。search-index / runtime.state / 会话 meta 标志同理一律视为**可重建投影**，业务状态只以记录文件与 log 事件为准。
 
 ## 8. 角色模板（系统角色库）
 

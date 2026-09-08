@@ -27,13 +27,15 @@ meeting:   queued（排队等槽：已有占槽会议时新发起先排队）→
 - `blocked_waiting_user`：meeting 专属决策闸门，卡住全体推进，等用户拍板。
 - `archived`：仅 user 会话（实例停用时只读归档），重新启用回 active。
 - **waiting_user 已废弃**（D14 评审定稿）：审批/等用户输入只影响 Agent 状态（`waiting`），其 user 会话**保持 active**（Agent 未被会议占用时），用户随时可继续发消息入队；会话级"阻塞"仅保留会议的 `blocked_waiting_user` 决策闸门。
-- `user` 会话：用户随时可发消息，Agent 忙时排队（单工）；Agent 入会/重启恢复期会话置 `suspended`，消息仍可发（入队）；实例停用后该会话只读（不可再发送）。
+- `user` 会话：用户随时可发消息，Agent 忙时排队（单工）；Agent 入会/重启恢复期会话挂起显示 `suspended`（occupancy 派生，D18-④，见下注），消息仍可发（入队）；实例停用后该会话只读（不可再发送）。
 - `meeting` 会话：议程到用户决策点时阻塞全体成员（见 meetings.md）。
+
+> **suspended 为派生投影（D18-④）**：user 会话的 suspended（Agent 被会议占用/重启恢复期）由 dispatcher occupancy 派生，不单独作为真相持久化（meta 仅缓存）；显示/恢复时统一按 occupancy 重算。meeting 会话状态（queued/proposed/open/blocked_waiting_user/closed）按 D16-① 全量落盘不变。
 
 ## 3. 会话与单工调度的关系
 
 - 一个 Agent 同一时刻至多属于一个**活动**会话（working/meeting/waiting）。
-- Agent 被拉入会议 → 其 user 会话挂起（会话 meta.state=suspended；界面左栏显示 Agent"会议中"，用户消息排队）。
+- Agent 被拉入会议 → 其 user 会话挂起（会话显示 suspended——occupancy 派生，D18-④；界面左栏显示 Agent"会议中"，用户消息排队）。
 - 会议结束 → Agent 回到 user 会话继续排队/待命。
 - 用户永远可以直接**查看/发送**到任何自己参与的会话；发送给 busy Agent 的消息进入该 Agent 队列。
 

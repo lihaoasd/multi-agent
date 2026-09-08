@@ -90,6 +90,8 @@
 
 顺序保证：同会话事件按 seq 单调下发；`message.commit` 表示该条已落盘（先盘后推，见 memory.md §2）。
 
+> 事件规范（D18-⑤d）：本节 WS 下行事件是规范事件（data-storage.md §4.2 单一事件规范）的 **UI 投影**，与 log kind 一一对应，实现期不得另起旁路事件词汇。
+
 ## 4. 错误码（草案）
 
 API 统一返回 `{ code: ERR_*, message }`。工具执行/审计事件内部用简码（`FS_BOUNDARY`/`APPROVAL_REJECTED` 等，见 sandbox.md §8），二者映射如下（M9 定稿：一套语义、两套编码，事件/审计中保留简码，REST 统一 ERR_*）：

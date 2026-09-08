@@ -15,6 +15,7 @@
 - 全局记忆：所有 Agent 可读；写入受限（见 §4）。
 - 角色记忆：仅该 Agent 可读写；其他 Agent 不可见（除非把内容提交为产出物/在会议中说出）。
 - 会话日志：用户-角色会话日志仅会话双方可读；会议日志对全体参会者可读；用户对所有会话可见。
+- **检索同等可见（D18-②）**：`session_search`/`memory_search` 与直接读共用同一可见性判定（domain/rules 纯函数）；Agent 可检索集 = 本人 user 会话 ∪ 已参与会议日志 ∪ 项目全局记忆 ∪ 本人角色记忆；**用户侧检索不受限**。
 - 用户（老板）通过 UI 可浏览/检索全部（他有平台管理权），含 L1 原始事件时间线查看（D14-④）。
 
 ## 2. L1 会话全量日志（真相源）
@@ -42,6 +43,7 @@
 
 - 引擎读取全量会议日志 → 产出纪要（meetings.md §7 的结构）。
 - 纪要写为记忆条目 type=meeting_summary 分发：全体参与者个人记忆 + 全局记忆；会议 log 尾部留 `summary` 事件。
+- 纪要视为 **L1 的派生视图**：可基于 closed 会话全量日志幂等重新生成（D18-⑤b，close 先置 minutesPending，见 meetings.md §7）。
 
 ## 4. L3 长期条目
 
@@ -68,7 +70,7 @@
 | 中断 | 恢复 |
 | --- | --- |
 | 浏览器关闭/刷新 | 无服务端影响；重连后按会话窗口重新拉取。流式进行中被中断：半截文本不入 log（D14-⑦），UI 标记"（未完成）"，用户可"补全/重说"（服务进程仍在时临时文本可从内存续补；进程已重启则半截文本丢失，"补全"=服务端以已落盘上下文让模型续写，锚点用 turnId，B5）。 |
-| 服务进程退出 | 重启扫描 session meta：user 会话 active/suspended、meeting queued/proposed/open/blocked_waiting_user 均按 meta 恢复（D16-①）；进行中回合以缺 `turn_end` 判定未完成，Agent 下次触发时先读摘要+尾部窗口，主动汇报中断点（**不自动续跑**，D16-③）。 |
+| 服务进程退出 | 重启扫描 session meta：meeting queued/proposed/open/blocked_waiting_user 均按 meta 恢复（D16-①）；user 会话 suspended 由 dispatcher **occupancy 重建**（D18-④，meta 仅缓存）；进行中回合以缺 `turn_end` 判定未完成，Agent 下次触发时先读摘要+尾部窗口，主动汇报中断点（**不自动续跑**，D16-③）。 |
 | 审批等待跨重启（M1） | approval 保持 `pending`，用户决定落盘但**不回放执行**；Agent 恢复时读取决定自行决定重试（重试需重新审批）。见 agent-runtime §7。 |
 | Agent 回合中途重启 | 以 `turn_start/turn_end` 判定完整性（事件模型已含，H3）；恢复后 Agent 说明已做到哪、续做或重做（给用户选择）。 |
 | plan-execute 断点 | 计划与进度在 `plan` 事件中持久化（data-storage §4.2）；重启后**不自动续跑**（D16-③）：缺 turn_end=未完成，用户下一条消息触发 Agent 读最近 plan 事件 + 摘要尾部，汇报中断点或选择续做。 |

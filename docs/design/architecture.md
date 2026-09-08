@@ -62,7 +62,7 @@ src/
 ├── domain/
 │   ├── models/             # Project/Team/Agent/Instance/Session/Message/Artifact/Task…(纯类型+行为)
 │   ├── fsm/                # agent 状态机、session 状态机、meeting 状态机（纯函数，单测重点）
-│   ├── rules/              # 目录边界、高危清单、审批策略、产出物类型注册（纯函数）
+│   ├── rules/              # 目录边界、高危清单、审批策略（PolicyEngine，D18-⑥）、产出物类型注册、可见性规则（读/检索，D18-②）（纯函数）
 │   └── events/             # 领域事件定义（落日志/通知的统一事件）
 ├── infra/
 │   ├── file-store/         # JSON/JSONL/MD 读写、原子写、path 边界校验、watch(工作目录变化)
@@ -73,6 +73,20 @@ src/
 │   └── util/               # 日志、id、时间、错误码
 └── shared/                 # 常量/错误码/配置加载/类型
 ```
+
+### 4.1 核心端口清单（domain+shared 只依赖接口，infra 实现；D18-⑤c）
+
+| 端口 | 职责 | 默认实现 |
+| --- | --- | --- |
+| `SessionLogStore` | 会话事件日志追加/按 seq 窗口读取/轮转 | infra/file-store |
+| `MemoryStore` | L3 记忆条目读写（global/角色） | infra/file-store |
+| `FileStore` | 原子写/路径边界/编辑会话锁/工作目录 watch | infra/file-store |
+| `ModelGateway` | Provider 路由与统一流式调用 | infra/model |
+| `ToolExecutor` | 工具注册/校验链/审批桥/审计 | infra/tools |
+| `PolicyEngine` | allow/approval/deny 判定（D18-⑥） | domain/rules 纯函数 |
+| `PathResolver` | 虚拟路径解析与边界校验 | infra/sandbox |
+
+- 启动装载顺序：config → FileStore/SessionLogStore/MemoryStore → PolicyEngine/PathResolver → ModelGateway → 各注册表（tool/loop/artifact type）→ dispatcher/meeting 服务；全部端口可注入 Mock（Vitest，M 系列单测基础）。
 
 ## 5. 关键数据流
 
