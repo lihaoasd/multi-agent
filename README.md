@@ -1,6 +1,6 @@
 # Agent Haness · 本地多 Agent 软件开发协作平台
 
-> **当前状态：设计文档阶段（v0.2 基线，2026-09-08）** —— 本仓库尚无业务代码；README 为项目入口，正式文档见 [docs/README.md](docs/README.md)。
+> **当前状态：M0 工程骨架已落地（2026-09-08，编码启动）** —— 服务可运行（项目 CRUD/目录浏览/配置 API，见 [docs/plan/development.md](docs/plan/development.md) 分阶段执行计划）；设计文档见 [docs/README.md](docs/README.md)。
 
 一个**本地运行**的软件开发协作平台：用户以"老板"身份，与一组可自由编排的 AI 研发角色（Agent）组成虚拟团队，通过**一对一会话**与**多方会议**协作，把软件项目从想法推进到可运行、可部署的产出物。
 
@@ -28,8 +28,8 @@
 
 ## 路线图
 
-- 文档评审（当前）：请你评审全套文档与未决清单，确认后进入编码。
-- 编码：按 [docs/plan/development.md](docs/plan/development.md) 的 M0~M8 里程碑与纵向切片实施；首个演示目标是"创建项目 → 与角色对话 → 产出物提交"闭环（Mock 模型）。
+- 文档评审：已完成（v0.2 基线 + D1~D18 决策 + 四轮评审，见 [docs/changes/](docs/changes/)）。
+- 编码：进行中，按 [docs/plan/development.md](docs/plan/development.md) 的 **M0~M8 里程碑 + 用户确认闸门** 逐阶段推进（当前：M0 工程骨架完成，待用户验证后进入 M1）；首个演示目标是"创建项目 → 与角色对话 → 产出物提交"闭环（Mock 模型）。
 - 场景化（远期）：把"角色库+团队编排+产出物类型+流程"打包为任意场景模板。
 
 ## 技术栈

@@ -1,0 +1,25 @@
+# Agent Haness 平台配置（无密钥；API Key 走环境变量，见 deploy.md）
+server:
+  host: "127.0.0.1"
+  port: 3000
+dataDir: "data"                 # 运行时数据根（默认仓库内 data/，不入库）
+roleDirs: ["src/shared/roles", "data/roles"]   # 内置角色模板 + 用户自定义角色
+models:
+  default: mock                 # mock | openai-compatible providerId | ollama providerId
+  providers: []
+approval:                       # 全局默认审批策略（项目级可覆盖）
+  highRiskCommands: true
+  docSubmitApproval: true
+  codeSubmitApproval: false
+sandbox:
+  network: online               # online | offline
+task:
+  assignByAgent: false          # 甲模式开关
+search:
+  engine: keyword
+context:
+  session: { rawWindow: 60, maxCharsPerMsg: 2000 }
+  global: { maxEntries: 12 }
+  role: { maxEntries: 12 }
+  search: { maxSnippets: 3 }
+  tool: { resultMaxChars: 12000 }

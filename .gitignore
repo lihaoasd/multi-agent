@@ -1,6 +1,9 @@
 # 运行时数据（创建项目后生成：projects/{项目名}/ 等，不入库）
 data/
 
+# 测试临时目录
+.test-tmp/
+
 # 依赖与构建产物
 node_modules/
 dist/
