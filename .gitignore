@@ -1,0 +1,21 @@
+# 运行时数据（创建项目后生成：projects/{项目名}/ 等，不入库）
+data/
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+.npm-cache/
+
+# 日志
+*.log
+logs/
+
+# 环境与密钥
+.env
+.env.*
+*.local
+
+# 系统文件
+.DS_Store
+Thumbs.db
