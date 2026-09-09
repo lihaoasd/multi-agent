@@ -90,6 +90,54 @@ export class MeetingService {
     ).length
   }
 
+  /**
+   * 槽位调度：无占槽会议时，把最早 queued 会议自动转 proposed（D16-① 槽空自动转 proposed）。
+   * 供结束/取消后与新发起场景、启动自检调用，保证排队项不残留僵尸。
+   */
+  async promoteQueuedIfFree(projectId: string): Promise<void> {
+    const occupied = (await this.activeCount(projectId)) > 0
+    if (occupied) return
+    const queued = (await this.list(projectId))
+      .filter((m) => m.state === 'queued')
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+    const first = queued[0]
+    if (!first) return
+    const rec = await this.get(projectId, first.id)
+    rec.state = 'proposed'
+    rec.updatedAt = nowIso()
+    await this.store.writeMeta(rec)
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'promote_queued' },
+    })
+  }
+
+  /** 阵容聚合消息（D14-⑤/D17-②）：成员决定汇总推给用户（谁在会/稍后/拒绝）。 */
+  private async emitLineup(
+    rec: MeetingRecord,
+    trigger: 'accept' | 'later' | 'decline',
+  ): Promise<void> {
+    void trigger
+    const d = rec.meeting.memberDecisions
+    const lineup = {
+      accepted: Object.entries(d)
+        .filter(([, v]) => v === 'accept')
+        .map(([m]) => m),
+      later: Object.entries(d)
+        .filter(([, v]) => v === 'later')
+        .map(([m]) => m),
+      declined: Object.entries(d)
+        .filter(([, v]) => v === 'decline')
+        .map(([m]) => m),
+    }
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'lineup', ...lineup },
+    })
+  }
+
   /** 发起会议（meeting_start 落点）。 */
   async create(input: CreateMeetingInput): Promise<MeetingRecord> {
     if (!input.members.length) throw new AppError(ErrorCodes.VALIDATION, '成员至少 1 人')
@@ -167,10 +215,13 @@ export class MeetingService {
         role: 'system',
         payload: { action: 'open', members: accepts },
       })
+      // 阵容聚合消息（D17-②）：谁在会/稍后/拒绝 汇总成一条，不逐条打扰
+      await this.emitLineup(rec, decision)
       await this.onOpen?.(projectId, rec.meeting.host, accepts)
     } else {
       rec.updatedAt = nowIso()
       await this.store.writeMeta(rec)
+      await this.emitLineup(rec, decision)
     }
     return rec
   }
@@ -259,6 +310,8 @@ export class MeetingService {
       role: 'system',
       payload: { action: 'cancel', actor },
     })
+    // 槽位空出：排队中的最早 queued 自动转 proposed（D16-①）
+    await this.promoteQueuedIfFree(projectId)
   }
 
   /**
@@ -378,6 +431,8 @@ export class MeetingService {
       .catch(() => undefined)
     void summaryId
     await this.onClose?.(projectId, meetingId)
+    // 槽位空出：排队中的最早 queued 自动转 proposed（D16-①）
+    await this.promoteQueuedIfFree(projectId)
     return rec
   }
 

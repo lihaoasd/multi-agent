@@ -120,13 +120,20 @@ describe('M6 会议机制', () => {
     ).toBe(true)
   })
 
-  it('MVP 并发：占槽时新发起落 queued', async () => {
+  it('MVP 并发：占槽时新发起落 queued；关闭后自动转 proposed', async () => {
     const { pid, ids } = await createProject(['pm', 'dev', 'qa'])
     const [pm, dev, qa] = ids
-    await ready().inject({
+    const first = await ready().inject({
       method: 'POST',
       url: `/api/projects/${pid}/meetings`,
       payload: { host: pm, topic: 'm1', members: [dev] },
+    })
+    const mid1 = first.json().meeting.id
+    // 第一个会议 open 后再发起第二个（占槽）
+    await ready().inject({
+      method: 'POST',
+      url: `/api/projects/${pid}/meetings/${mid1}/respond`,
+      payload: { member: dev, decision: 'accept' },
     })
     const second = await ready().inject({
       method: 'POST',
@@ -134,6 +141,50 @@ describe('M6 会议机制', () => {
       payload: { host: qa, topic: 'm2', members: [pm] },
     })
     expect(second.json().meeting.state).toBe('queued')
+    const mid2 = second.json().meeting.id
+
+    // 结束第一个会议 → 槽位空出 → queued 自动转 proposed（D16-①）
+    await ready().inject({
+      method: 'POST',
+      url: `/api/projects/${pid}/meetings/${mid1}/close`,
+      payload: { actor: 'user' },
+    })
+    const list = await ready().inject({ method: 'GET', url: `/api/projects/${pid}/meetings` })
+    const m2 = list.json().meetings.find((m: { id: string }) => m.id === mid2)
+    expect(m2.state).toBe('proposed')
+  })
+
+  it('成员回应聚合阵容消息（lineup 事件，D17-②）', async () => {
+    const { pid, ids } = await createProject(['pm', 'dev', 'qa'])
+    const [pm, dev, qa] = ids
+    const created = await ready().inject({
+      method: 'POST',
+      url: `/api/projects/${pid}/meetings`,
+      payload: { host: pm, topic: '评审', members: [dev, qa] },
+    })
+    const mid = created.json().meeting.id
+    // dev 稍后 → 未 open；qa 接受 → open，聚合阵容（accept=[qa], later=[dev]）
+    await ready().inject({
+      method: 'POST',
+      url: `/api/projects/${pid}/meetings/${mid}/respond`,
+      payload: { member: dev, decision: 'later' },
+    })
+    await ready().inject({
+      method: 'POST',
+      url: `/api/projects/${pid}/meetings/${mid}/respond`,
+      payload: { member: qa, decision: 'accept' },
+    })
+    const log = await ready().inject({
+      method: 'GET',
+      url: `/api/projects/${pid}/sessions/${mid}/log`,
+    })
+    const lineup = log
+      .json()
+      .events.filter((e: { payload?: { action?: string } }) => e.payload?.action === 'lineup')
+    expect(lineup.length).toBeGreaterThan(0)
+    const last = lineup[lineup.length - 1].payload
+    expect(last.accepted).toContain(qa)
+    expect(last.later).toContain(dev)
   })
 
   it('取消 queued/proposed 会议', async () => {
