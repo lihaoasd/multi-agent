@@ -39,6 +39,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerApprovalRoutes(app, svc)
   registerArtifactRoutes(app, svc)
   registerMemorySearchRoutes(app, svc)
+  registerMeetingRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
   registerWs(app, svc)
@@ -287,6 +288,107 @@ function registerMemorySearchRoutes(app: FastifyInstance, svc: Services): void {
     })
     return { entries }
   })
+}
+
+function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
+  const { meetings } = svc
+
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/meetings', async (req) => ({
+    meetings: await meetings.list(req.params.pid),
+  }))
+
+  app.post<{
+    Params: { pid: string }
+    Body: { host?: string; topic?: string; agenda?: string[]; members?: string[] }
+  }>('/api/projects/:pid/meetings', async (req, reply) => {
+    const b = req.body ?? {}
+    if (!b.host || !b.topic || !Array.isArray(b.members)) {
+      return reply.code(400).send({ code: 'ERR_VALIDATION', message: 'host/topic/members 必填' })
+    }
+    const meeting = await meetings.create({
+      projectId: req.params.pid,
+      host: b.host,
+      topic: b.topic,
+      agenda: b.agenda ?? [],
+      members: b.members,
+    })
+    return reply.code(201).send({ meeting })
+  })
+
+  app.post<{
+    Params: { pid: string; mid: string }
+    Body: { member?: string; decision?: string }
+  }>('/api/projects/:pid/meetings/:mid/respond', async (req) => {
+    const b = req.body ?? {}
+    if (!b.member || !['accept', 'later', 'decline'].includes(b.decision ?? '')) {
+      return { code: 'ERR_VALIDATION', message: 'member + decision(accept|later|decline) 必填' }
+    }
+    const meeting = await meetings.respond(
+      req.params.pid,
+      req.params.mid,
+      b.member,
+      b.decision as never,
+    )
+    return { meeting }
+  })
+
+  app.post<{
+    Params: { pid: string; mid: string }
+    Body: { asker?: string; question?: string; options?: string[] }
+  }>('/api/projects/:pid/meetings/:mid/ask', async (req) => {
+    const b = req.body ?? {}
+    if (!b.asker || !b.question) {
+      return { code: 'ERR_VALIDATION', message: 'asker/question 必填' }
+    }
+    const dp = await meetings.askUser(
+      req.params.pid,
+      req.params.mid,
+      b.asker,
+      b.question,
+      b.options ?? [],
+    )
+    return { decisionPoint: dp }
+  })
+
+  app.post<{
+    Params: { pid: string; mid: string }
+    Body: { questionId?: string; choice?: string; text?: string }
+  }>('/api/projects/:pid/meetings/:mid/decision', async (req) => {
+    const b = req.body ?? {}
+    if (!b.questionId) return { code: 'ERR_VALIDATION', message: 'questionId 必填' }
+    const meeting = await meetings.answerDecision(req.params.pid, req.params.mid, b.questionId, {
+      choice: b.choice,
+      text: b.text,
+    })
+    return { meeting }
+  })
+
+  app.post<{ Params: { pid: string; mid: string }; Body: { actor?: string } }>(
+    '/api/projects/:pid/meetings/:mid/close',
+    async (req) => {
+      const meeting = await meetings.close(
+        req.params.pid,
+        req.params.mid,
+        req.body?.actor ?? 'user',
+      )
+      return { meeting }
+    },
+  )
+
+  app.post<{ Params: { pid: string; mid: string }; Body: { actor?: string } }>(
+    '/api/projects/:pid/meetings/:mid/cancel',
+    async (req) => {
+      await meetings.cancel(req.params.pid, req.params.mid, req.body?.actor ?? 'user')
+      return { ok: true }
+    },
+  )
+
+  app.get<{ Params: { pid: string; mid: string } }>(
+    '/api/projects/:pid/meetings/:mid/minutes',
+    async (req) => ({
+      minutes: await meetings.getMinutes(req.params.pid, req.params.mid),
+    }),
+  )
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {

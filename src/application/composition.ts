@@ -18,6 +18,7 @@ import { ArtifactService } from './artifact/artifact-service.js'
 import { MemoryStore } from './memory/memory-store.js'
 import { SummaryEngine } from './memory/summary-engine.js'
 import { SearchService } from './search/search-service.js'
+import { MeetingService } from './meeting/meeting-service.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
@@ -37,6 +38,7 @@ export interface Services {
   artifacts: ArtifactService
   memory: MemoryStore
   search: SearchService
+  meetings: MeetingService
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -82,6 +84,21 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     summary,
   )
   const search = new SearchService(projectsRoot, sessionStore)
+  const meetings = new MeetingService(
+    sessionStore,
+    memory,
+    async (pid, host, members) => {
+      // 入会 = occupancy meeting 占用（MVP：状态落盘供 UI/调度查询）
+      for (const m of [host, ...members]) await occupancy.acquire(pid, m, 'meeting-slot', 'meeting')
+    },
+    async (pid, mid) => {
+      // 散会释放
+      const meta = await sessionStore.tryReadMeta(pid, mid)
+      if (meta?.participants?.agents) {
+        for (const m of meta.participants.agents) await occupancy.release(pid, m)
+      }
+    },
+  )
 
   const approvals = new ApprovalService(
     projectsRoot,
@@ -120,6 +137,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     artifacts,
     memory,
     search,
+    meetings,
   }
 }
 
