@@ -20,7 +20,8 @@ export function createOpenAiCompatibleProvider(id: string): ModelProvider {
           model: opts.model ?? id,
           messages: opts.messages,
           stream: true,
-          max_tokens: opts.maxTokens,
+          // 推理型模型（reasoning_content 先占预算）：缺省给足 completion 预算，避免只出推理不出正文
+          max_tokens: opts.maxTokens ?? 2048,
         }),
         signal: opts.signal,
       })
