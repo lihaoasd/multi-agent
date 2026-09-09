@@ -1,7 +1,6 @@
 /**
  * 服务入口（tsx src/server/index.ts / node dist/server/index.js 直接运行）：
  * 加载 config.yaml → 组装依赖 → 监听端口。
- * 组装逻辑在 bootstrap()（index 不导出，仅供入口触发）。
  */
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,9 +8,7 @@ import { parse as parseYaml } from 'yaml'
 
 import { loadConfig, type ConfigFileShape } from '../shared/config.js'
 import { rootLogger } from '../infra/util/log.js'
-import { ProjectService } from '../application/project/project-service.js'
-import { RoleService } from '../application/roles/role-service.js'
-import { TeamService } from '../application/team/team-service.js'
+import { composeServices } from '../application/composition.js'
 import { buildApp } from './app.js'
 
 const logger = rootLogger()
@@ -30,23 +27,8 @@ async function readConfigFile(cwd: string): Promise<ConfigFileShape> {
 async function bootstrap(cwd: string = process.cwd()): Promise<void> {
   const file = await readConfigFile(cwd)
   const config = loadConfig(file, cwd)
-
-  const projectsRoot = join(config.dataDir, 'projects')
-  const projectService = new ProjectService(projectsRoot, {
-    artifactPolicy: {
-      codeSubmitApproval: config.approval.codeSubmitApproval,
-      docSubmitApproval: config.approval.docSubmitApproval,
-    },
-    approvalPolicy: { highRiskCommands: config.approval.highRiskCommands },
-  })
-  const [builtinDir, ...customDirs] = config.roleDirs
-  const roleService = new RoleService(
-    builtinDir ?? join(cwd, 'src/shared/roles'),
-    customDirs[0] ?? join(config.dataDir, 'roles'),
-  )
-  const teamService = new TeamService(projectService, roleService)
-
-  const app = await buildApp({ config, projectService, roleService, teamService })
+  const svc = composeServices(config)
+  const app = await buildApp(svc)
   const { host, port } = config.server
   await app.listen({ host, port })
   logger.info(`Agent Haness 已启动: http://${host}:${port}`)

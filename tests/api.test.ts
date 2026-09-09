@@ -4,9 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 
 import { buildApp } from '../src/server/app.js'
-import { ProjectService } from '../src/application/project/project-service.js'
-import { RoleService } from '../src/application/roles/role-service.js'
-import { TeamService } from '../src/application/team/team-service.js'
+import { composeServices } from '../src/application/composition.js'
 import { loadConfig } from '../src/shared/config.js'
 import { makeTempDir } from './helpers.js'
 
@@ -18,13 +16,9 @@ let app: FastifyInstance
 
 async function makeApp(dataRoot: string, roleCustomDir: string): Promise<FastifyInstance> {
   const config = loadConfig({ dataDir: dataRoot }, base)
-  const projectService = new ProjectService(join(dataRoot, 'projects'), {
-    artifactPolicy: { codeSubmitApproval: false, docSubmitApproval: true },
-    approvalPolicy: { highRiskCommands: true },
-  })
-  const roleService = new RoleService(BUILTIN_DIR, roleCustomDir)
-  const teamService = new TeamService(projectService, roleService)
-  return buildApp({ config, projectService, roleService, teamService })
+  config.roleDirs = [BUILTIN_DIR, roleCustomDir]
+  const svc = composeServices(config, roleCustomDir)
+  return buildApp(svc)
 }
 
 beforeEach(async () => {

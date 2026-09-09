@@ -16,6 +16,9 @@ const ROLE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/
 /** 解析模板文件原始 YAML（不含 source 元数据）。 */
 type RoleFileShape = Omit<RoleTemplate, 'source' | 'createdAt' | 'updatedAt'>
 
+/** 创建入参：字段可选，完整性由 create 运行时校验（含 roleId 必填与命名）。 */
+export type RoleCreateInput = Partial<RoleFileShape>
+
 export class RoleService {
   constructor(
     private readonly builtinDir: string,
@@ -109,9 +112,9 @@ export class RoleService {
   }
 
   /** 创建自定义模板。roleId 不能与内置同名（防覆盖内置，data-storage §8）。 */
-  async create(input: RoleFileShape): Promise<RoleTemplate> {
-    const roleId = input.roleId.trim()
-    if (!ROLE_ID_PATTERN.test(roleId)) {
+  async create(input: RoleCreateInput): Promise<RoleTemplate> {
+    const roleId = input.roleId?.trim()
+    if (!roleId || !ROLE_ID_PATTERN.test(roleId)) {
       throw new AppError(ErrorCodes.VALIDATION, 'roleId 需为小写字母数字连字符（2~32 位）')
     }
     if (await this.isBuiltin(roleId)) {
@@ -134,7 +137,8 @@ export class RoleService {
       )
     }
     const ts = nowIso()
-    const tpl: RoleTemplate = { ...input, roleId, source: 'custom', createdAt: ts, updatedAt: ts }
+    const full = { ...input, roleId } as RoleFileShape // validateShape 已确认字段完整
+    const tpl: RoleTemplate = { ...full, source: 'custom', createdAt: ts, updatedAt: ts }
     await this.writeCustom(tpl)
     return tpl
   }

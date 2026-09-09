@@ -1,31 +1,20 @@
 /**
- * HTTP 服务组装（Fastify）：REST 路由 + 统一错误映射。
- * 错误响应体统一 { code, message }（api/contract.md §1）；状态码仅粗分类。
+ * HTTP 服务组装（Fastify）：REST + WS + 统一错误映射。
+ * 错误响应体统一 { code, message }（api/contract.md §1）。
  */
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
+import websocket from '@fastify/websocket'
 
 import { ErrorCodes, isAppError } from '../shared/errors.js'
-import type { PlatformConfig } from '../shared/config.js'
-import { ProjectService } from '../application/project/project-service.js'
 import { browseDirectory } from '../application/fs-browse/fs-browse-service.js'
-import { RoleService } from '../application/roles/role-service.js'
-import {
-  TeamService,
-  type TeamAddInput,
-  type TeamPatchInput,
-} from '../application/team/team-service.js'
 import type { RoleTemplate } from '../shared/types/role.js'
-
-export interface ServerDeps {
-  config: PlatformConfig
-  projectService: ProjectService
-  roleService: RoleService
-  teamService: TeamService
-}
+import type { Services } from '../application/composition.js'
+import type { TeamAddInput, TeamPatchInput } from '../application/team/team-service.js'
 
 /** 组装应用（不监听端口，便于测试注入）。 */
-export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
+export async function buildApp(svc: Services): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
+  await app.register(websocket)
 
   app.setErrorHandler((err, _req, reply) => {
     if (isAppError(err)) {
@@ -42,11 +31,13 @@ export async function buildApp(deps: ServerDeps): Promise<FastifyInstance> {
     void reply.code(500).send({ code: ErrorCodes.INTERNAL, message: '内部错误' })
   })
 
-  registerProjectRoutes(app, deps)
-  registerTeamRoutes(app, deps)
-  registerRoleRoutes(app, deps.roleService)
+  registerProjectRoutes(app, svc)
+  registerTeamRoutes(app, svc)
+  registerRoleRoutes(app, svc)
+  registerSessionRoutes(app, svc)
   registerBrowseRoutes(app)
-  registerConfigRoutes(app, deps.config)
+  registerConfigRoutes(app, svc)
+  registerWs(app, svc)
   return app
 }
 
@@ -54,12 +45,11 @@ interface CreateProjectBody {
   name?: string
   description?: string
   workdir?: string
-  /** M1 创建向导：可选一次性组队（勾选角色）。 */
   team?: TeamAddInput[]
 }
 
-function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): void {
-  const { projectService, teamService } = deps
+function registerProjectRoutes(app: FastifyInstance, svc: Services): void {
+  const { projectService, teamService } = svc
 
   app.get('/api/projects', async () => ({ projects: await projectService.list() }))
 
@@ -75,7 +65,6 @@ function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): void {
       description: typeof body.description === 'string' ? body.description : undefined,
       workdir: body.workdir,
     })
-    // 向导可选组队：失败则回滚已建项目，保持原子语义
     if (Array.isArray(body.team) && body.team.length > 0) {
       try {
         for (const t of body.team) await teamService.add(project.id, t)
@@ -88,16 +77,16 @@ function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): void {
     return reply.code(201).send({ project: final })
   })
 
-  app.get<{ Params: { pid: string } }>('/api/projects/:pid', async (req) => {
-    return { project: await projectService.get(req.params.pid) }
-  })
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid', async (req) => ({
+    project: await projectService.get(req.params.pid),
+  }))
 
   app.patch<{
     Params: { pid: string }
     Body: { name?: string; description?: string }
-  }>('/api/projects/:pid', async (req) => {
-    return { project: await projectService.patch(req.params.pid, req.body ?? {}) }
-  })
+  }>('/api/projects/:pid', async (req) => ({
+    project: await projectService.patch(req.params.pid, req.body ?? {}),
+  }))
 
   app.delete<{ Params: { pid: string }; Querystring: { force?: string } }>(
     '/api/projects/:pid',
@@ -109,8 +98,8 @@ function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): void {
   )
 }
 
-function registerTeamRoutes(app: FastifyInstance, deps: ServerDeps): void {
-  const { teamService } = deps
+function registerTeamRoutes(app: FastifyInstance, svc: Services): void {
+  const { teamService } = svc
 
   app.get<{ Params: { pid: string } }>('/api/projects/:pid/team', async (req) => ({
     team: await teamService.list(req.params.pid),
@@ -127,11 +116,10 @@ function registerTeamRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.patch<{
     Params: { pid: string; iid: string }
     Body: TeamPatchInput
-  }>('/api/projects/:pid/team/:iid', async (req) => {
-    return { member: await teamService.patch(req.params.pid, req.params.iid, req.body ?? {}) }
-  })
+  }>('/api/projects/:pid/team/:iid', async (req) => ({
+    member: await teamService.patch(req.params.pid, req.params.iid, req.body ?? {}),
+  }))
 
-  // DELETE /team/:iid = 停用实例（保留数据可重新启用，D14-9）
   app.delete<{ Params: { pid: string; iid: string } }>(
     '/api/projects/:pid/team/:iid',
     async (req, reply) => {
@@ -154,30 +142,69 @@ interface RoleBody {
   defaultApprovalRules?: Record<string, unknown>
 }
 
-function registerRoleRoutes(app: FastifyInstance, svc: RoleService): void {
-  app.get('/api/roles', async () => ({ roles: await svc.list() }))
+function registerRoleRoutes(app: FastifyInstance, svc: Services): void {
+  const rs = svc.roleService
+
+  app.get('/api/roles', async () => ({ roles: await rs.list() }))
 
   app.post<{ Body: RoleBody }>('/api/roles', async (req, reply) => {
-    const b = req.body ?? {}
-    const created = await svc.create(b as Omit<RoleTemplate, 'source' | 'createdAt' | 'updatedAt'>)
+    const created = await rs.create(req.body ?? {})
     return reply.code(201).send({ role: created })
   })
 
   app.patch<{ Params: { roleId: string }; Body: RoleBody }>('/api/roles/:roleId', async (req) => {
     const b = req.body ?? {}
-    const { roleId, ...patch } = b as RoleBody
-    void roleId
-    return { role: await svc.update(req.params.roleId, patch) }
+    const { roleId: _ignored, ...patch } = b
+    void _ignored
+    return { role: await rs.update(req.params.roleId, patch) }
   })
 
   app.delete<{ Params: { roleId: string } }>('/api/roles/:roleId', async (req, reply) => {
-    await svc.remove(req.params.roleId)
+    await rs.remove(req.params.roleId)
     return reply.code(204).send()
   })
 }
 
+function registerSessionRoutes(app: FastifyInstance, svc: Services): void {
+  const ss = svc.sessionService
+
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/sessions', async (req) => ({
+    sessions: await ss.listSessions(req.params.pid),
+  }))
+
+  app.get<{
+    Params: { pid: string; sid: string }
+    Querystring: { beforeSeq?: string; limit?: string }
+  }>('/api/projects/:pid/sessions/:sid', async (req) => {
+    const meta = await ss.getSession(req.params.pid, req.params.sid)
+    const messages = await ss.getMessages(req.params.pid, req.params.sid, {
+      beforeSeq: req.query.beforeSeq ? Number(req.query.beforeSeq) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    })
+    return { session: meta, messages }
+  })
+
+  app.get<{
+    Params: { pid: string; sid: string }
+    Querystring: { fromSeq?: string; kind?: string }
+  }>('/api/projects/:pid/sessions/:sid/log', async (req) => {
+    const events = await ss.getRawLog(req.params.pid, req.params.sid, {
+      fromSeq: req.query.fromSeq ? Number(req.query.fromSeq) : undefined,
+      kind: req.query.kind,
+    })
+    return { events }
+  })
+
+  app.post<{ Params: { pid: string; sid: string }; Body: { text?: string } }>(
+    '/api/projects/:pid/sessions/:sid/messages',
+    async (req, reply) => {
+      const r = await ss.sendUserMessage(req.params.pid, req.params.sid, req.body?.text ?? '')
+      return reply.code(202).send(r)
+    },
+  )
+}
+
 function registerBrowseRoutes(app: FastifyInstance): void {
-  // GET /api/fs/browse?path=&depth=&includeHidden=
   app.get<{ Querystring: { path?: string; depth?: string; includeHidden?: string } }>(
     '/api/fs/browse',
     async (req) => {
@@ -192,18 +219,33 @@ function registerBrowseRoutes(app: FastifyInstance): void {
   )
 }
 
-function registerConfigRoutes(app: FastifyInstance, config: PlatformConfig): void {
-  // GET /api/config —— 只读展示模型/Provider/策略（无密钥信息）
+function registerConfigRoutes(app: FastifyInstance, svc: Services): void {
+  const cfg = svc.config
   app.get('/api/config', async () => ({
-    server: config.server,
+    server: cfg.server,
     models: {
-      default: config.models.default,
-      providers: config.models.providers.map((p) => ({ ...p, apiKeyEnv: undefined })),
+      default: cfg.models.default,
+      providers: cfg.models.providers.map((p) => ({ ...p, apiKeyEnv: undefined })),
     },
-    approval: config.approval,
-    sandbox: config.sandbox,
-    task: config.task,
-    search: config.search,
-    context: config.context,
+    approval: cfg.approval,
+    sandbox: cfg.sandbox,
+    task: cfg.task,
+    search: cfg.search,
+    context: cfg.context,
   }))
+}
+
+/** WS /ws?projectId=…：订阅事件总线并下行（JSON 文本帧）。 */
+function registerWs(app: FastifyInstance, svc: Services): void {
+  app.get<{ Querystring: { projectId?: string } }>('/ws', { websocket: true }, (socket, req) => {
+    const projectId = req.query?.projectId
+    const unsub = svc.bus.subscribe({
+      projectId: projectId || undefined,
+      sessionId: undefined,
+      onEvent: (evt) => {
+        if (socket.readyState === 1 /* OPEN */) socket.send(JSON.stringify(evt))
+      },
+    })
+    socket.on('close', () => unsub())
+  })
 }

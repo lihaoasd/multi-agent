@@ -11,6 +11,7 @@ import { AppError, ErrorCodes } from '../../shared/errors.js'
 import { nowIso, genId } from '../../infra/util/id.js'
 import { atomicWriteJson, dirExists, readJson } from '../../infra/file-store/fs-utils.js'
 import type { ProjectConfig } from '../../shared/types/project.js'
+import { buildUserSessionMeta } from '../session/session-store.js'
 
 export interface CreateProjectInput {
   name: string
@@ -205,24 +206,7 @@ export class ProjectService {
     const metaFile = join(sessionsDir, `${sid}.meta.json`)
     const existing = await readJson<{ id: string }>(metaFile)
     if (existing) return
-    const ts = nowIso()
-    const meta = {
-      id: sid,
-      type: 'user',
-      projectId,
-      participants: { user: true, agents: [instanceId] },
-      host: null,
-      state: 'active', // suspended 为 occupancy 派生投影（D18-④），M3 起按 dispatcher 重算
-      agentDisplayName: displayName,
-      agenda: null,
-      createdAt: ts,
-      updatedAt: ts,
-      closedAt: null,
-      lastSeq: 0,
-      segments: [],
-      summaryRefs: [],
-    }
-    await atomicWriteJson(metaFile, meta)
+    await atomicWriteJson(metaFile, buildUserSessionMeta(projectId, instanceId, displayName))
   }
 }
 
