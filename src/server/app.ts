@@ -9,6 +9,7 @@ import { ErrorCodes, isAppError } from '../shared/errors.js'
 import { browseDirectory } from '../application/fs-browse/fs-browse-service.js'
 import type { RoleTemplate } from '../shared/types/role.js'
 import type { Services } from '../application/composition.js'
+import { composeToolEnv } from '../application/composition.js'
 import type { TeamAddInput, TeamPatchInput } from '../application/team/team-service.js'
 
 /** 组装应用（不监听端口，便于测试注入）。 */
@@ -35,6 +36,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerTeamRoutes(app, svc)
   registerRoleRoutes(app, svc)
   registerSessionRoutes(app, svc)
+  registerApprovalRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
   registerWs(app, svc)
@@ -202,6 +204,32 @@ function registerSessionRoutes(app: FastifyInstance, svc: Services): void {
       return reply.code(202).send(r)
     },
   )
+}
+
+function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {
+  const { approvals, tools } = svc
+
+  app.get<{ Params: { pid: string }; Querystring: { status?: string } }>(
+    '/api/projects/:pid/approvals',
+    async (req) => ({ approvals: await approvals.list(req.params.pid, req.query.status) }),
+  )
+
+  app.post<{
+    Params: { pid: string; apid: string }
+    Body: { decision?: string; reason?: string }
+  }>('/api/projects/:pid/approvals/:apid/decide', async (req) => {
+    const decision = req.body?.decision
+    if (decision !== 'approved' && decision !== 'rejected') {
+      return { code: 'ERR_VALIDATION', message: 'decision 必须为 approved|rejected' }
+    }
+    const rec = await approvals.decide(req.params.pid, req.params.apid, decision, req.body?.reason)
+    let resumed: unknown = null
+    if (rec.status === 'approved' && rec.kind === 'command') {
+      const env = await composeToolEnv(svc, req.params.pid, rec.actor).catch(() => null)
+      if (env) resumed = await tools.resumeCommand(req.params.pid, rec.id, env)
+    }
+    return { approval: rec, resumed }
+  })
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {

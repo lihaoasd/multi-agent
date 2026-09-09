@@ -8,6 +8,7 @@ import type { SessionLogEvent } from '../../shared/types/session.js'
 import { SessionStore } from '../session/session-store.js'
 import { ModelGateway } from '../../infra/model/gateway.js'
 import type { EventBus } from '../../infra/bus/event-bus.js'
+import type { OccupancyStore } from '../dispatcher/occupancy-store.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 
 export interface TurnContext {
@@ -22,6 +23,7 @@ export interface AgentLoopRunnerOptions {
   store: SessionStore
   gateway: ModelGateway
   bus: EventBus
+  occupancy?: OccupancyStore
   /** 每回合 window 注入的消息上限（config.context.session.rawWindow） */
   windowSize?: number
 }
@@ -29,8 +31,33 @@ export interface AgentLoopRunnerOptions {
 export class AgentLoopRunner {
   constructor(private readonly opts: AgentLoopRunnerOptions) {}
 
-  /** 执行一个 direct 回合；返回最终消息事件。 */
+  /** 执行一个 direct 回合；返回最终消息事件。回合期占用 occupancy(working)，结束释放。 */
   async runDirectTurn(ctx: TurnContext): Promise<SessionLogEvent> {
+    const { occupancy } = this.opts
+    const iid = ctx.member.instanceId
+    if (occupancy) {
+      await occupancy.acquire(ctx.projectId, iid, ctx.sessionId, 'working')
+      this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
+        instanceId: iid,
+        state: 'working',
+        sessionId: ctx.sessionId,
+      })
+    }
+    try {
+      return await this.runTurnCore(ctx)
+    } finally {
+      if (occupancy) {
+        await occupancy.release(ctx.projectId, iid)
+        this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
+          instanceId: iid,
+          state: 'idle',
+          sessionId: null,
+        })
+      }
+    }
+  }
+
+  private async runTurnCore(ctx: TurnContext): Promise<SessionLogEvent> {
     const { store } = this.opts
     const meta = await store.readMeta(ctx.projectId, ctx.sessionId)
     const turn = await this.nextTurn(ctx.projectId, ctx.sessionId)
@@ -108,10 +135,17 @@ export class AgentLoopRunner {
 
   private buildSystemPrompt(ctx: TurnContext): string {
     const m = ctx.member
+    const strategy = m.loop?.strategy ?? 'direct'
+    const strategyHint: Record<string, string> = {
+      direct: '采用直接作答方式。',
+      reflective: '先给出初稿，再自查一遍（覆盖边界与漏洞）后输出修订版结论。',
+      'plan-execute': '先给出简短执行计划，再按计划逐步说明并输出结论。',
+    }
     const parts = [
       m.prompt ?? '',
       '',
       `[场景设定] 你是「${m.displayName}」（项目：${ctx.scenario}）。用户是你的老板与最终决策者。`,
+      `[执行模式] ${strategyHint[strategy] ?? strategyHint.direct}`,
       '回复要求：中文、简洁、直接给结论；涉及需要用户拍板/审批的事项必须明确说明，不替用户做决定。',
     ]
     return parts.join('\n')
