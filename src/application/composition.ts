@@ -14,6 +14,7 @@ import { AgentLoopRunner } from './agent-loop/loop-runner.js'
 import { ApprovalService } from './approval/approval-service.js'
 import { ToolCoordinator } from './tools/tool-coordinator.js'
 import { OccupancyStore } from './dispatcher/occupancy-store.js'
+import { ArtifactService } from './artifact/artifact-service.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
@@ -30,6 +31,7 @@ export interface Services {
   approvals: ApprovalService
   tools: ToolCoordinator
   occupancy: OccupancyStore
+  artifacts: ArtifactService
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -88,6 +90,11 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     },
   )
   const tools = new ToolCoordinator(approvals)
+  const artifacts = new ArtifactService(projectsRoot, approvals, async (pid, sid, evt) => {
+    const meta = await sessionStore.tryReadMeta(pid, sid)
+    if (!meta) throw new Error(`会话不存在: ${sid}`)
+    return sessionStore.appendEvent(meta, evt)
+  })
 
   return {
     config,
@@ -101,6 +108,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     approvals,
     tools,
     occupancy,
+    artifacts,
   }
 }
 

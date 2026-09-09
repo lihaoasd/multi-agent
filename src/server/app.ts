@@ -37,6 +37,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerRoleRoutes(app, svc)
   registerSessionRoutes(app, svc)
   registerApprovalRoutes(app, svc)
+  registerArtifactRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
   registerWs(app, svc)
@@ -230,6 +231,33 @@ function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {
     }
     return { approval: rec, resumed }
   })
+}
+
+function registerArtifactRoutes(app: FastifyInstance, svc: Services): void {
+  const { artifacts } = svc
+
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/artifacts', async (req) => ({
+    artifacts: await artifacts.list(req.params.pid),
+  }))
+
+  app.get<{ Params: { pid: string; aid: string } }>(
+    '/api/projects/:pid/artifacts/:aid',
+    async (req) => {
+      const rec = await artifacts.get(req.params.pid, req.params.aid)
+      return {
+        artifact: rec,
+        versions: await artifacts.listVersions(req.params.pid, req.params.aid),
+      }
+    },
+  )
+
+  app.post<{ Params: { pid: string; aid: string }; Body: { toVersion?: number } }>(
+    '/api/projects/:pid/artifacts/:aid/rollback',
+    async (req) => {
+      const rec = await artifacts.rollback(req.params.pid, req.params.aid, req.body?.toVersion)
+      return { artifact: rec }
+    },
+  )
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {
