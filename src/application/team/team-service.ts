@@ -27,9 +27,15 @@ export type TeamPatchInput = Partial<
 >
 
 export class TeamService {
+  /**
+   * @param modelsDefault config.models.default（provider id）。用于「取消 mock」：
+   * 内置模板 defaultModel 为占位 mock 时，新建实例模型落到平台默认（真实 provider）；
+   * 未传（测试直构）则保持模板默认 → mock。
+   */
   constructor(
     private readonly projectService: ProjectService,
     private readonly roleService: RoleService,
+    private readonly modelsDefault?: string,
   ) {}
 
   /** 由模板快照生成实例（每项目每模板至多 1 实例，D14-3）。 */
@@ -46,7 +52,7 @@ export class TeamService {
       )
     }
 
-    const member = snapshotInstance(tpl, input)
+    const member = snapshotInstance(tpl, input, this.modelsDefault)
     return this.projectService.addMember(projectId, member)
   }
 
@@ -83,15 +89,22 @@ export class TeamService {
 /** 实例 = 模板快照 + 覆盖项（D16-⑤：此后模板变更不影响既有实例）。
  *  instanceId 规则：MVP 每模板至多 1 实例（D14-3）→ `${roleId}_1` 确定性命名；多实例为后续版本。
  */
-function snapshotInstance(tpl: RoleTemplate, input: TeamAddInput): TeamMemberConfig {
+function snapshotInstance(
+  tpl: RoleTemplate,
+  input: TeamAddInput,
+  modelsDefault?: string,
+): TeamMemberConfig {
   const instanceId = `${tpl.roleId}_1`
   const ts = nowIso()
+  // 模板默认模型（内置 mock 占位）→ 用户显式覆盖 → 平台默认真实 provider（modelsDefault）
+  const model =
+    input.model ?? (tpl.defaultModel === 'mock' && modelsDefault ? modelsDefault : tpl.defaultModel)
   return {
     instanceId,
     roleTemplateId: tpl.roleId,
     displayName: input.displayName ?? tpl.name,
     prompt: input.prompt === undefined ? tpl.systemPrompt : input.prompt,
-    model: input.model ?? tpl.defaultModel,
+    model,
     loop: input.loop
       ? { strategy: input.loop.strategy, params: input.loop.params ?? {} }
       : { ...tpl.defaultLoop },

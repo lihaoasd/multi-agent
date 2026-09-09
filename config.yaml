@@ -1,26 +1,26 @@
 # Agent Haness 平台配置（无密钥；API Key 走环境变量，见 deploy.md）
 server:
-  host: "127.0.0.1"
+  host: '127.0.0.1'
   port: 3000
-dataDir: "data"                 # 运行时数据根（默认仓库内 data/，不入库）
-roleDirs: ["src/shared/roles", "data/roles"]   # 内置角色模板 + 用户自定义角色
+dataDir: 'data' # 运行时数据根（默认仓库内 data/，不入库）
+roleDirs: ['src/shared/roles', 'data/roles'] # 内置角色模板 + 用户自定义角色
 models:
-  # 默认路由：mock（无 Key 演示）| 真实模型改为下述 provider id（deepseek-v4-flash）
-  default: mock
+  # 默认路由：真实模型 provider id；无 Key 想离线演示时改回 mock
+  default: deepseek-v4-flash
   providers:
     - id: deepseek-v4-flash
       kind: openai-compatible
       baseUrl: https://api.deepseek.com/v1
       apiKeyEnv: DEEPSEEK_API_KEY
       model: deepseek-v4-flash
-approval:                       # 全局默认审批策略（项目级可覆盖）
+approval: # 全局默认审批策略（项目级可覆盖）
   highRiskCommands: true
   docSubmitApproval: true
   codeSubmitApproval: false
 sandbox:
-  network: online               # online | offline
+  network: online # online | offline
 task:
-  assignByAgent: false          # 甲模式开关
+  assignByAgent: false # 甲模式开关
 search:
   engine: keyword
 context:

@@ -12,11 +12,13 @@
 ```bash
 npm install
 npm run dev        # 服务 :3000（含前端工作台 web/）；浏览器开 http://127.0.0.1:3000
-npm run test       # Vitest 全量（86 用例）
+npm run test       # Vitest 全量（109 用例）
 npm run build && npm start   # 生产：tsc 编译后单端口运行
 ```
 
-- 首次使用：点「新建项目」→ 填项目名与**工作目录（绝对路径）** → 勾选角色（PM/产品/开发…）→ 创建后即可与产品角色对话（默认 **Mock 模型**，无需 Key）。
+- 首次使用：点「新建项目」→ 填项目名与**工作目录（绝对路径，可用「选择文件夹…」）** → 勾选角色 → 创建后即可与角色对话。
+- **默认模型 = deepseek-v4-flash（真实模型）**：启动前设置环境变量 `$env:DEEPSEEK_API_KEY = "sk-…"`；新建的角色实例默认走真实模型（`config.yaml models.default`，模板默认 mock 占位会自动落到平台默认）。
+- 无 Key 想离线演示：把 `config.yaml` 的 `models.default` 临时改回 `mock` 再重启（内置 Mock 保留用于测试/演示）。
 - 换真实模型：在 `config.yaml` 配置 `models.providers`（openai-compatible/Ollama），把角色实例的 `model` 指到 provider id；Key 经环境变量注入。
 - 默认绑定 127.0.0.1；被占用可改 `config.yaml server.port`，或用环境变量 `PORT` 覆盖。
 

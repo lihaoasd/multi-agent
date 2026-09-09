@@ -62,7 +62,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     approvalPolicy: { highRiskCommands: config.approval.highRiskCommands },
   })
   const roleService = new RoleService(builtinRoleDir, roleCustomDir)
-  const teamService = new TeamService(projectService, roleService)
+  const teamService = new TeamService(projectService, roleService, config.models.default)
   const sessionStore = new SessionStore(projectsRoot)
   const occupancy = new OccupancyStore(projectsRoot)
   const gateway = new ModelGateway({ models: config.models })
