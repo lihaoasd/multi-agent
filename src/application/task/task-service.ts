@@ -52,6 +52,8 @@ export class TaskService {
       title: string,
       taskId: string,
     ) => Promise<void>,
+    /** done/terminated 结算钩子：先结算未结算 code 改动再置终态（D17-①） */
+    private readonly settle?: (projectId: string, task: TaskRecord) => Promise<void>,
   ) {}
 
   private file(projectId: string): string {
@@ -144,6 +146,10 @@ export class TaskService {
           `实例 ${cur.assignee} 已有进行中任务 ${occupied.id}（每 Agent 至多 1 in_progress；可先置 todo 排队）`,
         )
       }
+    }
+    // D17-① 先结算未结算 code 改动，再置终态（done/terminated）
+    if ((to === 'done' || to === 'terminated') && this.settle) {
+      await this.settle(projectId, cur)
     }
     await this.rewrite(projectId, next)
     // 激活即唤醒（D18-③）

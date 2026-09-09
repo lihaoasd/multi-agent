@@ -20,6 +20,7 @@ import { SummaryEngine } from './memory/summary-engine.js'
 import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
 import { TaskService } from './task/task-service.js'
+import { CodeEditStore } from './code-edit/code-edit-store.js'
 import { registerServiceTools } from './tools/service-tools.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
@@ -87,8 +88,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     summary,
   )
   const search = new SearchService(projectsRoot, sessionStore)
-  // 应用级工具注册（记忆/检索）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
-  registerServiceTools({ memory, search })
+  const codeEdits = new CodeEditStore(projectsRoot)
+  // 应用级工具注册（记忆/检索/受控编辑）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
+  registerServiceTools({ memory, search, codeEdits })
   const meetings = new MeetingService(
     sessionStore,
     memory,
@@ -134,6 +136,20 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
       await sessionService
         .sendUserMessage(pid, `u_${assignee}`, `【系统】请开始执行任务 ${taskId}：${title}`)
         .catch(() => undefined)
+    },
+    // D17-① done/terminated 前结算未结算 code 改动 → code artifact
+    async (pid, task) => {
+      await artifacts
+        .settleCodeAggregation({
+          projectId: pid,
+          actor: task.assignee,
+          taskId: task.id,
+          taskTitle: task.title,
+          edits: codeEdits,
+        })
+        .then(async (rec) => {
+          if (rec) await tasks.linkArtifact(pid, task.id, rec.id)
+        })
     },
   )
 

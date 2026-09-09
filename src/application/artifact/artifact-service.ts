@@ -314,4 +314,83 @@ export class ArtifactService {
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b)
   }
+
+  /**
+   * code 受控编辑结算（D14-⑧/D17-①）：任务 done/terminated 时把该任务
+   * code-edits 轨迹涉及的 workdir 文件结算为一条 code artifact（type=code、
+   * 默认 code 门不审批 → 初始 approved，B1）。随后清空轨迹。
+   */
+  async settleCodeAggregation(opts: {
+    projectId: string
+    actor: string
+    taskId: string
+    taskTitle: string
+    edits: import('../code-edit/code-edit-store.js').CodeEditStore
+  }): Promise<ArtifactRecord | null> {
+    const relPaths = await opts.edits.listRelPaths(opts.projectId, opts.taskId)
+    if (relPaths.length === 0) return null
+    const ctx = await this.ctxOf(opts.projectId, opts.actor)
+
+    const id = genId('a_')
+    const prev = (await this.readAll(opts.projectId))
+      .filter(
+        (a) =>
+          a.submitter === opts.actor &&
+          a.type === 'code' &&
+          a.taskId === opts.taskId &&
+          a.state !== 'reverted',
+      )
+      .sort((a, b) => b.version - a.version)[0]
+    const version = (prev?.version ?? 0) + 1
+    const vdir = join(this.projectsRoot, opts.projectId, 'artifact-versions', id, `v${version}`)
+    const files: ArtifactRecord['files'] = []
+    let add = 0
+    await mkdir(vdir, { recursive: true })
+    for (const rel of relPaths) {
+      const src = ensureInside(ctx.workdirRoot, join(ctx.workdirRoot, rel), 'relPath')
+      const content = await readFile(src).catch(() => null)
+      if (content === null) continue
+      const snap = ensureInside(vdir, join(vdir, rel))
+      await mkdir(dirname(snap), { recursive: true })
+      await copyFile(src, snap)
+      files.push({
+        relPath: rel,
+        action: 'add',
+        hash: createHash('sha256').update(content).digest('hex'),
+        size: content.length,
+      })
+      add += content.length
+    }
+    if (files.length === 0) {
+      await opts.edits.clear(opts.projectId, opts.taskId)
+      return null
+    }
+    const rec: ArtifactRecord = {
+      id,
+      type: 'code',
+      title: opts.taskTitle || `任务 ${opts.taskId} 代码改动`,
+      summary: '任务级受控编辑聚合（D14-⑧）',
+      submitter: opts.actor,
+      projectId: opts.projectId,
+      sessionId: `u_${opts.actor}`,
+      taskId: opts.taskId,
+      state: 'approved', // code 门默认无审批（B1）
+      version,
+      files,
+      diffSummary: { add, del: 0 },
+      prevVersion: prev?.version ?? null,
+      approvalId: null,
+      versionDir: `artifact-versions/${id}/v${version}`,
+      ts: nowIso(),
+    }
+    await this.saveManifest(rec)
+    await this.appendLog(opts.projectId, `u_${opts.actor}`, {
+      kind: 'artifact',
+      role: 'system',
+      sender: opts.actor,
+      payload: { artifactId: id, action: 'code-settle', taskId: opts.taskId, version },
+    }).catch(() => undefined)
+    await opts.edits.clear(opts.projectId, opts.taskId)
+    return rec
+  }
 }

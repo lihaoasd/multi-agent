@@ -1,14 +1,24 @@
 /**
- * 应用级工具注册（记忆/检索类，需服务依赖），组合根启动时调用一次。
- * 只读/检索类在 user+meeting 可用；memory_append own 写入；全局写仅 pm_1。
- * 检索可见性（D18-②）：本人 user 会话 ∪ 已参与会议（MVP 简化：项目会议成员可见）。
+ * 应用级工具注册（记忆/检索/受控编辑类，需服务依赖），组合根启动时调用一次。
+ * 只读/检索类在 user+meeting 可用；memory_append own 写入、全局仅 pm_1（D18-② 权限）。
+ * workdir_edit：code 受控编辑（写通道①，D14-⑧），仅 user 会话，改动归属 taskId 聚合轨迹。
  */
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
+
 import { registerTool } from '../../infra/tools/executor.js'
+import { ensureInside } from '../../infra/file-store/fs-utils.js'
+import { resolveVirtual } from '../../domain/rules/path-resolver.js'
 import { MemoryStore } from '../memory/memory-store.js'
 import { SearchService } from '../search/search-service.js'
+import { CodeEditStore } from '../code-edit/code-edit-store.js'
 
-export function registerServiceTools(deps: { memory: MemoryStore; search: SearchService }): void {
-  const { memory, search } = deps
+export function registerServiceTools(deps: {
+  memory: MemoryStore
+  search: SearchService
+  codeEdits: CodeEditStore
+}): void {
+  const { memory, search, codeEdits } = deps
 
   registerTool(
     {
@@ -59,7 +69,6 @@ export function registerServiceTools(deps: { memory: MemoryStore; search: Search
       if (!q) return { ok: false, code: 'ERR_VALIDATION', reason: 'q 必填' }
       const r = await search.search(env.projectId, q)
       const mem = r.memories.map((m) => m.snippet).slice(0, 5)
-      // 角色记忆仅本人可见（MVP：条目里含本人记忆时仅列出通用记忆；个人文件不在倒排范围简化）
       return { ok: true, summary: mem.length ? mem.join('\n') : '(无记忆命中)' }
     },
   )
@@ -82,6 +91,72 @@ export function registerServiceTools(deps: { memory: MemoryStore; search: Search
         for (const h of s.hits.slice(0, 3)) lines.push(`${s.sessionId}:${h.snippet}`)
       }
       return { ok: true, summary: lines.length ? lines.join('\n') : '(无会话命中或无权查看)' }
+    },
+  )
+
+  // code 受控编辑（写工作目录通道①，workspaces-artifacts §2.2 / tools.md §6）
+  registerTool(
+    {
+      name: 'workdir_edit',
+      description: '工作目录受控编辑（单文件、声明式替换/写入，留 diff 轨迹；归属 taskId）',
+      scope: 'workdir',
+      availableIn: ['user'],
+      idempotent: false,
+    },
+    async (args, env) => {
+      const path = String(args.path ?? '')
+      const edits = Array.isArray(args.edits) ? (args.edits as Array<Record<string, unknown>>) : []
+      if (!path || edits.length === 0) {
+        return { ok: false, code: 'ERR_VALIDATION', reason: 'path 与 edits 必填' }
+      }
+      const r = resolveVirtual(path, env.roots)
+      if (r.scheme !== 'workdir') {
+        return { ok: false, code: 'FS_BOUNDARY', reason: 'workdir_edit 仅限 workdir:// 内文件' }
+      }
+      const abs = ensureInside(env.roots.workdirRoot, r.absolute, 'relPath')
+      const taskId = args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`
+
+      // 逐条应用编辑（整体事务：任一步失败不改文件）
+      let current = await readFile(abs, 'utf8').catch(() => '')
+      let changedChars = 0
+      for (const e of edits) {
+        const type = String(e.type ?? 'write')
+        if (type === 'write') {
+          current = String(e.text ?? '')
+          changedChars += current.length
+        } else if (type === 'replace') {
+          const oldText = String(e.oldText ?? '')
+          const newText = String(e.newText ?? '')
+          if (oldText === '')
+            return { ok: false, code: 'ERR_VALIDATION', reason: 'replace 需 oldText' }
+          if (!current.includes(oldText)) {
+            return {
+              ok: false,
+              code: 'ERR_CONFLICT',
+              reason: `替换目标不存在（文件已被外部修改?）：${JSON.stringify(oldText.slice(0, 60))}`,
+            }
+          }
+          changedChars += Math.abs(newText.length - oldText.length)
+          current = current.split(oldText).join(newText)
+        } else {
+          return { ok: false, code: 'ERR_VALIDATION', reason: `不支持编辑类型: ${type}` }
+        }
+      }
+      const changed = changedChars > 0
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, current, 'utf8')
+      if (changed) {
+        await codeEdits.append(env.projectId, taskId, {
+          relPath: r.rel,
+          editType:
+            edits.length === 1 && String(edits[0]!.type ?? '') === 'write' ? 'write' : 'replace',
+          changedChars,
+        })
+      }
+      return {
+        ok: true,
+        summary: `已编辑 ${r.rel}${changed ? `（+${changedChars} 字符，归属 ${taskId}）` : '（无净变化）'}`,
+      }
     },
   )
 }
