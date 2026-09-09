@@ -182,6 +182,73 @@ function bindGlobal() {
   $('#btn-attention-close').addEventListener('click', () =>
     $('#attention-modal').classList.add('hidden'),
   )
+
+  // 工作目录：文件夹选择器（服务端 fs/browse 逐层浏览）
+  $('#btn-pick-dir').addEventListener('click', () => {
+    const cur = $('#w-workdir').value.trim() || 'C:\\'
+    openDirPicker(cur)
+  })
+  $('#dp-go').addEventListener('click', () => loadDir($('#dp-path').value.trim()))
+  $('#dp-path').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      loadDir($('#dp-path').value.trim())
+    }
+  })
+  $('#dp-up').addEventListener('click', () => loadDir(dirParent(dirState.cur)))
+  $('#dp-use').addEventListener('click', () => {
+    $('#w-workdir').value = dirState.cur
+    $('#dir-modal').classList.add('hidden')
+  })
+  $('#dp-close').addEventListener('click', () => $('#dir-modal').classList.add('hidden'))
+}
+
+const dirState = { cur: '' }
+
+function openDirPicker(path) {
+  $('#dir-modal').classList.remove('hidden')
+  loadDir(path)
+}
+
+/** 加载并渲染某目录的直接子目录/文件（可逐层进入）。 */
+async function loadDir(path) {
+  if (!path) return
+  dirState.cur = path
+  $('#dp-path').value = path
+  $('#dp-current').textContent = path
+  const list = $('#dp-list')
+  list.innerHTML = '<li class="who">加载中…</li>'
+  try {
+    const d = await api(`/fs/browse?path=${encodeURIComponent(path)}`)
+    list.innerHTML = ''
+    for (const e of d.entries ?? []) {
+      const li = document.createElement('li')
+      if (e.type === 'dir') {
+        const a = document.createElement('a')
+        a.href = 'javascript:void(0)'
+        a.textContent = `📁 ${e.name}`
+        a.onclick = () => loadDir(e.path)
+        li.appendChild(a)
+      } else {
+        li.textContent = `📄 ${e.name}`
+        li.className = 'file'
+      }
+      list.appendChild(li)
+    }
+    if (!(d.entries ?? []).length) {
+      list.innerHTML = '<li class="who">（空目录或不可访问）</li>'
+    }
+  } catch (e) {
+    list.innerHTML = '<li class="who">访问失败：' + escapeHtml(e.message) + '</li>'
+  }
+}
+
+function dirParent(p) {
+  const norm = p.replace(/[\\/]+$/, '')
+  if (/^[A-Za-z]:$/.test(norm)) return norm + '\\' // 盘符根保持不变
+  const i = Math.max(norm.lastIndexOf('\\'), norm.lastIndexOf('/'))
+  if (i <= 0) return norm
+  return norm.slice(0, i)
 }
 
 async function openProject(pid) {

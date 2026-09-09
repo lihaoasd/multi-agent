@@ -67,11 +67,35 @@
       <div class="modal-box card">
         <h3>创建项目</h3>
         <label>项目名 <input id="w-name" placeholder="todo-app" /></label>
-        <label>工作目录（绝对路径）<input id="w-workdir" placeholder="D:/dev/todo-app" /></label>
+        <label
+          >工作目录（绝对路径）
+          <div class="inline-row">
+            <input id="w-workdir" placeholder="D:/dev/todo-app" />
+            <button type="button" id="btn-pick-dir">选择文件夹…</button>
+          </div>
+        </label>
         <fieldset id="w-roles"><legend>角色</legend></fieldset>
         <div class="row">
           <button id="btn-create" class="primary">创建并进入</button>
           <button id="btn-wizard-close">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 目录选择器（经服务端 fs/browse 逐层浏览） -->
+    <div id="dir-modal" class="modal hidden">
+      <div class="modal-box card">
+        <h3>选择工作目录</h3>
+        <div class="inline-row">
+          <input id="dp-path" placeholder="输入绝对路径后回车，如 C:\ 或 D:\" />
+          <button type="button" id="dp-go">跳转</button>
+          <button type="button" id="dp-up">上级</button>
+        </div>
+        <div id="dp-current" class="who"></div>
+        <ul id="dp-list" class="dp-list"></ul>
+        <div class="row">
+          <button id="dp-use" class="primary">选择此目录</button>
+          <button id="dp-close">取消</button>
         </div>
       </div>
     </div>
