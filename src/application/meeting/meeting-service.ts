@@ -56,6 +56,12 @@ export class MeetingService {
     private readonly memory: MemoryStore,
     private readonly onOpen?: (projectId: string, host: string, members: string[]) => Promise<void>,
     private readonly onClose?: (projectId: string, sessionId: string) => Promise<void>,
+    private readonly runMemberTurn?: (
+      projectId: string,
+      meetingId: string,
+      instanceId: string,
+      prompt?: string,
+    ) => Promise<void>,
   ) {}
 
   async list(projectId: string): Promise<MeetingRecord[]> {
@@ -253,6 +259,70 @@ export class MeetingService {
       role: 'system',
       payload: { action: 'cancel', actor },
     })
+  }
+
+  /**
+   * 主持人点名成员发言（会议轮次引擎 MVP，meetings.md §4）。
+   * 仅 open 会议可点名（blocked 等用户拍板时不推进新轮）；成员必须是参会者。
+   */
+  async speakTurn(
+    projectId: string,
+    meetingId: string,
+    host: string,
+    member: string,
+    question?: string,
+  ): Promise<void> {
+    const rec = await this.get(projectId, meetingId)
+    if (host !== rec.meeting.host)
+      throw new AppError(ErrorCodes.FORBIDDEN_PATH, '仅主持人可点名发言')
+    if (rec.state !== 'open') {
+      throw new AppError(ErrorCodes.CONFLICT, `仅 open 会议可推进轮次（当前 ${rec.state}）`)
+    }
+    const isMember = rec.participants.agents.includes(member) && member !== rec.meeting.host
+    if (!isMember) throw new AppError(ErrorCodes.VALIDATION, `非参会成员或为主持人: ${member}`)
+    const pending = rec.meeting.agenda.find((a) => a.status === 'pending')
+    const prompt =
+      question ??
+      `【会议点名】你是成员 ${member}。请就当前议题「${pending?.title ?? rec.meeting.topic}」简明发表意见（结论+理由）。`
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'round', host, member, question: prompt.slice(0, 120) },
+    })
+    if (!this.runMemberTurn) {
+      throw new AppError(ErrorCodes.INTERNAL, '成员回合执行器未注入')
+    }
+    await this.runMemberTurn(projectId, meetingId, member, prompt)
+  }
+
+  /** 用户插话（meetings.md §4：open 与 blocked 均可插话，不打断生成）。 */
+  async userInterject(projectId: string, meetingId: string, text: string): Promise<void> {
+    const rec = await this.get(projectId, meetingId)
+    if (!['open', 'blocked_waiting_user'].includes(rec.state as string)) {
+      throw new AppError(ErrorCodes.CONFLICT, `会议未进行（当前 ${rec.state}）`)
+    }
+    const t = text.trim()
+    if (!t) throw new AppError(ErrorCodes.VALIDATION, '内容不能为空')
+    const evt = await this.append(rec, {
+      kind: 'message',
+      role: 'user',
+      sender: 'user',
+      content: { text: t, blocks: [] },
+    })
+    void evt
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'interject' },
+    })
+  }
+
+  /** 纪要重新生成（D18-⑤b 可重放派生视图；UI「重新生成纪要」）。 */
+  async regenerateMinutes(projectId: string, meetingId: string): Promise<{ text: string }> {
+    const rec = await this.get(projectId, meetingId)
+    if (rec.state !== 'closed') throw new AppError(ErrorCodes.CONFLICT, '会议未结束，无法生成纪要')
+    await this.generateMinutes(projectId, meetingId)
+    return { text: await this.renderMinutes(projectId, meetingId) }
   }
 
   /** 结束会议：置 minutesPending → 生成纪要（可重放派生视图）→ 回写记忆。 */

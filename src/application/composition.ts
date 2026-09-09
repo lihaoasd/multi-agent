@@ -105,6 +105,10 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
         for (const m of meta.participants.agents) await occupancy.release(pid, m)
       }
     },
+    // 点名成员发言：在 meeting 会话内为该成员执行一轮（Mock 直答）
+    async (pid, mid, instanceId, prompt) => {
+      await sessionService.runAgentTurn(pid, mid, instanceId, { prompt })
+    },
   )
 
   const approvals = new ApprovalService(

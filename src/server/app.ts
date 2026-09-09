@@ -368,6 +368,31 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
     return { meeting }
   })
 
+  app.post<{
+    Params: { pid: string; mid: string }
+    Body: { host?: string; member?: string; question?: string }
+  }>('/api/projects/:pid/meetings/:mid/talk', async (req) => {
+    const b = req.body ?? {}
+    if (!b.host || !b.member) {
+      return { code: 'ERR_VALIDATION', message: 'host/member 必填（主持人点名成员发言）' }
+    }
+    await meetings.speakTurn(req.params.pid, req.params.mid, b.host, b.member, b.question)
+    return { ok: true }
+  })
+
+  app.post<{ Params: { pid: string; mid: string }; Body: { text?: string } }>(
+    '/api/projects/:pid/meetings/:mid/messages',
+    async (req) => {
+      await meetings.userInterject(req.params.pid, req.params.mid, req.body?.text ?? '')
+      return { ok: true }
+    },
+  )
+
+  app.post<{ Params: { pid: string; mid: string } }>(
+    '/api/projects/:pid/meetings/:mid/regenerate-minutes',
+    async (req) => ({ minutes: await meetings.regenerateMinutes(req.params.pid, req.params.mid) }),
+  )
+
   app.post<{ Params: { pid: string; mid: string }; Body: { actor?: string } }>(
     '/api/projects/:pid/meetings/:mid/close',
     async (req) => {

@@ -158,4 +158,67 @@ export class SessionService {
     const p = this.pending.get(`${projectId}:${instanceId}`)
     if (p) await p.promise
   }
+
+  /**
+   * 在指定会话（user 或 meeting）为指定实例执行一轮（会议点名发言等）。
+   * 调用方负责会话状态约束；复用同一实例的串行队列（单工）。
+   */
+  async runAgentTurn(
+    projectId: string,
+    sessionId: string,
+    instanceId: string,
+    opts: { prompt?: string } = {},
+  ): Promise<void> {
+    const meta = await this.store.tryReadMeta(projectId, sessionId)
+    if (!meta) throw new AppError(ErrorCodes.NOT_FOUND, `会话不存在: ${sessionId}`)
+    if (!(meta.participants?.agents ?? []).includes(instanceId)) {
+      throw new AppError(ErrorCodes.VALIDATION, `实例不在该会话参与者中: ${instanceId}`)
+    }
+    const member = await this.memberResolver(projectId, instanceId)
+    if (!member) throw new AppError(ErrorCodes.NOT_FOUND, `实例不存在: ${instanceId}`)
+
+    const prompt = opts.prompt
+    if (prompt) {
+      // 点名问题落盘为会议可见消息（sender=user 简化；内容为会议日志真相源）
+      const evt = await this.store.appendEvent(meta, {
+        kind: 'message',
+        role: 'user',
+        sender: 'user',
+        content: { text: prompt, blocks: [] },
+      })
+      this.bus.emitLogEvent(projectId, evt)
+    }
+    const turnCtx: TurnContext = {
+      projectId,
+      sessionId,
+      member,
+      scenario: await this.projectNameResolver(projectId).catch(() => '本项目'),
+    }
+    await this.enqueue(projectId, instanceId, meta.id, () => this.loop.runDirectTurn(turnCtx))
+  }
+
+  /** 入队执行（同实例 FIFO）；完成后触发摘要。 */
+  private async enqueue(
+    projectId: string,
+    instanceId: string,
+    sessionId: string,
+    job: () => Promise<SessionLogEvent>,
+  ): Promise<void> {
+    const key = `${projectId}:${instanceId}`
+    const prev = this.pending.get(key)
+    const promise = prev ? prev.promise.then(job) : job()
+    this.pending.set(key, { promise })
+    void promise
+      .then(async () => {
+        if (this.summary) {
+          const fresh = await this.store.tryReadMeta(projectId, sessionId)
+          if (fresh) await this.summary.maybeSummarize(fresh)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.pending.get(key)?.promise === promise) this.pending.delete(key)
+      })
+    await promise
+  }
 }
