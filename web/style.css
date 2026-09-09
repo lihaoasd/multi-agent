@@ -5,9 +5,16 @@
   --text: #1f2329;
   --muted: #7a8494;
   --accent: #3b6fe0;
+  --ok: #27ae60;
+  --warn: #d68910;
+  --danger: #c0392b;
 }
 * {
   box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
 }
 body {
   margin: 0;
@@ -20,12 +27,19 @@ body {
   color: var(--text);
 }
 header#topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 header h1 {
   font-size: 16px;
@@ -60,10 +74,11 @@ textarea {
 }
 #layout {
   display: grid;
-  grid-template-columns: 240px 1fr 300px;
+  grid-template-columns: 250px 1fr 320px;
   gap: 12px;
   padding: 12px;
-  min-height: calc(100vh - 56px);
+  height: calc(100vh - 59px);
+  min-height: 0;
 }
 aside,
 section {
@@ -71,12 +86,22 @@ section {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
+  min-height: 0;
+  overflow: auto;
 }
 aside h4 {
   margin: 8px 0 6px;
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.panel-head h4 {
+  margin: 0;
 }
 ul {
   list-style: none;
@@ -95,12 +120,33 @@ li.active {
 #center {
   display: flex;
   flex-direction: column;
-  min-height: 70vh;
+  min-height: 0;
+}
+#session-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+#session-title {
+  flex: 1;
+}
+.typing {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
 }
 #messages {
   flex: 1;
   overflow: auto;
   padding: 8px;
+}
+#load-old-wrap {
+  text-align: center;
+  padding: 4px 0 0;
 }
 .msg {
   margin: 8px 0;
@@ -262,6 +308,13 @@ button.ghost {
 .project-card button {
   align-self: flex-start;
 }
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+.card-actions .danger {
+  margin-left: auto;
+}
 .empty {
   text-align: center;
   color: var(--muted);
@@ -342,13 +395,41 @@ fieldset {
 .card h3 {
   margin: 4px 0;
 }
-#session-header {
-  font-weight: 600;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 8px;
-}
 .role-check {
   display: inline-flex;
   gap: 4px;
   margin: 4px 8px 4px 0;
+}
+/* 状态徽标配色 */
+.badge {
+  background: #e74c3c;
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+.badge.state-open,
+.badge.state-active {
+  background: var(--ok);
+}
+.badge.state-proposed,
+.badge.state-queued {
+  background: var(--warn);
+}
+.badge.state-blocked_waiting_user {
+  background: var(--danger);
+}
+.badge.state-closed {
+  background: #95a5a6;
+}
+.member-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.empty-tip {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 2px;
 }

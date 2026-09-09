@@ -14,8 +14,36 @@ let current = {
   approvals: [],
   meetings: [],
   artifacts: [],
+  tasks: [],
+  oldestSeq: null,
+  busy: false,
 }
 let ws = null
+
+/** 会话可读标题：user=角色显示名，meeting=主题/ID。 */
+function sessionLabel(s) {
+  if (!s) return ''
+  if (s.type === 'meeting') {
+    const topic = s.meeting?.topic || s.agenda
+    return topic ? `会议 · ${topic}` : s.id
+  }
+  const iid = String(s.id).replace(/^u_/, '')
+  const m = current.team.find((t) => t.instanceId === iid)
+  return m ? `${m.displayName}（${iid}）` : s.id
+}
+
+function setTyping(on) {
+  $('#typing').classList.toggle('hidden', !on)
+}
+
+function setSendBusy(on) {
+  current.busy = on
+  $('#btn-send').disabled = on
+}
+
+function setDocTitle(text) {
+  document.title = text ? `${text} · Agent Haness` : 'Agent Haness'
+}
 
 async function api(path, method = 'GET', body = null) {
   const opts = { method, headers: {} }
@@ -45,6 +73,8 @@ async function boot() {
 async function showProjectsView() {
   current.pid = null
   current.sessionId = null
+  current.busy = false
+  setDocTitle('')
   if (ws) {
     ws.onclose = null
     ws.close()
@@ -83,10 +113,32 @@ async function refreshProjectList() {
       enter.className = 'primary'
       enter.textContent = '进入'
       enter.onclick = () => enterProject(p.id)
+      const del = document.createElement('button')
+      del.className = 'danger'
+      del.textContent = '删除'
+      del.onclick = async () => {
+        if (
+          !confirm(
+            `删除项目「${p.name}」的运行时数据（会话/记忆/审批等）？\n你的工作目录不受影响。`,
+          )
+        )
+          return
+        try {
+          await api(`/projects/${p.id}`, 'DELETE')
+          toast('项目已删除')
+          await refreshProjectList()
+        } catch (e) {
+          toast(e.message)
+        }
+      }
+      const actions = document.createElement('div')
+      actions.className = 'card-actions'
+      actions.appendChild(enter)
+      actions.appendChild(del)
       card.appendChild(name)
       card.appendChild(meta)
       if (p.description) card.appendChild(desc)
-      card.appendChild(enter)
+      card.appendChild(actions)
       grid.appendChild(card)
     }
     $('#project-empty').classList.toggle('hidden', projects.length > 0)
@@ -103,6 +155,7 @@ async function enterProject(pid) {
   $('#projects-view').classList.add('hidden')
   $('#layout').classList.remove('hidden')
   setExportVisible(true)
+  setDocTitle(p ? p.name : pid)
   await openProject(pid)
 }
 
@@ -165,12 +218,27 @@ function bindGlobal() {
   })
 
   $('#btn-send').addEventListener('click', sendMessage)
+  $('#btn-load-old').addEventListener('click', loadOlder)
   $('#msg-text').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
   })
+  // 团队：添加成员 / 弹窗关闭
+  $('#btn-add-member').addEventListener('click', openMemberModal)
+  $('#btn-member-close').addEventListener('click', () => $('#member-modal').classList.add('hidden'))
+  // Esc 关闭弹窗；点击遮罩关闭
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      for (const m of $$('.modal')) m.classList.add('hidden')
+    }
+  })
+  for (const m of $$('.modal')) {
+    m.addEventListener('click', (e) => {
+      if (e.target === m) m.classList.add('hidden')
+    })
+  }
 
   // 项目导出 zip
   $('#btn-export').addEventListener('click', () => {
@@ -271,7 +339,8 @@ async function openProject(pid) {
 /** 中央区空态提示（无会话/无角色时）。 */
 function renderEmptyCenter(text) {
   $('#composer').classList.add('hidden')
-  $('#session-header').textContent = '未打开会话'
+  setTyping(false)
+  $('#session-title').textContent = '未打开会话'
   const box = $('#messages')
   box.innerHTML = ''
   const div = document.createElement('div')
@@ -285,33 +354,69 @@ function renderTeam() {
   ul.innerHTML = ''
   for (const m of current.team) {
     const li = document.createElement('li')
-    li.textContent = `${m.displayName} [${m.instanceId}]${m.enabled ? '' : '（停用）'}`
+    const txt = document.createElement('span')
+    txt.textContent = `${m.displayName} [${m.instanceId}]${m.enabled ? '' : '（停用）'}`
+    li.appendChild(txt)
+    // 停用/启用（D14-9 保留数据）
+    const toggle = document.createElement('button')
+    toggle.textContent = m.enabled ? '停用' : '启用'
+    toggle.onclick = async () => {
+      try {
+        if (m.enabled) await api(`/projects/${current.pid}/team/${m.instanceId}`, 'DELETE')
+        else await api(`/projects/${current.pid}/team/${m.instanceId}`, 'PATCH', { enabled: true })
+        toast(m.enabled ? '已停用（数据保留，可重新启用）' : '已启用')
+        await reloadProjectView()
+      } catch (e) {
+        toast(e.message)
+      }
+    }
+    li.appendChild(toggle)
     ul.appendChild(li)
   }
   if (!current.team.length) {
-    const li = document.createElement('li')
-    li.className = 'who'
-    li.textContent = '（暂无角色）'
+    const li = document.createElement('div')
+    li.className = 'empty-tip'
+    li.textContent = '（暂无角色，点右上「＋添加」加入角色）'
     ul.appendChild(li)
-    // 便捷补加常用角色
-    for (const r of [
-      ['pm', 'PM'],
-      ['product', '产品'],
-      ['dev', '开发'],
-    ]) {
-      const b = document.createElement('button')
-      b.textContent = `+${r[1]}`
-      b.onclick = async () => {
+  }
+}
+
+/** 添加角色弹窗：列出未在团队中的模板（MVP 每模板至多 1 实例）。 */
+async function openMemberModal() {
+  if (!current.pid) return
+  const list = $('#member-list')
+  list.innerHTML = '<li class="empty-tip">加载角色…</li>'
+  $('#member-modal').classList.remove('hidden')
+  try {
+    const [d, team] = await Promise.all([api('/roles'), api(`/projects/${current.pid}/team`)])
+    const exist = new Set(team.team.map((t) => t.roleTemplateId))
+    const addable = (d.roles ?? []).filter((r) => !exist.has(r.roleId))
+    list.innerHTML = ''
+    for (const r of addable) {
+      const li = document.createElement('li')
+      const info = document.createElement('span')
+      info.textContent = `${r.name}（${r.roleId}）· ${r.description || ''}`.slice(0, 60)
+      const add = document.createElement('button')
+      add.textContent = '添加'
+      add.onclick = async () => {
         try {
-          await api(`/projects/${current.pid}/team`, 'POST', { roleTemplateId: r[0] })
-          toast(`已添加 ${r[1]}`)
+          await api(`/projects/${current.pid}/team`, 'POST', { roleTemplateId: r.roleId })
+          toast(`已添加 ${r.name}`)
           await reloadProjectView()
+          openMemberModal()
         } catch (e) {
           toast(e.message)
         }
       }
-      ul.appendChild(b)
+      li.appendChild(info)
+      li.appendChild(add)
+      list.appendChild(li)
     }
+    if (!addable.length) {
+      list.innerHTML = '<li class="empty-tip">团队已包含全部可用角色模板。</li>'
+    }
+  } catch (e) {
+    list.innerHTML = '<li class="empty-tip">加载失败：' + escapeHtml(e.message) + '</li>'
   }
 }
 
@@ -335,8 +440,19 @@ function renderSessions() {
   ul.innerHTML = ''
   for (const s of current.sessions) {
     const li = document.createElement('li')
-    const unread = Number(s.unread ?? 0) > 0 ? ` <span class="badge">${s.unread}</span>` : ''
-    li.textContent = `${s.id}${unread}`
+    const title = document.createElement('span')
+    title.textContent = sessionLabel(s)
+    const meta = document.createElement('span')
+    meta.className = 'who'
+    meta.textContent = s.type === 'meeting' ? ' ' + stateZh(s.state) : ''
+    li.appendChild(title)
+    if (Number(s.unread ?? 0) > 0) {
+      const b = document.createElement('span')
+      b.className = 'badge'
+      b.textContent = s.unread
+      li.appendChild(b)
+    }
+    li.appendChild(meta)
     li.dataset.sid = s.id
     li.addEventListener('click', () => openSession(current.pid, s.id))
     if (s.id === current.sessionId) li.classList.add('active')
@@ -344,33 +460,68 @@ function renderSessions() {
   }
 }
 
+const STATE_ZH = {
+  queued: '排队中',
+  proposed: '征询中',
+  open: '进行中',
+  blocked_waiting_user: '等你拍板',
+  closed: '已结束',
+  active: '活跃',
+  suspended: '挂起',
+  archived: '已归档',
+}
+function stateZh(s) {
+  return STATE_ZH[s] ?? s
+}
+
 async function openSession(pid, sid) {
   current.sessionId = sid
+  setTyping(false)
+  setSendBusy(false)
   renderSessions()
   const d = await api(`/projects/${pid}/sessions/${sid}`)
   const meta = d.session
-  $('#session-header').textContent = `${meta.id} · ${meta.type} · ${meta.state}`
+  $('#session-title').textContent =
+    sessionLabel(meta) + (meta.type === 'meeting' ? ` · ${stateZh(meta.state)}` : '')
   const box = $('#messages')
   box.innerHTML = ''
   const msgs = (d.messages ?? []).filter((e) => e.kind === 'message')
   let lastSeq = meta.lastSeq ?? 0
+  let oldest = null
   for (const m of msgs) {
     if (m.role === 'system') continue
     appendMessage(
-      m.role === 'user' ? '我' : m.sender,
+      m.role === 'user' ? '我' : senderName(m.sender),
       m.content?.text ?? '',
       m.role === 'user' ? 'user' : 'agent',
     )
-    if (m.seq) lastSeq = Math.max(lastSeq, m.seq)
+    if (m.seq) {
+      lastSeq = Math.max(lastSeq, m.seq)
+      oldest = oldest === null ? m.seq : Math.min(oldest, m.seq)
+    }
+  }
+  if (!msgs.length) {
+    const empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.textContent = '还没有消息。输入内容开始对话。'
+    box.appendChild(empty)
   }
   // 打开即已读（读回执 → 未读清零）
   await api(`/projects/${pid}/sessions/${sid}/read`, 'POST', { seq: lastSeq }).catch(
     () => undefined,
   )
-  // 重连增量锚点
   current.seenSeq = lastSeq
+  current.oldestSeq = oldest
+  $('#load-old-wrap').classList.toggle('hidden', !oldest || oldest <= 1)
   if (meta.type === 'user') $('#composer').classList.remove('hidden')
   else $('#composer').classList.add('hidden')
+}
+
+function senderName(sender) {
+  if (!sender || sender === 'user') return '我'
+  const iid = String(sender).replace(/^u_/, '')
+  const m = current.team.find((t) => t.instanceId === iid)
+  return m ? m.displayName : sender
 }
 
 function appendMessage(who, text, cls) {
@@ -408,13 +559,20 @@ function connectWs(pid) {
         return
       }
       if (e.type === 'message.chunk') {
+        setTyping(false)
         if (!streaming) {
-          streaming = appendMessage('Agent…', '', 'agent')
+          const who =
+            e.payload?.sender && e.payload.sender !== 'user'
+              ? senderName(e.payload.sender) + '…'
+              : 'Agent…'
+          streaming = appendMessage(who, '', 'agent')
         }
         streaming.textContent += e.payload.delta ?? ''
       } else if (e.type === 'message.commit') {
         streaming = null
         current.seenSeq = e.payload?.seq ?? current.seenSeq
+        setTyping(false)
+        setSendBusy(false)
         refreshPanels()
       } else if (e.type === 'session.updated' || e.type === 'event.appended') {
         refreshPanels().catch(() => undefined)
@@ -444,11 +602,59 @@ async function refreshUnread() {
 
 async function sendMessage() {
   const text = $('#msg-text').value.trim()
-  if (!text || !current.pid || !current.sessionId) return
+  if (!text || !current.pid || !current.sessionId || current.busy) return
   $('#msg-text').value = ''
   appendMessage('我', text, 'user')
-  await api(`/projects/${current.pid}/sessions/${current.sessionId}/messages`, 'POST', { text })
-  await refreshPanels()
+  setSendBusy(true)
+  setTyping(true)
+  try {
+    await api(`/projects/${current.pid}/sessions/${current.sessionId}/messages`, 'POST', {
+      text,
+    })
+  } catch (e) {
+    toast(e.message)
+    setTyping(false)
+    setSendBusy(false)
+  }
+}
+
+/** 加载更早消息（beforeSeq 向前翻页）。 */
+async function loadOlder() {
+  const pid = current.pid
+  const sid = current.sessionId
+  const before = current.oldestSeq
+  if (!pid || !sid || before == null || before <= 1) return
+  const btn = $('#btn-load-old')
+  btn.disabled = true
+  btn.textContent = '加载中…'
+  try {
+    const d = await api(`/projects/${pid}/sessions/${sid}?beforeSeq=${before}&limit=50`)
+    const box = $('#messages')
+    const older = (d.messages ?? [])
+      .filter((e) => e.kind === 'message' && e.role !== 'system' && e.seq < before)
+      .sort((a, b) => a.seq - b.seq)
+    for (const m of older) {
+      const div = document.createElement('div')
+      div.className = `msg ${m.role === 'user' ? 'user' : 'agent'}`
+      const whoEl = document.createElement('div')
+      whoEl.className = 'who'
+      whoEl.textContent = m.role === 'user' ? '我' : senderName(m.sender)
+      const body = document.createElement('div')
+      body.textContent = m.content?.text ?? ''
+      div.appendChild(whoEl)
+      div.appendChild(body)
+      box.prepend(div)
+    }
+    if (older.length) {
+      current.oldestSeq = older[0].seq
+      $('#load-old-wrap').classList.toggle('hidden', older[0].seq <= 1)
+    }
+  } catch (e) {
+    toast('加载更早消息失败: ' + e.message)
+  } finally {
+    btn.disabled = false
+    btn.textContent = '加载更早消息'
+  }
 }
 
 async function refreshPanels() {
@@ -488,7 +694,13 @@ function renderTasks() {
   const ul = $('#task-list')
   ul.innerHTML = ''
   const tasks = current.tasks ?? []
-  if (!tasks.length) return
+  if (!tasks.length) {
+    const li = document.createElement('div')
+    li.className = 'empty-tip'
+    li.textContent = '（暂无任务）'
+    ul.appendChild(li)
+    return
+  }
   for (const t of tasks.slice(0, 12)) {
     const li = document.createElement('div')
     li.className = 'task-item'
@@ -592,6 +804,13 @@ function renderApprovals() {
   const ul = $('#approval-list')
   ul.innerHTML = ''
   $('#approval-count').textContent = current.approvals.length || ''
+  if (!current.approvals.length) {
+    const li = document.createElement('div')
+    li.className = 'empty-tip'
+    li.textContent = '（暂无待审批）'
+    ul.appendChild(li)
+    return
+  }
   for (const ap of current.approvals) {
     const li = document.createElement('div')
     li.className = 'approval'
@@ -624,7 +843,6 @@ function renderMeetings() {
   ul.innerHTML = ''
   const ma = $('#meeting-actions')
   ma.innerHTML = ''
-  // 从团队取主持人+成员（简化：第一个 agent 主持，其余作成员）
   if (current.team.length >= 2) {
     const b = document.createElement('button')
     b.textContent = '发起会议(评审)'
@@ -651,8 +869,11 @@ function renderMeetings() {
     const li = document.createElement('div')
     li.className = 'meeting-item'
     const state = mt.state
-    li.innerHTML = `<b>${mt.meeting?.topic ?? mt.id}</b> <span class="badge">${state}</span><br/>
-      <span class="who">主持人 ${mt.meeting?.host ?? mt.host}</span>`
+    const hostName = current.team.find((t) => t.instanceId === mt.meeting?.host)?.displayName
+    li.innerHTML = `<b>${mt.meeting?.topic ?? mt.id}</b> <span class="badge state-${state}">${stateZh(
+      state,
+    )}</span><br/>
+      <span class="who">主持人 ${hostName ?? mt.meeting?.host ?? mt.host}</span>`
     if (state === 'proposed' && current.team.length) {
       const acc = document.createElement('button')
       acc.textContent = '成员接受'
@@ -743,16 +964,32 @@ function renderMeetings() {
     }
     ul.appendChild(li)
   }
+  if (!current.meetings.length) {
+    const li = document.createElement('div')
+    li.className = 'empty-tip'
+    li.textContent = '（暂无会议；团队 ≥2 人后可发起评审）'
+    ul.appendChild(li)
+  }
 }
 
 function renderArtifacts() {
   const ul = $('#artifact-list')
   ul.innerHTML = ''
+  if (!current.artifacts.length) {
+    const li = document.createElement('div')
+    li.className = 'empty-tip'
+    li.textContent = '（暂无产出物；Agent 提交后显示于此）'
+    ul.appendChild(li)
+    return
+  }
   for (const a of current.artifacts.slice(0, 20)) {
     const li = document.createElement('div')
     li.className = 'artifact-item'
-    li.innerHTML = `<b>${a.title}</b> <span class="badge">${a.state}</span><br/>
-      <span class="who">v${a.version} · ${a.submitter} · ${a.type}</span>`
+    const submitter = senderName(a.submitter)
+    li.innerHTML = `<b>${a.title}</b> <span class="badge state-${
+      a.state === 'approved' ? 'open' : a.state
+    }">${a.state === 'approved' ? '已批准' : a.state}</span><br/>
+      <span class="who">v${a.version} · ${submitter} · ${a.type}</span>`
     if (a.state !== 'reverted') {
       const rb = document.createElement('button')
       rb.textContent = '回退'
@@ -768,8 +1005,11 @@ function renderArtifacts() {
 }
 
 function renderMemories(entries) {
-  if (!entries.length) return
   const box = $('#memory-panel')
+  if (!entries.length) {
+    box.innerHTML = '<div class="empty-tip">（暂无全局记忆/纪要）</div>'
+    return
+  }
   box.innerHTML = '<h5>全局记忆（最新）</h5>'
   for (const e of entries.slice(0, 5)) {
     const div = document.createElement('div')

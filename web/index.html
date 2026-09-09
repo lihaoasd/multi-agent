@@ -34,13 +34,19 @@
     <!-- 页 2：会话工作台 -->
     <main id="layout" class="hidden">
       <aside id="left">
-        <h4>团队</h4>
+        <div class="panel-head">
+          <h4>团队</h4>
+          <button id="btn-add-member" class="ghost" title="添加角色实例">＋添加</button>
+        </div>
         <ul id="team-list"></ul>
         <h4>会话</h4>
         <ul id="session-list"></ul>
       </aside>
       <section id="center">
-        <div id="session-header"></div>
+        <div id="session-header">
+          <span id="session-title"></span><span id="typing" class="typing hidden">回复中…</span>
+        </div>
+        <div id="load-old-wrap" class="hidden"><button id="btn-load-old">加载更早消息</button></div>
         <div id="messages"></div>
         <form id="composer" class="hidden">
           <textarea id="msg-text" rows="2" placeholder="发消息给 Agent"></textarea>
@@ -106,6 +112,15 @@
         <h3>需你处理</h3>
         <ul id="attention-items"></ul>
         <div class="row"><button id="btn-attention-close">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- 添加角色实例弹窗 -->
+    <div id="member-modal" class="modal hidden">
+      <div class="modal-box card">
+        <h3>添加角色到团队</h3>
+        <ul id="member-list" class="member-list"></ul>
+        <div class="row"><button id="btn-member-close">关闭</button></div>
       </div>
     </div>
 
