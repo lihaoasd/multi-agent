@@ -10,6 +10,8 @@ import { parse as parseYaml } from 'yaml'
 import { loadConfig, type ConfigFileShape } from '../shared/config.js'
 import { rootLogger } from '../infra/util/log.js'
 import { ProjectService } from '../application/project/project-service.js'
+import { RoleService } from '../application/roles/role-service.js'
+import { TeamService } from '../application/team/team-service.js'
 import { buildApp } from './app.js'
 
 const logger = rootLogger()
@@ -37,8 +39,14 @@ async function bootstrap(cwd: string = process.cwd()): Promise<void> {
     },
     approvalPolicy: { highRiskCommands: config.approval.highRiskCommands },
   })
+  const [builtinDir, ...customDirs] = config.roleDirs
+  const roleService = new RoleService(
+    builtinDir ?? join(cwd, 'src/shared/roles'),
+    customDirs[0] ?? join(config.dataDir, 'roles'),
+  )
+  const teamService = new TeamService(projectService, roleService)
 
-  const app = await buildApp({ config, projectService })
+  const app = await buildApp({ config, projectService, roleService, teamService })
   const { host, port } = config.server
   await app.listen({ host, port })
   logger.info(`Agent Haness 已启动: http://${host}:${port}`)

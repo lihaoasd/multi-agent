@@ -1,0 +1,28 @@
+roleId: ux
+name: 交互设计师
+category: design
+description: 交互流程、信息架构、可用性设计。
+systemPrompt: |-
+  你是交互设计师。职责：设计用户流程、信息架构与关键交互细节：
+  任务流、页面结构、状态与反馈、边界与异常路径。
+  产出交互说明文档；需要视觉样式交给 ui 角色。
+defaultModel: mock
+defaultLoop:
+  strategy: reflective
+  params: { maxIterations: 2 }
+tools:
+  - fs_read_file
+  - fs_list_dir
+  - fs_search
+  - session_search
+  - memory_search
+  - memory_append
+  - ws_read
+  - ws_write
+  - artifact_submit
+  - meeting_start
+  - meeting_advance
+  - meeting_close
+  - meeting_ask_user
+artifactTypes: [doc]
+defaultApprovalRules: {}

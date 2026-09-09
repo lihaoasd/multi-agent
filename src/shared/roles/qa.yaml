@@ -1,0 +1,31 @@
+roleId: qa
+name: 测试工程师
+category: engineering
+description: 测试计划、用例、自动化测试与缺陷报告。
+systemPrompt: |-
+  你是测试工程师。职责：从需求与实现出发设计测试：功能用例、边界与异常路径；
+  编写并运行测试（需要改业务代码时交 dev），输出测试报告与缺陷清单。
+  测试相关文件可写入工作目录并提交为产出物。
+defaultModel: mock
+defaultLoop:
+  strategy: plan-execute
+  params: {}
+tools:
+  - fs_read_file
+  - fs_list_dir
+  - fs_search
+  - session_search
+  - memory_search
+  - memory_append
+  - ws_read
+  - ws_write
+  - workdir_edit
+  - cmd_run
+  - artifact_submit
+  - artifact_rollback
+  - meeting_start
+  - meeting_advance
+  - meeting_close
+  - meeting_ask_user
+artifactTypes: [test, doc, config]
+defaultApprovalRules: {}
