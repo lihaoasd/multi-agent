@@ -1,39 +1,65 @@
 # Agent Haness · 本地多 Agent 软件开发协作平台
 
-> **当前状态：M0 工程骨架已落地（2026-09-08，编码启动）** —— 服务可运行（项目 CRUD/目录浏览/配置 API，见 [docs/plan/development.md](docs/plan/development.md) 分阶段执行计划）；设计文档见 [docs/README.md](docs/README.md)。
+> **当前状态：M0~M7 已交付（2026-09-08，编码完成轮次 1）；M8 质量收尾进行中。**
+> 代码可运行、86 用例测试全绿；详见 [docs/plan/development.md](docs/plan/development.md) 与 [docs/changes/](docs/changes/)。
 
 一个**本地运行**的软件开发协作平台：用户以"老板"身份，与一组可自由编排的 AI 研发角色（Agent）组成虚拟团队，通过**一对一会话**与**多方会议**协作，把软件项目从想法推进到可运行、可部署的产出物。
 
 平台定位是可扩展的"角色 + 团队 + 场景"引擎，首个内置场景为**软件开发**；角色模板、agent loop、模型均可配置与扩展，后续可套用到任意协作场景。
 
-## 核心特性（v0.2 需求基线）
+## 快速开始
 
-- **用户即老板，独立 PM Agent**：PM 负责进度协调与组织会议；MVP 中任务默认由你在 UI 创建/指派，PM 不直接派活（其结构化拆解工具 task_* 已实现但默认关闭，可按配置开启做 A/B 对比，见 PRD D15）；你始终可对任意 Agent 直接会话、委派、插话、审批。
-- **角色抽象可扩展**：系统角色库（PM/产品/架构/交互/UI/开发/测试/运维模板 + 用户自建）→ 项目内实例化组队；每个实例可配提示词、内置 agent loop（单轮直答/反思/计划-执行）与**独立模型**。
-- **Agent 可发起多人会议**：主持人是发起者，用户恒在会；会议**异步推进**、只沟通不干活，需用户拍板时**阻塞等待**，用户可随时插话；结束自动生成纪要回写记忆。
-- **Agent 单工**：同一 Agent 一次只在一个会话活动，状态（空闲/工作中/会议中/等待中）全程可见。
-- **会话日志与双层记忆**：每会话全量结构化日志（先盘后推）+ 滚动摘要 + 角色/项目长期记忆；支持关键词检索与中断恢复。
-- **工作区隔离 + 产出物提交制**：Agent 私有工作区存草稿，正式产出（文档/代码）经提交带署名版本进入你选定的**工作目录**（支持空目录或已有代码仓库），可回退、可审计。
-- **纯文件存储，项目即文件夹**：无数据库；运行时项目（配置/日志/记忆/工作区）+ 工作目录分离，拷贝即备份迁移，会话日志**不落**在工作目录。
-- **三栏工作台**：左 Agent 列表与状态 · 中会话窗口（聊天/会议/审批卡片）· 右会话列表与产出物/任务；另含项目列表、创建项目向导（选工作目录+组队）、角色库管理页。
-- **本地安全边界**：Agent 文件与命令活动限制在工作目录与私有区；高危命令需你审批，全程审计。
-- **多模型后端**：OpenAI 兼容 API（DeepSeek 等）/ Ollama / Mock（无 Key 即可全流程演示）。
+```bash
+npm install
+npm run dev        # 服务 :3000（含前端工作台 web/）；浏览器开 http://127.0.0.1:3000
+npm run test       # Vitest 全量（86 用例）
+npm run build && npm start   # 生产：tsc 编译后单端口运行
+```
+
+- 首次使用：点「新建项目」→ 填项目名与**工作目录（绝对路径）** → 勾选角色（PM/产品/开发…）→ 创建后即可与产品角色对话（默认 **Mock 模型**，无需 Key）。
+- 换真实模型：在 `config.yaml` 配置 `models.providers`（openai-compatible/Ollama），把角色实例的 `model` 指到 provider id；Key 经环境变量注入。
+- 默认绑定 127.0.0.1；被占用可改 `config.yaml server.port`，或用环境变量 `PORT` 覆盖。
+
+## 已实现能力（对应 v0.2 需求基线）
+
+| 模块 | 落地内容 |
+| --- | --- |
+| 角色库与组队 | 8 内置模板(YAML) + 自定义模板 CRUD(内置只读) + 项目内实例化(模板快照/停用保留数据) |
+| 会话与聊天 | user 会话骨架；消息/回合事件(seq/turn/turn_start/end)落盘；Mock/OpenAI/Ollama 网关；**WS 流式 chunk+commit、先盘后推**；重启恢复 |
+| Agent 运行时 | 单工占用 occupancy(runtime.state 落盘)；loop 按实例策略提示(direct/reflective/plan-execute) |
+| 工具与审批 | PolicyEngine 命令判定 + 虚拟路径 L0 边界 + 工具执行器(fs/ws/cmd_run) + 高危命令审批桥(approvals.jsonl，批准续跑/拒绝不执行) |
+| 产出物提交制 | 静态产物(ws→workdir 拷贝+sha256+版本快照 v<n>)；doc 门审批(只读预览)；回退按快照恢复；manifest 审计 |
+| 记忆与检索 | L3 记忆(全局/角色, active/superseded)；滚动摘要(summary 事件+summaryRefs)；中文 2-gram 倒排索引(可再生)+跨会话/记忆搜索 |
+| 会议 | queued/proposed/open/blocked_waiting_user/closed 状态机；成员接受转 open；**用户决策点阻塞→拍板继续**；结束纪要回写参与者与全局记忆 |
+| 工作台 | 无构建静态 SPA(web/)：项目向导、聊天(WS 流式)、审批、会议、产出物回退、记忆/纪要；项目导出 zip |
+| 存储 | 纯文件系统(JSON/JSONL/YAML)；无数据库；数据目录不入库，拷贝即迁移 |
+
+## 已知边界 / 待办（诚实清单）
+
+- **前端选型**：架构文档原定 React+Vite+AntD；本开发环境沙箱禁止 vite/esbuild 子进程，无法构建验证，前端暂为**无构建原生 ESM 静态页**（接口契约不变，可按 frontend/style.md 在非受限环境迁移 React 版）。
+- **代码受控编辑通道(code)**：`workdir_edit` + 任务级聚合(D14-⑧) 依赖任务系统与真实模型工具调用，未在此轮实现（静态产物 doc 通道已按 D13② 落地）；相关 REST/UI 待后续。
+- **任务系统**：轻量 task CRUD 与激活规则(D16-④/D17-①)、甲/乙模式开关未落地（乙模式 UI 指派为后续）。
+- **会议轮次引擎**：主持人逐成员点名发言、成员自主入会剧本、插话仲裁、`meeting_advance` 工具未实现；会议当前以用户驱动走通"发起→接受→拍板→结束→纪要"。
+- **Agent 主动工具循环**：Mock 模型为确定性文本回复，不产出工具调用；工具执行/审批以服务层提供并测试，真实模型多步工具调用链(M8 验收脚本)待真实 Key 环境验证。
+- **真实模型验收**：本环境无 API Key；OpenAI-compatible/Ollama Provider 已实现，需用户本机配置后按 prd §9 主路径验收。
+- 其余按各 `docs/changes/2026-09-08-mN-*.md` 修改记录的"遗留"节为准。
 
 ## 文档
 
 - 文档索引与术语表：[docs/README.md](docs/README.md)
 - 需求（PRD·决策表·验收脚本）：[docs/requirements/prd.md](docs/requirements/prd.md)
-- 设计：架构 / 数据存储 / Agent 运行时 / 会话 / 会议 / 记忆 / 工作区产出物（见索引）
-- 前端风格 / 接口草案 / 开发方案 / 测试计划 / 部署手册 / 修改记录（见索引）
+- 分阶段开发方案与验收清单：[docs/plan/development.md](docs/plan/development.md)
+- 设计：架构 / 数据存储 / Agent 运行时 / 会话 / 会议 / 记忆 / 工作区产出物 / 工具 / 沙箱（见索引）
+- 前端风格 / 接口草案 / 测试计划 / 部署手册 / 修改记录（见索引）
 
 ## 路线图
 
-- 文档评审：已完成（v0.2 基线 + D1~D18 决策 + 四轮评审，见 [docs/changes/](docs/changes/)）。
-- 编码：进行中，按 [docs/plan/development.md](docs/plan/development.md) 的 **M0~M8 里程碑 + 用户确认闸门** 逐阶段推进（当前：M0 工程骨架完成，待用户验证后进入 M1）；首个演示目标是"创建项目 → 与角色对话 → 产出物提交"闭环（Mock 模型）。
+- 文档评审：已完成（v0.2 基线 + D1~D18 决策 + 四轮评审）。
+- 编码：M0~M7 交付（工程骨架 → 组队 → 聊天 → 运行时/工具 → 产出物 → 记忆/检索 → 会议 → 工作台）；M8 质量收尾：测试补全、真实模型与 code 通道待非受限环境验证。
 - 场景化（远期）：把"角色库+团队编排+产出物类型+流程"打包为任意场景模板。
 
 ## 技术栈
 
-Node.js ≥ 20 · TypeScript · Fastify · React + Vite + Ant Design 5 · 纯文件存储（无 SQLite/外部 DB）· Vitest
+Node.js ≥ 20 · TypeScript(strict) · Fastify(HTTP/WS) · 前端无构建 ESM(React+Vite 迁移预留) · 纯文件存储(无 SQLite) · Vitest · 模型网关(Mock/OpenAI 兼容/Ollama)
 
 > 本 README 于 2026-09-08 按 v0.2 需求重写，替代旧 v1 构想（固定 7 角色顺序流水线方案已弃用，见 PRD §7 D9）。
