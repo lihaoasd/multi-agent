@@ -4,9 +4,12 @@
  */
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import websocket from '@fastify/websocket'
+import { join } from 'node:path'
 
 import { ErrorCodes, isAppError } from '../shared/errors.js'
 import { browseDirectory } from '../application/fs-browse/fs-browse-service.js'
+import { collectProjectFiles } from '../application/export/export-service.js'
+import AdmZip from 'adm-zip'
 import type { RoleTemplate } from '../shared/types/role.js'
 import type { Services } from '../application/composition.js'
 import { composeToolEnv } from '../application/composition.js'
@@ -40,6 +43,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerArtifactRoutes(app, svc)
   registerMemorySearchRoutes(app, svc)
   registerMeetingRoutes(app, svc)
+  registerExportRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
   registerWs(app, svc)
@@ -389,6 +393,20 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       minutes: await meetings.getMinutes(req.params.pid, req.params.mid),
     }),
   )
+}
+
+function registerExportRoutes(app: FastifyInstance, svc: Services): void {
+  const projectsRoot = join(svc.config.dataDir, 'projects')
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/export', async (req, reply) => {
+    const files = await collectProjectFiles(projectsRoot, req.params.pid)
+    const zip = new AdmZip()
+    for (const f of files) zip.addLocalFile(f.path, '', f.rel)
+    const buf = zip.toBuffer()
+    return reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${req.params.pid}.zip"`)
+      .send(buf)
+  })
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Haness</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <h1>Agent Haness</h1>
+      <div class="spacer"></div>
+      <button id="btn-new-project">新建项目</button>
+      <select id="project-select">
+        <option value="">（无项目）</option>
+      </select>
+    </header>
+
+    <div id="wizard" class="hidden card">
+      <h3>创建项目（向导：选目录 + 勾角色）</h3>
+      <label>项目名 <input id="w-name" placeholder="todo-app" /></label>
+      <label>工作目录（绝对路径）<input id="w-workdir" placeholder="D:/dev/todo-app" /></label>
+      <fieldset id="w-roles"><legend>角色</legend></fieldset>
+      <button id="btn-create">创建</button>
+      <button id="btn-wizard-close">取消</button>
+    </div>
+
+    <main id="layout" class="hidden">
+      <aside id="left">
+        <h4>团队</h4>
+        <ul id="team-list"></ul>
+        <h4>会话</h4>
+        <ul id="session-list"></ul>
+      </aside>
+      <section id="center">
+        <div id="session-header"></div>
+        <div id="messages"></div>
+        <form id="composer" class="hidden">
+          <textarea
+            id="msg-text"
+            rows="2"
+            placeholder="发消息给 Agent（支持 Markdown 文本）"
+          ></textarea>
+          <button id="btn-send">发送</button>
+        </form>
+      </section>
+      <aside id="right">
+        <h4>审批 <span id="approval-count" class="badge"></span></h4>
+        <ul id="approval-list"></ul>
+        <h4>会议</h4>
+        <div id="meeting-actions"></div>
+        <ul id="meeting-list"></ul>
+        <h4>产出物</h4>
+        <ul id="artifact-list"></ul>
+        <h4>记忆/纪要</h4>
+        <div id="memory-panel"></div>
+      </aside>
+    </main>
+
+    <div id="toast"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
