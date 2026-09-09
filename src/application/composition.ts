@@ -15,6 +15,9 @@ import { ApprovalService } from './approval/approval-service.js'
 import { ToolCoordinator } from './tools/tool-coordinator.js'
 import { OccupancyStore } from './dispatcher/occupancy-store.js'
 import { ArtifactService } from './artifact/artifact-service.js'
+import { MemoryStore } from './memory/memory-store.js'
+import { SummaryEngine } from './memory/summary-engine.js'
+import { SearchService } from './search/search-service.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
@@ -32,6 +35,8 @@ export interface Services {
   tools: ToolCoordinator
   occupancy: OccupancyStore
   artifacts: ArtifactService
+  memory: MemoryStore
+  search: SearchService
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -53,6 +58,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const sessionStore = new SessionStore(projectsRoot)
   const occupancy = new OccupancyStore(projectsRoot)
   const gateway = new ModelGateway({ models: config.models })
+  const memory = new MemoryStore(projectsRoot)
+  const summary = new SummaryEngine(sessionStore)
   const loop = new AgentLoopRunner({
     store: sessionStore,
     gateway,
@@ -72,7 +79,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
       const p = await projectService.get(pid)
       return p.name
     },
+    summary,
   )
+  const search = new SearchService(projectsRoot, sessionStore)
 
   const approvals = new ApprovalService(
     projectsRoot,
@@ -109,6 +118,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     tools,
     occupancy,
     artifacts,
+    memory,
+    search,
   }
 }
 

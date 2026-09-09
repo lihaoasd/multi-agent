@@ -38,6 +38,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerSessionRoutes(app, svc)
   registerApprovalRoutes(app, svc)
   registerArtifactRoutes(app, svc)
+  registerMemorySearchRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
   registerWs(app, svc)
@@ -258,6 +259,34 @@ function registerArtifactRoutes(app: FastifyInstance, svc: Services): void {
       return { artifact: rec }
     },
   )
+}
+
+function registerMemorySearchRoutes(app: FastifyInstance, svc: Services): void {
+  const { memory, search } = svc
+
+  app.get<{
+    Params: { pid: string }
+    Querystring: { q?: string; scope?: string; instanceId?: string; type?: string; limit?: string }
+  }>('/api/projects/:pid/search', async (req) => {
+    const q = req.query.q ?? ''
+    if (!q.trim()) return { q: '', sessions: [], memories: [] }
+    return search.search(req.params.pid, q)
+  })
+
+  // 记忆列表（只读浏览 MVP；M1 版本见 contract）
+  app.get<{
+    Params: { pid: string }
+    Querystring: { scope?: string; instanceId?: string; type?: string; limit?: string }
+  }>('/api/projects/:pid/memories', async (req) => {
+    const scope = req.query.scope === 'role' ? 'role' : 'global'
+    const entries = await memory.listActive(req.params.pid, {
+      scope,
+      instanceId: req.query.instanceId,
+      type: req.query.type as never,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    })
+    return { entries }
+  })
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {

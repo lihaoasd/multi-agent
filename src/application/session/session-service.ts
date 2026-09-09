@@ -7,6 +7,7 @@ import type { SessionMeta, SessionLogEvent } from '../../shared/types/session.js
 import { SessionStore } from './session-store.js'
 import type { EventBus } from '../../infra/bus/event-bus.js'
 import { AgentLoopRunner, type TurnContext } from '../agent-loop/loop-runner.js'
+import type { SummaryEngine } from '../memory/summary-engine.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 
 export interface SendMessageResult {
@@ -34,6 +35,7 @@ export class SessionService {
       instanceId: string,
     ) => Promise<TeamMemberConfig | null>,
     private readonly projectNameResolver: (projectId: string) => Promise<string>,
+    private readonly summary?: SummaryEngine,
   ) {}
 
   async listSessions(projectId: string): Promise<SessionMeta[]> {
@@ -136,9 +138,17 @@ export class SessionService {
     // 串行：前一个回合结束后再跑本次（若前一个仍在执行则排队）
     const promise = prev ? prev.promise.then(run) : run()
     this.pending.set(key, { promise })
-    void promise.finally(() => {
-      if (this.pending.get(key)?.promise === promise) this.pending.delete(key)
-    })
+    void promise
+      .then(async () => {
+        if (this.summary) {
+          const fresh = await this.store.tryReadMeta(projectId, sessionId)
+          if (fresh) await this.summary.maybeSummarize(fresh)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.pending.get(key)?.promise === promise) this.pending.delete(key)
+      })
 
     return { sessionId, seq: userEvent.seq, queued: true }
   }
