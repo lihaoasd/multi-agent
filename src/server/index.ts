@@ -48,6 +48,25 @@ async function bootstrap(cwd: string = process.cwd()): Promise<void> {
   const port = process.env.PORT ? Number(process.env.PORT) : cfgPort
   await app.listen({ host, port })
   logger.info(`Agent Haness 已启动: http://${host}:${port}  (前端: web/)`)
+
+  // 启动自检恢复（幂等，重启无损 data-storage §9）：会议排队槽位调度重建
+  restoreOnBoot(svc, logger).catch((err) => logger.warn('启动恢复扫描未完成: ' + String(err)))
+}
+
+/** 启动自检：对每个项目恢复排队会议槽位（queued → proposed，若槽空）。 */
+async function restoreOnBoot(
+  svc: import('../application/composition.js').Services,
+  log: ReturnType<typeof rootLogger>,
+): Promise<void> {
+  const projects = await svc.projectService.list()
+  for (const p of projects) {
+    try {
+      await svc.meetings.promoteQueuedIfFree(p.id)
+      log.info(`启动恢复: 项目 ${p.id} 会议槽位自检完成`)
+    } catch (e) {
+      log.warn(`启动恢复失败(项目 ${p.id}): ${String(e)}`)
+    }
+  }
 }
 
 async function readConfigFile(repoRoot: string): Promise<ConfigFileShape> {

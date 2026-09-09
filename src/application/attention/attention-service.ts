@@ -1,0 +1,56 @@
+/**
+ * 「需你处理」待办聚合（D17-③ 阻塞级三类之服务端汇总：会议拍板 / 高危命令与提交审批）。
+ * 供顶部待办条与 UI 角标使用；解除=对应原处操作后自动消失（不做第二份状态）。
+ */
+import { ApprovalService } from '../approval/approval-service.js'
+import { MeetingService, type MeetingRecord } from '../meeting/meeting-service.js'
+
+export interface AttentionItem {
+  kind: 'approval' | 'meeting'
+  id: string
+  title: string
+  detail: string
+  sessionId: string | null
+  at: string
+}
+
+export class AttentionService {
+  constructor(
+    private readonly approvals: ApprovalService,
+    private readonly meetings: MeetingService,
+  ) {}
+
+  async list(projectId: string): Promise<AttentionItem[]> {
+    const out: AttentionItem[] = []
+    const pending = await this.approvals.list(projectId, 'pending')
+    for (const a of pending) {
+      out.push({
+        kind: 'approval',
+        id: a.id,
+        title: `审批：${a.summary}`,
+        detail: `${a.actor} 发起的${a.kind}审批`,
+        sessionId: a.sessionId,
+        at: a.requestedAt,
+      })
+    }
+    const meetings = (await this.meetings.list(projectId)).filter(
+      (m) => m.state === 'blocked_waiting_user' || m.state === 'open',
+    )
+    for (const m of meetings) {
+      const dp = (m as unknown as MeetingRecord).meeting?.decisionPoints?.find(
+        (d) => d.status === 'pending',
+      )
+      if (dp) {
+        out.push({
+          kind: 'meeting',
+          id: dp.id,
+          title: `会议拍板：${m.id} 「${dp.question.slice(0, 60)}」`,
+          detail: `主持人 ${(m as unknown as MeetingRecord).meeting?.host} 请求你决定`,
+          sessionId: m.id,
+          at: dp.at,
+        })
+      }
+    }
+    return out.sort((a, b) => (a.at < b.at ? -1 : 1))
+  }
+}

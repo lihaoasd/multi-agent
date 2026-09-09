@@ -262,11 +262,12 @@ async function sendMessage() {
 async function refreshPanels() {
   if (!current.pid) return
   try {
-    const [a, m, ar, mem] = await Promise.all([
+    const [a, m, ar, mem, att] = await Promise.all([
       api(`/projects/${current.pid}/approvals?status=pending`),
       api(`/projects/${current.pid}/meetings`),
       api(`/projects/${current.pid}/artifacts`),
       api(`/projects/${current.pid}/memories?scope=global`),
+      api(`/projects/${current.pid}/needs-attention`),
     ])
     current.approvals = a.approvals ?? []
     current.meetings = m.meetings ?? []
@@ -275,6 +276,14 @@ async function refreshPanels() {
     renderMeetings()
     renderArtifacts()
     renderMemories(mem.entries ?? [])
+    const items = att.items ?? []
+    const wrap = $('#attention-wrap')
+    if (items.length) {
+      wrap.classList.remove('hidden')
+      $('#attention-count').textContent = items.length
+    } else {
+      wrap.classList.add('hidden')
+    }
   } catch {
     /* 面板刷新失败不打扰 */
   }

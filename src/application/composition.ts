@@ -21,6 +21,7 @@ import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
 import { TaskService } from './task/task-service.js'
 import { CodeEditStore } from './code-edit/code-edit-store.js'
+import { AttentionService } from './attention/attention-service.js'
 import { registerServiceTools } from './tools/service-tools.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
@@ -43,6 +44,7 @@ export interface Services {
   search: SearchService
   meetings: MeetingService
   tasks: TaskService
+  attention: AttentionService
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -156,6 +158,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
         })
     },
   )
+  const attention = new AttentionService(approvals, meetings)
 
   return {
     config,
@@ -174,6 +177,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     search,
     meetings,
     tasks,
+    attention,
   }
 }
 

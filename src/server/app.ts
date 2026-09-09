@@ -44,6 +44,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerMemorySearchRoutes(app, svc)
   registerMeetingRoutes(app, svc)
   registerTaskRoutes(app, svc)
+  registerAttentionRoute(app, svc)
   registerExportRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
@@ -490,6 +491,12 @@ function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
     )
     return { task }
   })
+}
+
+function registerAttentionRoute(app: FastifyInstance, svc: Services): void {
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/needs-attention', async (req) => ({
+    items: await svc.attention.list(req.params.pid),
+  }))
 }
 
 function registerBrowseRoutes(app: FastifyInstance): void {
