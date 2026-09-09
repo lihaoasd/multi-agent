@@ -2,7 +2,11 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { browseDirectory } from '../src/application/fs-browse/fs-browse-service.js'
+import {
+  browseDirectory,
+  getHomeAndDrives,
+  mkdirUnder,
+} from '../src/application/fs-browse/fs-browse-service.js'
 import { ErrorCodes } from '../src/shared/errors.js'
 import { makeTempDir } from './helpers.js'
 
@@ -58,6 +62,26 @@ describe('browseDirectory', () => {
     await writeFile(f, 'x')
     await expect(browseDirectory({ path: f })).rejects.toMatchObject({
       code: ErrorCodes.VALIDATION,
+    })
+  })
+})
+
+describe('目录选择器配套：home/盘符 与 新建文件夹', () => {
+  it('getHomeAndDrives 返回主目录与至少一个入口', async () => {
+    const r = await getHomeAndDrives()
+    expect(r.home.length).toBeGreaterThan(0)
+    expect(r.quick.length).toBeGreaterThanOrEqual(1)
+    expect(r.quick[0]).toBe(r.home)
+  })
+
+  it('mkdirUnder 创建成功、重复 409、非法名 400', async () => {
+    const p = await mkdirUnder(base, 'my-app')
+    expect(p.endsWith('my-app')).toBe(true)
+    await expect(mkdirUnder(base, 'my-app')).rejects.toMatchObject({ code: ErrorCodes.CONFLICT })
+    await expect(mkdirUnder(base, 'a/b')).rejects.toMatchObject({ code: ErrorCodes.VALIDATION })
+    await expect(mkdirUnder(base, '..')).rejects.toMatchObject({ code: ErrorCodes.VALIDATION })
+    await expect(mkdirUnder(join(base, 'no-such'), 'x')).rejects.toMatchObject({
+      code: ErrorCodes.NOT_FOUND,
     })
   })
 })

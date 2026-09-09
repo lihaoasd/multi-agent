@@ -1,10 +1,11 @@
 /**
  * 目录浏览（用户级 API，绕过 Agent 沙箱）。
  * 供创建向导选择工作目录：本机全盘浏览。默认过滤隐藏与已知系统目录、限制深度（M8 定稿）。
- * api/contract.md §2 项目区末行。
+ * api/contract.md §2 项目区末行；另含用户级 home/驱动器探测 与 目录创建（供向导新建文件夹）。
  */
 import { isAbsolute, join } from 'node:path'
 import { promises as fs } from 'node:fs'
+import { homedir } from 'node:os'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
 
@@ -116,4 +117,70 @@ export async function browseDirectory(options: BrowseOptions): Promise<BrowseRes
       return null
     }
   }
+}
+
+/** 用户主目录与可用盘符（Windows 常见快捷入口；供向导「常用位置」）。 */
+export async function getHomeAndDrives(): Promise<{ home: string; quick: string[] }> {
+  const home = homedir()
+  const quick = [home]
+  if (process.platform === 'win32') {
+    const letters = 'CDEFGH'.split('')
+    for (const l of letters) {
+      const root = `${l}:\\`
+      if (root.toUpperCase() === home.slice(0, 2).toUpperCase()) continue
+      try {
+        await fs.access(root)
+        quick.push(root)
+      } catch {
+        // 盘符不存在则跳过
+      }
+    }
+  } else {
+    quick.push('/')
+  }
+  return { home, quick: [...new Set(quick)] }
+}
+
+const NAME_FORBIDDEN = /[\\/:*?"<>|]/
+
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) < 32) return true
+  }
+  return false
+}
+
+/**
+ * 用户级创建目录：在已存在目录 parent 下新建 name（仅允许一个合法名称段）。
+ * 返回新目录绝对路径；已存在抛 ERR_CONFLICT。
+ */
+export async function mkdirUnder(parent: string, name: string): Promise<string> {
+  if (!parent || !isAbsolute(parent)) {
+    throw new AppError(ErrorCodes.VALIDATION, '父目录必须是绝对路径')
+  }
+  const trimmed = name.trim()
+  if (
+    !trimmed ||
+    trimmed === '.' ||
+    trimmed === '..' ||
+    NAME_FORBIDDEN.test(trimmed) ||
+    hasControlChar(trimmed)
+  ) {
+    throw new AppError(ErrorCodes.VALIDATION, '目录名包含非法字符或为空')
+  }
+  if (trimmed.length > 120) throw new AppError(ErrorCodes.VALIDATION, '目录名过长')
+  const parentStat = await fs.stat(parent).catch(() => null)
+  if (!parentStat || !parentStat.isDirectory()) {
+    throw new AppError(ErrorCodes.NOT_FOUND, `父目录不存在或不是目录: ${parent}`)
+  }
+  const target = join(parent, trimmed)
+  try {
+    await fs.mkdir(target)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new AppError(ErrorCodes.CONFLICT, `目录已存在: ${trimmed}`)
+    }
+    throw err
+  }
+  return target
 }

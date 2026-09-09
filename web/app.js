@@ -253,8 +253,9 @@ function bindGlobal() {
 
   // 工作目录：文件夹选择器（服务端 fs/browse 逐层浏览）
   $('#btn-pick-dir').addEventListener('click', () => {
-    const cur = $('#w-workdir').value.trim() || 'C:\\'
-    openDirPicker(cur)
+    const remembered = localStorage.getItem('haness_last_dir')
+    const start = remembered || $('#w-workdir').value.trim() || 'C:\\'
+    openDirPicker(start)
   })
   $('#dp-go').addEventListener('click', () => loadDir($('#dp-path').value.trim()))
   $('#dp-path').addEventListener('keydown', (e) => {
@@ -264,26 +265,56 @@ function bindGlobal() {
     }
   })
   $('#dp-up').addEventListener('click', () => loadDir(dirParent(dirState.cur)))
+  $('#dp-new').addEventListener('click', newDirHere)
   $('#dp-use').addEventListener('click', () => {
     $('#w-workdir').value = dirState.cur
+    localStorage.setItem('haness_last_dir', dirState.cur)
     $('#dir-modal').classList.add('hidden')
   })
   $('#dp-close').addEventListener('click', () => $('#dir-modal').classList.add('hidden'))
 }
 
 const dirState = { cur: '' }
+let quickDirs = []
 
-function openDirPicker(path) {
+async function openDirPicker(path) {
   $('#dir-modal').classList.remove('hidden')
-  loadDir(path)
+  renderQuickBar()
+  loadDir(path || 'C:\\')
 }
 
-/** 加载并渲染某目录的直接子目录/文件（可逐层进入）。 */
+/** 常用位置快捷条（主目录 + 可用盘符 + 最近使用的目录）。 */
+async function renderQuickBar() {
+  const box = $('#dp-quick')
+  box.innerHTML = '<span class="who">加载常用位置…</span>'
+  try {
+    if (!quickDirs.length) {
+      const d = await api('/fs/home')
+      quickDirs = d.quick ?? []
+    }
+    const last = localStorage.getItem('haness_last_dir')
+    const chips = [...quickDirs]
+    if (last && !chips.some((x) => x.toLowerCase() === last.toLowerCase())) chips.push(last)
+    box.innerHTML = ''
+    for (const p of chips) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = 'chip'
+      b.textContent = p
+      b.onclick = () => loadDir(p)
+      box.appendChild(b)
+    }
+  } catch (e) {
+    box.innerHTML = '<span class="who">常用位置加载失败</span>'
+  }
+}
+
+/** 加载并渲染某目录（子目录可单击进入、文件灰显），含面包屑式当前路径。 */
 async function loadDir(path) {
   if (!path) return
   dirState.cur = path
   $('#dp-path').value = path
-  $('#dp-current').textContent = path
+  renderCrumb(path)
   const list = $('#dp-list')
   list.innerHTML = '<li class="who">加载中…</li>'
   try {
@@ -295,8 +326,11 @@ async function loadDir(path) {
         const a = document.createElement('a')
         a.href = 'javascript:void(0)'
         a.textContent = `📁 ${e.name}`
+        a.title = e.path
         a.onclick = () => loadDir(e.path)
         li.appendChild(a)
+        // 双击条目 = 进入（更快的触达方式）
+        li.addEventListener('dblclick', () => loadDir(e.path))
       } else {
         li.textContent = `📄 ${e.name}`
         li.className = 'file'
@@ -304,16 +338,72 @@ async function loadDir(path) {
       list.appendChild(li)
     }
     if (!(d.entries ?? []).length) {
-      list.innerHTML = '<li class="who">（空目录或不可访问）</li>'
+      list.innerHTML = '<li class="who">（空目录）</li>'
     }
   } catch (e) {
     list.innerHTML = '<li class="who">访问失败：' + escapeHtml(e.message) + '</li>'
   }
 }
 
+/** 当前路径分段面包屑（点某段跳回该层级）。 */
+function renderCrumb(p) {
+  const box = $('#dp-current')
+  box.innerHTML = ''
+  const sep = /^[A-Za-z]:/.test(p) || p.startsWith('\\\\') ? '\\' : '/'
+  const parts = p.split(/[\\/]+/).filter(Boolean)
+  const segs = []
+  let prefix = ''
+  if (p === '/') {
+    segs.push({ label: '/', path: '/' })
+  } else if (p.startsWith('\\\\')) {
+    prefix = '\\\\' + (parts[0] ?? '')
+    segs.push({ label: prefix, path: prefix })
+    parts.shift()
+  } else if (/^[A-Za-z]:/.test(p)) {
+    prefix = parts.shift() + '\\'
+    segs.push({ label: prefix, path: prefix })
+  }
+  for (const s of parts) {
+    const path = prefix ? prefix + s : s
+    segs.push({ label: s, path })
+    prefix = path + sep
+  }
+  segs.forEach((seg, i) => {
+    const crumb = document.createElement('a')
+    crumb.href = 'javascript:void(0)'
+    crumb.textContent = seg.label
+    crumb.className = i === segs.length - 1 ? 'active' : ''
+    if (i < segs.length - 1) {
+      crumb.onclick = () => loadDir(seg.path)
+    }
+    box.appendChild(crumb)
+    if (i < segs.length - 1) {
+      const s = document.createElement('span')
+      s.className = 'sep'
+      s.textContent = ' › '
+      box.appendChild(s)
+    }
+  })
+}
+
+/** 在当前目录下新建文件夹并进入（用户级 fs/mkdir）。 */
+async function newDirHere() {
+  const parent = dirState.cur
+  const name = prompt('输入新文件夹名称：', '')
+  if (!name || !name.trim()) return
+  try {
+    const d = await api('/fs/mkdir', 'POST', { parent, name: name.trim() })
+    toast('已创建文件夹')
+    loadDir(d.path)
+  } catch (e) {
+    toast(e.message)
+  }
+}
+
 function dirParent(p) {
   const norm = p.replace(/[\\/]+$/, '')
   if (/^[A-Za-z]:$/.test(norm)) return norm + '\\' // 盘符根保持不变
+  if (p === '/') return '/'
   const i = Math.max(norm.lastIndexOf('\\'), norm.lastIndexOf('/'))
   if (i <= 0) return norm
   return norm.slice(0, i)

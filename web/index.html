@@ -92,14 +92,17 @@
     <div id="dir-modal" class="modal hidden">
       <div class="modal-box card">
         <h3>选择工作目录</h3>
+        <div class="dp-quick" id="dp-quick"></div>
         <div class="inline-row">
-          <input id="dp-path" placeholder="输入绝对路径后回车，如 C:\ 或 D:\" />
+          <input id="dp-path" placeholder="输入或粘贴绝对路径，回车跳转" />
           <button type="button" id="dp-go">跳转</button>
           <button type="button" id="dp-up">上级</button>
         </div>
-        <div id="dp-current" class="who"></div>
+        <div id="dp-current" class="dp-crumb"></div>
         <ul id="dp-list" class="dp-list"></ul>
         <div class="row">
+          <button type="button" id="dp-new">＋ 新建文件夹…</button>
+          <span class="spacer"></span>
           <button id="dp-use" class="primary">选择此目录</button>
           <button id="dp-close">取消</button>
         </div>

@@ -7,7 +7,11 @@ import websocket from '@fastify/websocket'
 import { join } from 'node:path'
 
 import { ErrorCodes, isAppError } from '../shared/errors.js'
-import { browseDirectory } from '../application/fs-browse/fs-browse-service.js'
+import {
+  browseDirectory,
+  getHomeAndDrives,
+  mkdirUnder,
+} from '../application/fs-browse/fs-browse-service.js'
 import { collectProjectFiles } from '../application/export/export-service.js'
 import AdmZip from 'adm-zip'
 import type { RoleTemplate } from '../shared/types/role.js'
@@ -526,6 +530,19 @@ function registerBrowseRoutes(app: FastifyInstance): void {
       return result
     },
   )
+
+  // 用户主目录与常用盘符（向导快捷入口）
+  app.get('/api/fs/home', async () => getHomeAndDrives())
+
+  // 用户级新建目录（向导「新建文件夹」，父目录必须已存在）
+  app.post<{ Body: { parent?: string; name?: string } }>('/api/fs/mkdir', async (req, reply) => {
+    const b = req.body ?? {}
+    if (!b.parent || !b.name) {
+      return reply.code(400).send({ code: 'ERR_VALIDATION', message: 'parent/name 必填' })
+    }
+    const path = await mkdirUnder(b.parent, b.name)
+    return reply.code(201).send({ path })
+  })
 }
 
 function registerConfigRoutes(app: FastifyInstance, svc: Services): void {
