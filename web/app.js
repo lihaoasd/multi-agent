@@ -112,12 +112,16 @@ function setExportVisible(visible) {
 
 function bindGlobal() {
   $('#btn-home').addEventListener('click', () => showProjectsView())
-  $('#btn-new-project').addEventListener('click', async () => {
+  $('#btn-new-project').addEventListener('click', loadRolePicker)
+  // 每次打开弹窗都重新拉角色（容错：失败 toast，避免空列表）
+  async function loadRolePicker() {
     const w = $('#wizard')
     w.classList.remove('hidden')
-    if ($('#w-roles').childElementCount === 0) {
+    const box = $('#w-roles')
+    box.innerHTML = '<li class="who">加载角色…</li>'
+    try {
       const d = await api('/roles')
-      const box = $('#w-roles')
+      box.innerHTML = ''
       for (const r of d.roles ?? []) {
         const lab = document.createElement('label')
         lab.className = 'role-check'
@@ -129,11 +133,20 @@ function bindGlobal() {
         lab.appendChild(document.createTextNode(`${r.name}(${r.roleId})`))
         box.appendChild(lab)
       }
+      if (!(d.roles ?? []).length) {
+        box.innerHTML = '<li class="who">暂无角色模板（检查服务端 src/shared/roles）</li>'
+      }
+    } catch (e) {
+      box.innerHTML = '<li class="who">角色加载失败：' + escapeHtml(e.message) + '</li>'
     }
-  })
+  }
   $('#btn-wizard-close').addEventListener('click', () => $('#wizard').classList.add('hidden'))
   $('#btn-create').addEventListener('click', async () => {
     const team = $$('#w-roles input:checked').map((c) => ({ roleTemplateId: c.value }))
+    if (!team.length) {
+      toast('请至少勾选一个角色（如 产品/开发）')
+      return
+    }
     try {
       const d = await api('/projects', 'POST', {
         name: $('#w-name').value.trim(),
@@ -185,6 +198,19 @@ async function openProject(pid) {
   await refreshPanels()
   const userSid = current.sessions.find((s) => s.type === 'user')?.id
   if (userSid) await openSession(pid, userSid)
+  else renderEmptyCenter('该项目暂无角色实例。请在左侧“团队”处点击 +开发/+产品 添加角色。')
+}
+
+/** 中央区空态提示（无会话/无角色时）。 */
+function renderEmptyCenter(text) {
+  $('#composer').classList.add('hidden')
+  $('#session-header').textContent = '未打开会话'
+  const box = $('#messages')
+  box.innerHTML = ''
+  const div = document.createElement('div')
+  div.className = 'empty'
+  div.textContent = text
+  box.appendChild(div)
 }
 
 function renderTeam() {
@@ -195,6 +221,46 @@ function renderTeam() {
     li.textContent = `${m.displayName} [${m.instanceId}]${m.enabled ? '' : '（停用）'}`
     ul.appendChild(li)
   }
+  if (!current.team.length) {
+    const li = document.createElement('li')
+    li.className = 'who'
+    li.textContent = '（暂无角色）'
+    ul.appendChild(li)
+    // 便捷补加常用角色
+    for (const r of [
+      ['pm', 'PM'],
+      ['product', '产品'],
+      ['dev', '开发'],
+    ]) {
+      const b = document.createElement('button')
+      b.textContent = `+${r[1]}`
+      b.onclick = async () => {
+        try {
+          await api(`/projects/${current.pid}/team`, 'POST', { roleTemplateId: r[0] })
+          toast(`已添加 ${r[1]}`)
+          await reloadProjectView()
+        } catch (e) {
+          toast(e.message)
+        }
+      }
+      ul.appendChild(b)
+    }
+  }
+}
+
+/** 重载项目内团队/会话并回默认会话（加成员后调用）。 */
+async function reloadProjectView() {
+  const [team, sessions] = await Promise.all([
+    api(`/projects/${current.pid}/team`),
+    api(`/projects/${current.pid}/sessions`),
+  ])
+  current.team = team.team ?? []
+  current.sessions = sessions.sessions ?? []
+  renderTeam()
+  renderSessions()
+  await refreshPanels()
+  const userSid = current.sessions.find((s) => s.type === 'user')?.id
+  if (userSid) await openSession(current.pid, userSid)
 }
 
 function renderSessions() {
