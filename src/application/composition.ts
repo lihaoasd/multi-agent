@@ -111,6 +111,18 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     async (pid, mid, instanceId, prompt) => {
       await sessionService.runAgentTurn(pid, mid, instanceId, { prompt })
     },
+    // D17-⑦ 纪要转出任务（creator=user，来源=本会议）
+    async (pid, input) => {
+      const t = await tasks.create({
+        projectId: pid,
+        title: input.title,
+        desc: input.desc,
+        creator: 'user',
+        assignee: input.assignee,
+        sessionId: input.sessionId,
+      })
+      return { id: t.id }
+    },
   )
 
   const approvals = new ApprovalService(

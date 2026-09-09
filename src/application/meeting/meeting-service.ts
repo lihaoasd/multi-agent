@@ -62,6 +62,10 @@ export class MeetingService {
       instanceId: string,
       prompt?: string,
     ) => Promise<void>,
+    private readonly taskCreate?: (
+      projectId: string,
+      input: { title: string; desc: string; assignee: string; sessionId: string },
+    ) => Promise<{ id: string }>,
   ) {}
 
   async list(projectId: string): Promise<MeetingRecord[]> {
@@ -376,6 +380,29 @@ export class MeetingService {
     if (rec.state !== 'closed') throw new AppError(ErrorCodes.CONFLICT, '会议未结束，无法生成纪要')
     await this.generateMinutes(projectId, meetingId)
     return { text: await this.renderMinutes(projectId, meetingId) }
+  }
+
+  /**
+   * 纪要待办转出任务（D17-⑦ 一步化）：标题=待办摘要、受派者预填(可改)、
+   * 来源自动挂本会议、creator=user；desc 附纪要正文。
+   */
+  async createTaskFromMinutes(
+    projectId: string,
+    meetingId: string,
+    input: { title?: string; assignee: string },
+  ): Promise<{ id: string; title: string }> {
+    const rec = await this.get(projectId, meetingId)
+    if (rec.state !== 'closed') throw new AppError(ErrorCodes.CONFLICT, '会议未结束，无法转出任务')
+    if (!this.taskCreate) throw new AppError(ErrorCodes.INTERNAL, '任务创建器未注入')
+    const minutes = await this.renderMinutes(projectId, meetingId)
+    const title = (input.title?.trim() || `[纪要] ${rec.meeting.topic} 待办`).slice(0, 120)
+    const task = await this.taskCreate(projectId, {
+      title,
+      desc: `来源会议 ${meetingId} 的纪要转出任务\n${minutes}`,
+      assignee: input.assignee,
+      sessionId: meetingId,
+    })
+    return { id: task.id, title }
   }
 
   /** 结束会议：置 minutesPending → 生成纪要（可重放派生视图）→ 回写记忆。 */

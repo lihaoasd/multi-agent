@@ -69,6 +69,22 @@ export class AgentLoopRunner {
       sender: ctx.member.instanceId,
       payload: { turnId: `${ctx.sessionId}:${turn}`, loopStep: 'act' },
     })
+    // plan-execute：回合开始即落计划/进度事件（data-storage §4.2 断点恢复依据；
+    // MVP Mock 单段执行，stepIndex 0）
+    if ((ctx.member.loop?.strategy ?? 'direct') === 'plan-execute') {
+      const planEvent = await store.appendEvent(meta, {
+        kind: 'plan',
+        sender: ctx.member.instanceId,
+        payload: {
+          turnId: `${ctx.sessionId}:${turn}`,
+          planId: `${ctx.sessionId}:${turn}:p`,
+          steps: [{ step: 1, title: '执行任务并汇报' }],
+          stepIndex: 1,
+          status: 'executing',
+        },
+      })
+      this.opts.bus.emitLogEvent(ctx.projectId, planEvent)
+    }
     this.opts.bus.emitSessionUpdated(ctx.projectId, ctx.sessionId, {
       state: meta.state,
       lastTurn: turn,

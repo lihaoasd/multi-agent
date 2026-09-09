@@ -429,6 +429,20 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       minutes: await meetings.getMinutes(req.params.pid, req.params.mid),
     }),
   )
+
+  // D17-⑦ 纪要待办转出任务（一步化：勾选即建）
+  app.post<{
+    Params: { pid: string; mid: string }
+    Body: { title?: string; assignee?: string }
+  }>('/api/projects/:pid/meetings/:mid/minutes/tasks', async (req) => {
+    const b = req.body ?? {}
+    if (!b.assignee) return { code: 'ERR_VALIDATION', message: 'assignee 必填' }
+    const task = await meetings.createTaskFromMinutes(req.params.pid, req.params.mid, {
+      title: b.title,
+      assignee: b.assignee,
+    })
+    return { task }
+  })
 }
 
 function registerExportRoutes(app: FastifyInstance, svc: Services): void {
