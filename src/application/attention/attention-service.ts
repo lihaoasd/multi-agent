@@ -12,6 +12,10 @@ export interface AttentionItem {
   detail: string
   sessionId: string | null
   at: string
+  /** 原地操作引用：审批=approvalId；会议拍板=meetingId+questionId */
+  approvalId?: string
+  meetingId?: string
+  questionId?: string
 }
 
 export class AttentionService {
@@ -31,6 +35,7 @@ export class AttentionService {
         detail: `${a.actor} 发起的${a.kind}审批`,
         sessionId: a.sessionId,
         at: a.requestedAt,
+        approvalId: a.id,
       })
     }
     const meetings = (await this.meetings.list(projectId)).filter(
@@ -48,6 +53,8 @@ export class AttentionService {
           detail: `主持人 ${(m as unknown as MeetingRecord).meeting?.host} 请求你决定`,
           sessionId: m.id,
           at: dp.at,
+          meetingId: m.id,
+          questionId: dp.id,
         })
       }
     }

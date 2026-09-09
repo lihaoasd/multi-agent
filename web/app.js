@@ -109,11 +109,27 @@ function bindGlobal() {
       sendMessage()
     }
   })
+
+  // 项目导出 zip
+  $('#btn-export').addEventListener('click', () => {
+    if (!current.pid) return
+    window.location.href = `/api/projects/${current.pid}/export`
+  })
+  // 「需你处理」弹窗（原地操作）
+  $('#btn-attention').addEventListener('click', openAttentionModal)
+  $('#btn-attention-close').addEventListener('click', () =>
+    $('#attention-modal').classList.add('hidden'),
+  )
+}
+
+function setExportVisible(visible) {
+  $('#btn-export').classList.toggle('hidden', !visible)
 }
 
 async function openProject(pid) {
   current.pid = pid
   $('#project-select').value = pid
+  setExportVisible(true)
   connectWs(pid)
   const [team, sessions] = await Promise.all([
     api(`/projects/${pid}/team`),
@@ -262,20 +278,23 @@ async function sendMessage() {
 async function refreshPanels() {
   if (!current.pid) return
   try {
-    const [a, m, ar, mem, att] = await Promise.all([
+    const [a, m, ar, mem, att, tk] = await Promise.all([
       api(`/projects/${current.pid}/approvals?status=pending`),
       api(`/projects/${current.pid}/meetings`),
       api(`/projects/${current.pid}/artifacts`),
       api(`/projects/${current.pid}/memories?scope=global`),
       api(`/projects/${current.pid}/needs-attention`),
+      api(`/projects/${current.pid}/tasks`),
     ])
     current.approvals = a.approvals ?? []
     current.meetings = m.meetings ?? []
     current.artifacts = ar.artifacts ?? []
+    current.tasks = tk.tasks ?? []
     renderApprovals()
     renderMeetings()
     renderArtifacts()
     renderMemories(mem.entries ?? [])
+    renderTasks()
     const items = att.items ?? []
     const wrap = $('#attention-wrap')
     if (items.length) {
@@ -287,6 +306,110 @@ async function refreshPanels() {
   } catch {
     /* 面板刷新失败不打扰 */
   }
+}
+
+function renderTasks() {
+  const ul = $('#task-list')
+  ul.innerHTML = ''
+  const tasks = current.tasks ?? []
+  if (!tasks.length) return
+  for (const t of tasks.slice(0, 12)) {
+    const li = document.createElement('div')
+    li.className = 'task-item'
+    const title = document.createElement('span')
+    title.textContent = `${t.title} → ${t.assignee}`
+    title.title = `${t.id}\n${t.desc ?? ''}`
+    const state = document.createElement('span')
+    state.className = 'state'
+    state.textContent = t.state
+    li.appendChild(state)
+    li.appendChild(title)
+    if (t.state === 'todo') {
+      li.appendChild(actionBtn('开工', async () => setTask(t, 'in_progress')))
+    } else if (t.state === 'in_progress') {
+      li.appendChild(actionBtn('完成', async () => setTask(t, 'done')))
+      li.appendChild(actionBtn('终止', async () => setTask(t, 'terminated')))
+    }
+    ul.appendChild(li)
+  }
+  function actionBtn(label, fn) {
+    const b = document.createElement('button')
+    b.textContent = label
+    b.onclick = async () => {
+      try {
+        await fn()
+        toast('任务状态已更新')
+        await refreshPanels()
+      } catch (e) {
+        toast(e.message)
+      }
+    }
+    return b
+  }
+}
+
+async function setTask(t, state) {
+  await api(`/projects/${current.pid}/tasks/${t.id}`, 'PATCH', { state, actor: 'user' })
+}
+
+async function openAttentionModal() {
+  const d = await api(`/projects/${current.pid}/needs-attention`)
+  const items = d.items ?? []
+  const ul = $('#attention-items')
+  ul.innerHTML = ''
+  for (const it of items) {
+    const li = document.createElement('li')
+    const title = document.createElement('span')
+    title.className = 'att-title'
+    title.textContent = `[${it.kind === 'approval' ? '审批' : '会议'}] ${it.title}`
+    li.appendChild(title)
+    if (it.kind === 'approval') {
+      const ok = document.createElement('button')
+      ok.className = 'primary'
+      ok.textContent = '批准'
+      ok.onclick = async () => {
+        await api(`/projects/${current.pid}/approvals/${it.approvalId}/decide`, 'POST', {
+          decision: 'approved',
+        })
+        toast('已批准')
+        await refreshPanels()
+        openAttentionModal()
+      }
+      const no = document.createElement('button')
+      no.textContent = '拒绝'
+      no.onclick = async () => {
+        await api(`/projects/${current.pid}/approvals/${it.approvalId}/decide`, 'POST', {
+          decision: 'rejected',
+        })
+        toast('已拒绝')
+        await refreshPanels()
+        openAttentionModal()
+      }
+      li.appendChild(ok)
+      li.appendChild(no)
+    } else if (it.kind === 'meeting') {
+      const ok = document.createElement('button')
+      ok.className = 'primary'
+      ok.textContent = '拍板：批准'
+      ok.onclick = async () => {
+        await api(`/projects/${current.pid}/meetings/${it.meetingId}/decision`, 'POST', {
+          questionId: it.questionId,
+          text: '批准',
+        })
+        toast('已拍板')
+        await refreshPanels()
+        openAttentionModal()
+      }
+      li.appendChild(ok)
+    }
+    ul.appendChild(li)
+  }
+  if (!items.length) {
+    const empty = document.createElement('li')
+    empty.textContent = '（暂无待办）'
+    ul.appendChild(empty)
+  }
+  $('#attention-modal').classList.remove('hidden')
 }
 
 function renderApprovals() {

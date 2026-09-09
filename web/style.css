@@ -170,10 +170,59 @@ li.active {
   border-radius: 8px;
   opacity: 0;
   transition: opacity 0.3s;
+  z-index: 50;
 }
 #toast.show {
   opacity: 1;
 }
+button.ghost {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  padding: 4px 8px;
+  font-size: inherit;
+}
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.modal-box {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px;
+}
+#attention-items li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px dashed var(--line);
+  padding: 6px 0;
+}
+#attention-items .att-title {
+  flex: 1;
+}
+.task-item {
+  border-bottom: 1px dashed var(--line);
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.task-item .state {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 74px;
+}
+
 #wizard.card {
   max-width: 520px;
   margin: 20px auto;
