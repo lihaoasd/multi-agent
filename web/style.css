@@ -223,6 +223,80 @@ button.ghost {
   min-width: 74px;
 }
 
+/* 页 1：项目列表 */
+#projects-view {
+  max-width: 1080px;
+  margin: 24px auto;
+  padding: 0 20px;
+}
+.page-head h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+.page-head .muted {
+  margin: 0 0 16px;
+}
+#project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.project-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.project-card .project-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+.project-card .project-desc {
+  color: var(--muted);
+  font-size: 13px;
+  flex: 1;
+}
+.project-card button {
+  align-self: flex-start;
+}
+.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 0;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+/* 顶栏面包屑 */
+#btn-home {
+  cursor: pointer;
+}
+.crumb {
+  color: var(--muted);
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+/* 弹窗内布局 */
+.modal-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal-box label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.modal-box .row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 #wizard.card {
   max-width: 520px;
   margin: 20px auto;

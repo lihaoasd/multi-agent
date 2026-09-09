@@ -37,38 +37,85 @@ function toast(msg) {
 }
 
 async function boot() {
-  await refreshProjects()
   bindGlobal()
-  const first = projects[0]
-  if (first) await openProject(first.id)
+  await showProjectsView()
 }
 
-async function refreshProjects() {
+/** 页 1：项目列表视图（离开当前项目、断开 WS）。 */
+async function showProjectsView() {
+  current.pid = null
+  current.sessionId = null
+  if (ws) {
+    ws.onclose = null
+    ws.close()
+    ws = null
+  }
+  $('#layout').classList.add('hidden')
+  $('#projects-view').classList.remove('hidden')
+  $('#current-project').classList.add('hidden')
+  $('#current-project').textContent = ''
+  setExportVisible(false)
+  $('#attention-wrap').classList.add('hidden')
+  $('#attention-modal').classList.add('hidden')
+  await refreshProjectList()
+}
+
+/** 拉取并渲染项目列表卡片。 */
+async function refreshProjectList() {
   try {
     const d = await api('/projects')
     projects = d.projects ?? []
-    const sel = $('#project-select')
-    sel.innerHTML = ''
+    const grid = $('#project-grid')
+    grid.innerHTML = ''
     for (const p of projects) {
-      const o = document.createElement('option')
-      o.value = p.id
-      o.textContent = p.name
-      sel.appendChild(o)
+      const card = document.createElement('div')
+      card.className = 'project-card'
+      const name = document.createElement('div')
+      name.className = 'project-name'
+      name.textContent = p.name
+      const meta = document.createElement('div')
+      meta.className = 'who'
+      meta.textContent = `${p.team?.length ?? 0} 个角色 · ${(p.workdir ?? '').slice(0, 60)}`
+      const desc = document.createElement('div')
+      desc.className = 'project-desc'
+      desc.textContent = p.description || ''
+      const enter = document.createElement('button')
+      enter.className = 'primary'
+      enter.textContent = '进入'
+      enter.onclick = () => enterProject(p.id)
+      card.appendChild(name)
+      card.appendChild(meta)
+      if (p.description) card.appendChild(desc)
+      card.appendChild(enter)
+      grid.appendChild(card)
     }
-    $('#layout').classList.remove('hidden')
+    $('#project-empty').classList.toggle('hidden', projects.length > 0)
   } catch (e) {
     toast('加载项目失败: ' + e.message)
   }
 }
 
+/** 页 2：进入某项目的会话工作台。 */
+async function enterProject(pid) {
+  const p = projects.find((x) => x.id === pid)
+  $('#current-project').textContent = p ? ` / ${p.name}` : ` / ${pid}`
+  $('#current-project').classList.remove('hidden')
+  $('#projects-view').classList.add('hidden')
+  $('#layout').classList.remove('hidden')
+  setExportVisible(true)
+  await openProject(pid)
+}
+
+function setExportVisible(visible) {
+  $('#btn-export').classList.toggle('hidden', !visible)
+}
+
 function bindGlobal() {
-  $('#project-select').addEventListener('change', async (e) => {
-    if (e.target.value) await openProject(e.target.value)
-  })
+  $('#btn-home').addEventListener('click', () => showProjectsView())
   $('#btn-new-project').addEventListener('click', async () => {
     const w = $('#wizard')
-    w.classList.toggle('hidden')
-    if (!w.classList.contains('hidden') && $('#w-roles').childElementCount === 0) {
+    w.classList.remove('hidden')
+    if ($('#w-roles').childElementCount === 0) {
       const d = await api('/roles')
       const box = $('#w-roles')
       for (const r of d.roles ?? []) {
@@ -93,10 +140,12 @@ function bindGlobal() {
         workdir: $('#w-workdir').value.trim(),
         team,
       })
-      toast(`已创建项目 ${d.project.name}`)
+      toast(`已创建项目 ${d.project.name}，正在进入…`)
       $('#wizard').classList.add('hidden')
-      await refreshProjects()
-      await openProject(d.project.id)
+      $('#w-name').value = ''
+      $('#w-workdir').value = ''
+      await refreshProjectList()
+      await enterProject(d.project.id)
     } catch (e) {
       toast(e.message)
     }
@@ -122,14 +171,8 @@ function bindGlobal() {
   )
 }
 
-function setExportVisible(visible) {
-  $('#btn-export').classList.toggle('hidden', !visible)
-}
-
 async function openProject(pid) {
   current.pid = pid
-  $('#project-select').value = pid
-  setExportVisible(true)
   connectWs(pid)
   const [team, sessions] = await Promise.all([
     api(`/projects/${pid}/team`),
