@@ -46,9 +46,17 @@ export function createOpenAiCompatibleProvider(id: string): ModelProvider {
             const data = t.slice(5).trim()
             if (data === '[DONE]') return
             try {
-              const j = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-              const delta = j.choices?.[0]?.delta?.content
-              if (delta) yield delta
+              const j = JSON.parse(data) as {
+                choices?: Array<{
+                  delta?: { content?: string; reasoning_content?: string; thinking?: string }
+                }>
+              }
+              const d = j.choices?.[0]?.delta
+              const content = d?.content
+              // 推理型模型（DeepSeek reasoning_content / 部分兼容实现 thinking）：
+              // 思考过程单独走 thought 通道，不入正文 history。
+              const reasoning = d?.reasoning_content ?? d?.thinking
+              if (content || reasoning) yield { content, reasoning }
             } catch {
               // 忽略无法解析的中间帧
             }

@@ -36,7 +36,21 @@ export class SessionService {
     ) => Promise<TeamMemberConfig | null>,
     private readonly projectNameResolver: (projectId: string) => Promise<string>,
     private readonly summary?: SummaryEngine,
+    private readonly teamLister?: (projectId: string) => Promise<TeamMemberConfig[]>,
   ) {}
+
+  /** 可派角色（pm/product）回合注入可指派对象清单（甲模式分派提示用）。 */
+  private async fillAssignables(
+    ctx: TurnContext,
+    member: TeamMemberConfig,
+  ): Promise<TurnContext> {
+    if (!this.teamLister || !['pm', 'product'].includes(member.roleTemplateId)) return ctx
+    const team = await this.teamLister(ctx.projectId).catch(() => [])
+    ctx.assignableMembers = team
+      .filter((m) => m.enabled)
+      .map((m) => ({ instanceId: m.instanceId, displayName: m.displayName }))
+    return ctx
+  }
 
   /** 会话列表（附未读 unread = lastSeq - readSeq，MVP 单用户口径）。 */
   async listSessions(projectId: string): Promise<SessionMeta[]> {
@@ -139,12 +153,13 @@ export class SessionService {
     })
     this.bus.emitLogEvent(projectId, userEvent)
 
-    const turnCtx: TurnContext = {
+    const baseCtx: TurnContext = {
       projectId,
       sessionId,
       member,
       scenario: await this.projectNameResolver(projectId).catch(() => '本项目'),
     }
+    const turnCtx = await this.fillAssignables(baseCtx, member)
     const key = `${projectId}:${instanceId}`
     const prev = this.pending.get(key)
     const run = () =>
@@ -205,12 +220,13 @@ export class SessionService {
       })
       this.bus.emitLogEvent(projectId, evt)
     }
-    const turnCtx: TurnContext = {
+    const baseCtx: TurnContext = {
       projectId,
       sessionId,
       member,
       scenario: await this.projectNameResolver(projectId).catch(() => '本项目'),
     }
+    const turnCtx = await this.fillAssignables(baseCtx, member)
     await this.enqueue(projectId, instanceId, meta.id, () => this.loop.runDirectTurn(turnCtx))
   }
 

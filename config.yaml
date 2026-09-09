@@ -20,7 +20,7 @@ approval: # 全局默认审批策略（项目级可覆盖）
 sandbox:
   network: online # online | offline
 task:
-  assignByAgent: false # 甲模式开关
+  assignByAgent: true # 甲模式：产品/项目经理可在会话中直接创建任务指派角色（乙模式为 false）
 search:
   engine: keyword
 context:

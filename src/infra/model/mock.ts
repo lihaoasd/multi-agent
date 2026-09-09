@@ -18,7 +18,7 @@ export function createMockProvider(id = 'mock'): ModelProvider {
       // 分片流式输出（模拟增量；每片 4~12 字符，即时返回）
       const size = 12
       for (let i = 0; i < text.length; i += size) {
-        yield text.slice(i, i + size)
+        yield { content: text.slice(i, i + size) }
         // 不 sleep：测试确定性；真实流由网络节奏决定
       }
     },

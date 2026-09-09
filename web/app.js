@@ -16,6 +16,8 @@ let current = {
   artifacts: [],
   tasks: [],
   oldestSeq: null,
+  /** 本次已从历史渲染到的最新 seq（用于过滤广播中重复事件） */
+  lastRenderedSeq: 0,
   busy: false,
 }
 let ws = null
@@ -575,27 +577,28 @@ async function openSession(pid, sid) {
     sessionLabel(meta) + (meta.type === 'meeting' ? ` · ${stateZh(meta.state)}` : '')
   const box = $('#messages')
   box.innerHTML = ''
-  const msgs = (d.messages ?? []).filter((e) => e.kind === 'message')
+  streaming = null
+  const msgs = (d.messages ?? []).filter(
+    (e) => e.role !== 'system' && RENDER_KINDS.has(e.kind),
+  )
   let lastSeq = meta.lastSeq ?? 0
   let oldest = null
+  let renderedAny = false
   for (const m of msgs) {
-    if (m.role === 'system') continue
-    appendMessage(
-      m.role === 'user' ? '我' : senderName(m.sender),
-      m.content?.text ?? '',
-      m.role === 'user' ? 'user' : 'agent',
-    )
+    renderEvent(m)
+    renderedAny = true
     if (m.seq) {
-      lastSeq = Math.max(lastSeq, m.seq)
       oldest = oldest === null ? m.seq : Math.min(oldest, m.seq)
     }
   }
-  if (!msgs.length) {
+  if (!renderedAny) {
     const empty = document.createElement('div')
     empty.className = 'empty'
     empty.textContent = '还没有消息。输入内容开始对话。'
     box.appendChild(empty)
   }
+  // 已渲染到的最新 seq：用于过滤事件广播中的重复（已从历史渲染过的事件）
+  current.lastRenderedSeq = lastSeq
   // 打开即已读（读回执 → 未读清零）
   await api(`/projects/${pid}/sessions/${sid}/read`, 'POST', { seq: lastSeq }).catch(
     () => undefined,
@@ -614,6 +617,26 @@ function senderName(sender) {
   return m ? m.displayName : sender
 }
 
+/** 历史可渲染事件 kind（thought=思考/plan=计划/tool=审计/message=消息）。 */
+const RENDER_KINDS = new Set(['message', 'thought', 'plan', 'tool_call', 'tool_result'])
+
+/** 把一条 log 事件渲染进消息流（openSession/loadOlder 共用）。 */
+function renderEvent(m) {
+  const who = m.sender && m.sender !== 'user' ? senderName(m.sender) : '我'
+  if (m.kind === 'message') {
+    appendMessage(who, m.content?.text ?? '', m.role === 'user' ? 'user' : 'agent')
+  } else if (m.kind === 'thought') {
+    appendThink(who, m.content?.text ?? '', { live: false })
+  } else if (m.kind === 'plan') {
+    const steps = Array.isArray(m.payload?.steps)
+      ? m.payload.steps.map((s) => (s && s.title ? s.title : String(s)))
+      : []
+    appendPlan(who, steps)
+  } else if (m.kind === 'tool_call' || m.kind === 'tool_result') {
+    appendToolAudit(who, m)
+  }
+}
+
 function appendMessage(who, text, cls) {
   const box = $('#messages')
   const div = document.createElement('div')
@@ -630,11 +653,126 @@ function appendMessage(who, text, cls) {
   return body
 }
 
+/** 思考块（可折叠；live 模式省略名字避免与正在流的回答重复）。 */
+function appendThink(who, text, opts = {}) {
+  const box = $('#messages')
+  const wrap = document.createElement('div')
+  wrap.className = 'msg think'
+  const head = document.createElement('div')
+  head.className = 'think-head'
+  head.textContent = `${opts.live ? '' : who + ' · '}🧠 思考过程`
+  head.title = '点击展开/收起'
+  const body = document.createElement('div')
+  body.className = 'think-body'
+  body.textContent = text || '（无文本）'
+  head.addEventListener('click', () => {
+    body.classList.toggle('hidden')
+    head.textContent = `${opts.live ? '' : who + ' · '}${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
+  })
+  wrap.appendChild(head)
+  wrap.appendChild(body)
+  box.appendChild(wrap)
+  box.scrollTop = box.scrollHeight
+  return { wrap, head, body }
+}
+
+/** 计划/行动行：告知用户 agent 将要干什么。 */
+function appendPlan(who, steps) {
+  const box = $('#messages')
+  const div = document.createElement('div')
+  div.className = 'msg plan'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  label.textContent = `${who} 计划`
+  const text = document.createElement('span')
+  text.textContent = steps.length ? steps.join(' → ') : '开始执行…'
+  div.appendChild(label)
+  div.appendChild(text)
+  box.appendChild(div)
+  box.scrollTop = box.scrollHeight
+  return div
+}
+
+/** 工具/系统动作审计行（如任务分派）。 */
+function appendToolAudit(who, e) {
+  const box = $('#messages')
+  const div = document.createElement('div')
+  div.className = 'msg audit'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  const isCall = e.kind === 'tool_call'
+  const p = e.payload ?? {}
+  const tool = String(p.tool ?? '')
+  const target = isCall ? String(p.input?.assignee ?? '') : String(p.assignee ?? '')
+  const detail = isCall
+    ? `${tool} → ${target}：${String(p.input?.title ?? '').slice(0, 60)}`
+    : `${tool}${p.ok === false ? ' ✗' : ' ✓'} ${String(p.taskId ?? '')}${target ? ' → ' + target : ''}`
+  label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
+  const text = document.createElement('span')
+  text.textContent = detail
+  div.title = JSON.stringify(p)
+  div.appendChild(label)
+  div.appendChild(text)
+  box.appendChild(div)
+  box.scrollTop = box.scrollHeight
+  return div
+}
+
+/** 正在流式输出（思考/正文）的容器状态。 */
+let streaming = null
+
+/** 把消息区滚到底。 */
+function scrollBottom() {
+  const box = $('#messages')
+  box.scrollTop = box.scrollHeight
+}
+
+/** 取（或建）当前流式输出的气泡：含思考块 + 正文区；同一 sender 复用。 */
+function streamBox(sender) {
+  const who = sender && sender !== 'user' ? senderName(sender) : 'Agent'
+  if (streaming && document.body.contains(streaming.wrap) && streaming.sender === sender) {
+    return streaming
+  }
+  const box = $('#messages')
+  const wrap = document.createElement('div')
+  wrap.className = 'msg agent'
+  const whoEl = document.createElement('div')
+  whoEl.className = 'who'
+  whoEl.textContent = `${who}…`
+  const thinkWrap = document.createElement('div')
+  thinkWrap.className = 'think hidden'
+  const thinkHead = document.createElement('div')
+  thinkHead.className = 'think-head'
+  thinkHead.textContent = '🧠 思考中…'
+  const thinkBody = document.createElement('div')
+  thinkBody.className = 'think-body'
+  thinkWrap.appendChild(thinkHead)
+  thinkWrap.appendChild(thinkBody)
+  const body = document.createElement('div')
+  body.className = 'stream-body'
+  wrap.appendChild(whoEl)
+  wrap.appendChild(thinkWrap)
+  wrap.appendChild(body)
+  box.appendChild(wrap)
+  scrollBottom()
+  streaming = {
+    wrap,
+    whoEl,
+    thinkWrap,
+    thinkHead,
+    thinkBody,
+    body,
+    thinkShown: false,
+    bodyShown: false,
+    sender,
+  }
+  return streaming
+}
+
 let wsReconnectDelay = 1000
 
 function connectWs(pid) {
   if (ws) ws.close()
-  let streaming = null
   const open = () => {
     ws = new WebSocket(
       `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?projectId=${pid}`,
@@ -650,21 +788,48 @@ function connectWs(pid) {
       }
       if (e.type === 'message.chunk') {
         setTyping(false)
-        if (!streaming) {
-          const who =
-            e.payload?.sender && e.payload.sender !== 'user'
-              ? senderName(e.payload.sender) + '…'
-              : 'Agent…'
-          streaming = appendMessage(who, '', 'agent')
-        }
-        streaming.textContent += e.payload.delta ?? ''
+        const st = streamBox(e.payload?.sender)
+        st.bodyShown = true
+        st.body.textContent += e.payload.delta ?? ''
+        scrollBottom()
+      } else if (e.type === 'thought.chunk') {
+        const st = streamBox(e.payload?.sender)
+        st.thinkShown = true
+        st.thinkWrap.classList.remove('hidden')
+        st.thinkBody.textContent += e.payload.delta ?? ''
+        scrollBottom()
       } else if (e.type === 'message.commit') {
         streaming = null
         current.seenSeq = e.payload?.seq ?? current.seenSeq
+        current.lastRenderedSeq = Math.max(
+          current.lastRenderedSeq,
+          Number(e.payload?.seq ?? 0),
+        )
         setTyping(false)
         setSendBusy(false)
         refreshPanels()
-      } else if (e.type === 'session.updated' || e.type === 'event.appended') {
+      } else if (e.type === 'event.appended') {
+        // 增量事件（plan/tool/thought 等）：seq 已渲染过则跳过，防重复
+        const p = e.payload ?? {}
+        const seq = Number(p.seq ?? 0)
+        if (seq > 0 && seq <= current.lastRenderedSeq) return
+        if (seq > 0) current.lastRenderedSeq = seq
+        if (p.kind === 'plan') {
+          const who = p.sender && p.sender !== 'user' ? senderName(p.sender) : 'Agent'
+          const steps = Array.isArray(p.steps)
+            ? p.steps.map((s) => (s && s.title ? s.title : String(s)))
+            : []
+          appendPlan(who, steps)
+        } else if (p.kind === 'tool_call' || p.kind === 'tool_result') {
+          appendToolAudit(p.sender && p.sender !== 'user' ? senderName(p.sender) : 'Agent', {
+            kind: p.kind,
+            sender: p.sender,
+            payload: p,
+          })
+        }
+        // message/thought 由流式或历史渲染负责，仅刷新面板
+        refreshPanels()
+      } else if (e.type === 'session.updated') {
         refreshPanels().catch(() => undefined)
       }
     }
@@ -721,19 +886,36 @@ async function loadOlder() {
     const d = await api(`/projects/${pid}/sessions/${sid}?beforeSeq=${before}&limit=50`)
     const box = $('#messages')
     const older = (d.messages ?? [])
-      .filter((e) => e.kind === 'message' && e.role !== 'system' && e.seq < before)
+      .filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind) && e.seq < before)
       .sort((a, b) => a.seq - b.seq)
     for (const m of older) {
-      const div = document.createElement('div')
-      div.className = `msg ${m.role === 'user' ? 'user' : 'agent'}`
-      const whoEl = document.createElement('div')
-      whoEl.className = 'who'
-      whoEl.textContent = m.role === 'user' ? '我' : senderName(m.sender)
-      const body = document.createElement('div')
-      body.textContent = m.content?.text ?? ''
-      div.appendChild(whoEl)
-      div.appendChild(body)
-      box.prepend(div)
+      const top = box.firstChild
+      const beforeEl = top && top.nodeType === 1 ? top : null
+      if (m.kind === 'message') {
+        const div = document.createElement('div')
+        div.className = `msg ${m.role === 'user' ? 'user' : 'agent'}`
+        const whoEl = document.createElement('div')
+        whoEl.className = 'who'
+        whoEl.textContent = m.role === 'user' ? '我' : senderName(m.sender)
+        const body = document.createElement('div')
+        body.textContent = m.content?.text ?? ''
+        div.appendChild(whoEl)
+        div.appendChild(body)
+        box.insertBefore(div, beforeEl)
+      } else {
+        // thought/plan/tool：独立块
+        const who = m.sender && m.sender !== 'user' ? senderName(m.sender) : '我'
+        if (m.kind === 'thought') {
+          box.insertBefore(buildThinkNode(who, m.content?.text ?? ''), beforeEl)
+        } else if (m.kind === 'plan') {
+          const steps = Array.isArray(m.payload?.steps)
+            ? m.payload.steps.map((s) => (s && s.title ? s.title : String(s)))
+            : []
+          box.insertBefore(buildPlanNode(who, steps), beforeEl)
+        } else {
+          box.insertBefore(buildToolNode(who, m), beforeEl)
+        }
+      }
     }
     if (older.length) {
       current.oldestSeq = older[0].seq
@@ -745,6 +927,61 @@ async function loadOlder() {
     btn.disabled = false
     btn.textContent = '加载更早消息'
   }
+}
+
+/** 构造独立思考块节点（用于前向翻页插入）。 */
+function buildThinkNode(who, text) {
+  const wrap = document.createElement('div')
+  wrap.className = 'msg think'
+  const head = document.createElement('div')
+  head.className = 'think-head'
+  head.textContent = `${who} · 🧠 思考过程`
+  const body = document.createElement('div')
+  body.className = 'think-body'
+  body.textContent = text || '（无文本）'
+  head.addEventListener('click', () => {
+    body.classList.toggle('hidden')
+    head.textContent = `${who} · ${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
+  })
+  wrap.appendChild(head)
+  wrap.appendChild(body)
+  return wrap
+}
+
+/** 构造计划节点（用于前向翻页插入）。 */
+function buildPlanNode(who, steps) {
+  const div = document.createElement('div')
+  div.className = 'msg plan'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  label.textContent = `${who} 计划`
+  const text = document.createElement('span')
+  text.textContent = steps.length ? steps.join(' → ') : '开始执行…'
+  div.appendChild(label)
+  div.appendChild(text)
+  return div
+}
+
+/** 构造审计行节点（用于前向翻页插入）。 */
+function buildToolNode(who, e) {
+  const div = document.createElement('div')
+  div.className = 'msg audit'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  const isCall = e.kind === 'tool_call'
+  const p = e.payload ?? {}
+  const tool = String(p.tool ?? '')
+  const target = isCall ? String(p.input?.assignee ?? '') : String(p.assignee ?? '')
+  const detail = isCall
+    ? `${tool} → ${target}：${String(p.input?.title ?? '').slice(0, 60)}`
+    : `${tool}${p.ok === false ? ' ✗' : ' ✓'} ${String(p.taskId ?? '')}${target ? ' → ' + target : ''}`
+  label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
+  const text = document.createElement('span')
+  text.textContent = detail
+  div.title = JSON.stringify(p)
+  div.appendChild(label)
+  div.appendChild(text)
+  return div
 }
 
 async function refreshPanels() {

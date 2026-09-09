@@ -20,6 +20,7 @@ import { SummaryEngine } from './memory/summary-engine.js'
 import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
 import { TaskService } from './task/task-service.js'
+import { dispatchTasksFromText } from './task/task-dispatch.js'
 import { CodeEditStore } from './code-edit/code-edit-store.js'
 import { AttentionService } from './attention/attention-service.js'
 import { registerServiceTools } from './tools/service-tools.js'
@@ -68,13 +69,15 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const gateway = new ModelGateway({ models: config.models })
   const memory = new MemoryStore(projectsRoot)
   const summary = new SummaryEngine(sessionStore)
-  const loop = new AgentLoopRunner({
+  // loop opts 可变：taskDispatch 依赖 tasks（后建），组合尾部再绑定（运行期读取）
+  const loopOpts: ConstructorParameters<typeof AgentLoopRunner>[0] = {
     store: sessionStore,
     gateway,
     bus,
     occupancy,
     windowSize: config.context.session.rawWindow,
-  })
+  }
+  const loop = new AgentLoopRunner(loopOpts)
   const sessionService = new SessionService(
     sessionStore,
     bus,
@@ -88,6 +91,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
       return p.name
     },
     summary,
+    async (pid) => teamService.list(pid),
   )
   const search = new SearchService(projectsRoot, sessionStore)
   const codeEdits = new CodeEditStore(projectsRoot)
@@ -171,6 +175,40 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     },
   )
   const attention = new AttentionService(approvals, meetings)
+
+  // 甲模式任务分派钩子（2026-09-09）：config.task.assignByAgent 时由 pm/product 的
+  // user 会话回合解析分派指令并创建/激活任务（loop 运行期经 loopOpts 读取）。
+  loopOpts.taskDispatch = config.task.assignByAgent
+    ? {
+        run: async (ctx, text) => {
+          const emitTool = async (
+            kind: 'tool_call' | 'tool_result',
+            payload: Record<string, unknown>,
+          ) => {
+            const meta = await sessionStore.tryReadMeta(ctx.projectId, ctx.sessionId)
+            if (!meta) return
+            const evt = await sessionStore.appendEvent(meta, {
+              kind,
+              sender: ctx.member.instanceId,
+              role: 'agent',
+              payload,
+            })
+            bus.emitLogEvent(ctx.projectId, evt)
+          }
+          const team = await projectService.listTeam(ctx.projectId)
+          return dispatchTasksFromText({
+            projectId: ctx.projectId,
+            sessionId: ctx.sessionId,
+            actorId: ctx.member.instanceId,
+            actorName: ctx.member.displayName,
+            text,
+            team,
+            tasks,
+            emitTool,
+          })
+        },
+      }
+    : undefined
 
   return {
     config,

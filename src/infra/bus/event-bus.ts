@@ -49,10 +49,24 @@ export class EventBus {
   emitChunk(
     projectId: string,
     sessionId: string,
-    payload: { turnId?: string; delta: string },
+    payload: { turnId?: string; delta: string; sender?: string },
   ): void {
     this.publish({
       type: 'message.chunk',
+      projectId,
+      sessionId,
+      payload: { sessionId, ...payload },
+    })
+  }
+
+  /** Streaming reasoning chunk (thought.chunk; NOT persisted, see D-think). */
+  emitThoughtChunk(
+    projectId: string,
+    sessionId: string,
+    payload: { turnId?: string; delta: string; sender?: string },
+  ): void {
+    this.publish({
+      type: 'thought.chunk',
       projectId,
       sessionId,
       payload: { sessionId, ...payload },

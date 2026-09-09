@@ -8,7 +8,7 @@ import type { ModelsConfig } from '../../shared/config.js'
 import { createMockProvider } from './mock.js'
 import { createOpenAiCompatibleProvider } from './openai-compatible.js'
 import { createOllamaProvider } from './ollama.js'
-import type { ChatMessage } from './provider.js'
+import type { ChatMessage, ChatStreamItem } from './provider.js'
 
 export interface ModelGatewayOptions {
   models: ModelsConfig
@@ -28,12 +28,12 @@ export class ModelGateway {
     return this.opts.models.providers.find((p) => p.id === providerId) ?? null
   }
 
-  /** 流式对话：按 providerId（优先）或 models.default 路由。 */
+  /** 流式对话：按 providerId（优先）或 models.default 路由，yield 增量单元。 */
   async *streamChat(opts: {
     providerId?: string
     messages: ChatMessage[]
     signal?: AbortSignal
-  }): AsyncIterable<string> {
+  }): AsyncIterable<ChatStreamItem> {
     const providerId = opts.providerId && opts.providerId !== 'mock' ? opts.providerId : null
     const targetId =
       providerId ?? (this.opts.models.default !== 'mock' ? this.opts.models.default : 'mock')
@@ -73,14 +73,16 @@ export class ModelGateway {
     }
   }
 
-  /** 非流式便利：聚合为完整文本。 */
+  /** 非流式便利：聚合正文（忽略 reasoning）为完整文本。 */
   async complete(opts: {
     providerId?: string
     messages: ChatMessage[]
     signal?: AbortSignal
   }): Promise<string> {
     let out = ''
-    for await (const chunk of this.streamChat(opts)) out += chunk
+    for await (const item of this.streamChat(opts)) {
+      if (item.content) out += item.content
+    }
     return out
   }
 }

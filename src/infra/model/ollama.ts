@@ -39,8 +39,13 @@ export function createOllamaProvider(id: string): ModelProvider {
             buffer = buffer.slice(nl + 1)
             if (!line) continue
             try {
-              const j = JSON.parse(line) as { message?: { content?: string }; done?: boolean }
-              if (j.message?.content) yield j.message.content
+              const j = JSON.parse(line) as {
+                message?: { content?: string; reasoning_content?: string; thinking?: string }
+                done?: boolean
+              }
+              const content = j.message?.content
+              const reasoning = j.message?.reasoning_content ?? j.message?.thinking
+              if (content || reasoning) yield { content, reasoning }
               if (j.done) return
             } catch {
               // 跳过坏帧

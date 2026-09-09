@@ -18,13 +18,24 @@ export interface CompleteOptions {
   signal?: AbortSignal
 }
 
+/**
+ * 流式增量单元：正文增量与推理增量分离。
+ * - content：可见正文（既有 message.chunk 通道）；
+ * - reasoning：模型思考/意图文本（DeepSeek reasoning_content 等；thought.chunk 通道 + thought 事件落盘）。
+ * 二者可交替出现；无增量的一帧产出空对象，调用方按字段判断。
+ */
+export interface ChatStreamItem {
+  content?: string
+  reasoning?: string
+}
+
 export interface ModelProvider {
   id: string
   kind: 'mock' | 'openai-compatible' | 'ollama'
-  /** 流式对话：yield 文本增量。 */
+  /** 流式对话：yield 增量单元（正文 content / 推理 reasoning）。 */
   streamChat(
     opts: CompleteOptions & { baseUrl?: string; apiKey?: string; model?: string },
-  ): AsyncIterable<string>
+  ): AsyncIterable<ChatStreamItem>
 }
 
 export type { ModelsConfig }
