@@ -43,6 +43,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerArtifactRoutes(app, svc)
   registerMemorySearchRoutes(app, svc)
   registerMeetingRoutes(app, svc)
+  registerTaskRoutes(app, svc)
   registerExportRoutes(app, svc)
   registerBrowseRoutes(app)
   registerConfigRoutes(app, svc)
@@ -406,6 +407,54 @@ function registerExportRoutes(app: FastifyInstance, svc: Services): void {
       .header('Content-Type', 'application/zip')
       .header('Content-Disposition', `attachment; filename="${req.params.pid}.zip"`)
       .send(buf)
+  })
+}
+
+function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
+  const { tasks } = svc
+
+  app.get<{
+    Params: { pid: string }
+    Querystring: { assignee?: string; state?: string }
+  }>('/api/projects/:pid/tasks', async (req) => ({
+    tasks: await tasks.list(req.params.pid, {
+      assignee: req.query.assignee,
+      state: req.query.state as never,
+    }),
+  }))
+
+  app.post<{
+    Params: { pid: string }
+    Body: { title?: string; desc?: string; creator?: string; assignee?: string; sessionId?: string }
+  }>('/api/projects/:pid/tasks', async (req, reply) => {
+    const b = req.body ?? {}
+    if (!b.title || !b.assignee) {
+      return reply.code(400).send({ code: 'ERR_VALIDATION', message: 'title/assignee 必填' })
+    }
+    const task = await tasks.create({
+      projectId: req.params.pid,
+      title: b.title,
+      desc: b.desc,
+      creator: b.creator ?? 'user',
+      assignee: b.assignee,
+      sessionId: b.sessionId,
+    })
+    return reply.code(201).send({ task })
+  })
+
+  app.patch<{
+    Params: { pid: string; tid: string }
+    Body: { state?: string; actor?: string }
+  }>('/api/projects/:pid/tasks/:tid', async (req) => {
+    const b = req.body ?? {}
+    if (!b.state) return { code: 'ERR_VALIDATION', message: 'state 必填' }
+    const task = await tasks.setState(
+      req.params.pid,
+      req.params.tid,
+      b.state as never,
+      b.actor ?? 'user',
+    )
+    return { task }
   })
 }
 

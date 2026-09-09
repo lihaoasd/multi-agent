@@ -19,6 +19,8 @@ import { MemoryStore } from './memory/memory-store.js'
 import { SummaryEngine } from './memory/summary-engine.js'
 import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
+import { TaskService } from './task/task-service.js'
+import { registerServiceTools } from './tools/service-tools.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
@@ -39,6 +41,7 @@ export interface Services {
   memory: MemoryStore
   search: SearchService
   meetings: MeetingService
+  tasks: TaskService
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -84,6 +87,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     summary,
   )
   const search = new SearchService(projectsRoot, sessionStore)
+  // 应用级工具注册（记忆/检索）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
+  registerServiceTools({ memory, search })
   const meetings = new MeetingService(
     sessionStore,
     memory,
@@ -121,6 +126,16 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     if (!meta) throw new Error(`会话不存在: ${sid}`)
     return sessionStore.appendEvent(meta, evt)
   })
+  const tasks = new TaskService(
+    projectsRoot,
+    config.task.assignByAgent,
+    // 激活即唤醒（D18-③）：向受派者 user 会话注入唤醒消息并触发一轮
+    async (pid, assignee, title, taskId) => {
+      await sessionService
+        .sendUserMessage(pid, `u_${assignee}`, `【系统】请开始执行任务 ${taskId}：${title}`)
+        .catch(() => undefined)
+    },
+  )
 
   return {
     config,
@@ -138,6 +153,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     memory,
     search,
     meetings,
+    tasks,
   }
 }
 
