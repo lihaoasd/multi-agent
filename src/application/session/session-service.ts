@@ -38,14 +38,31 @@ export class SessionService {
     private readonly summary?: SummaryEngine,
   ) {}
 
+  /** 会话列表（附未读 unread = lastSeq - readSeq，MVP 单用户口径）。 */
   async listSessions(projectId: string): Promise<SessionMeta[]> {
     const ids = await this.store.listSessionIds(projectId)
     const out: SessionMeta[] = []
     for (const sid of ids) {
       const meta = await this.store.tryReadMeta(projectId, sid)
-      if (meta) out.push(meta)
+      if (meta) out.push(this.withUnread(meta))
     }
     return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+  }
+
+  /** 已读标记：记录用户读到的最大 seq（重连增量/未读依据，contract WS ack）。 */
+  async markRead(projectId: string, sessionId: string, seq: number): Promise<SessionMeta> {
+    const meta = await this.getSession(projectId, sessionId)
+    const readSeq = (meta.readSeq as number | undefined) ?? 0
+    if (seq <= readSeq) return this.withUnread(meta)
+    const next = { ...meta, readSeq: seq, updatedAt: new Date().toISOString() }
+    await this.store.writeMeta(next)
+    return this.withUnread(next)
+  }
+
+  private withUnread(meta: SessionMeta): SessionMeta {
+    const readSeq = (meta.readSeq as number | undefined) ?? 0
+    const unread = Math.max(0, meta.lastSeq - readSeq)
+    return { ...meta, readSeq, unread }
   }
 
   async getSession(projectId: string, sessionId: string): Promise<SessionMeta> {
@@ -53,7 +70,7 @@ export class SessionService {
     if (!meta) throw new AppError(ErrorCodes.NOT_FOUND, `会话不存在: ${sessionId}`)
     if (meta.projectId !== projectId)
       throw new AppError(ErrorCodes.NOT_FOUND, `会话不存在: ${sessionId}`)
-    return meta
+    return this.withUnread(meta)
   }
 
   async getMessages(

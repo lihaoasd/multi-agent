@@ -212,6 +212,15 @@ function registerSessionRoutes(app: FastifyInstance, svc: Services): void {
       return reply.code(202).send(r)
     },
   )
+
+  // 已读回执（未读计算）：body {seq} = 用户已读到的最大 seq
+  app.post<{ Params: { pid: string; sid: string }; Body: { seq?: number } }>(
+    '/api/projects/:pid/sessions/:sid/read',
+    async (req) => {
+      const session = await ss.markRead(req.params.pid, req.params.sid, req.body?.seq ?? 0)
+      return { session }
+    },
+  )
 }
 
 function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {

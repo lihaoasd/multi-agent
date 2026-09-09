@@ -143,7 +143,8 @@ function renderSessions() {
   ul.innerHTML = ''
   for (const s of current.sessions) {
     const li = document.createElement('li')
-    li.textContent = `${s.id} (${s.type === 'meeting' ? s.state : s.state})`
+    const unread = Number(s.unread ?? 0) > 0 ? ` <span class="badge">${s.unread}</span>` : ''
+    li.textContent = `${s.id}${unread}`
     li.dataset.sid = s.id
     li.addEventListener('click', () => openSession(current.pid, s.id))
     if (s.id === current.sessionId) li.classList.add('active')
@@ -160,6 +161,7 @@ async function openSession(pid, sid) {
   const box = $('#messages')
   box.innerHTML = ''
   const msgs = (d.messages ?? []).filter((e) => e.kind === 'message')
+  let lastSeq = meta.lastSeq ?? 0
   for (const m of msgs) {
     if (m.role === 'system') continue
     appendMessage(
@@ -167,7 +169,14 @@ async function openSession(pid, sid) {
       m.content?.text ?? '',
       m.role === 'user' ? 'user' : 'agent',
     )
+    if (m.seq) lastSeq = Math.max(lastSeq, m.seq)
   }
+  // 打开即已读（读回执 → 未读清零）
+  await api(`/projects/${pid}/sessions/${sid}/read`, 'POST', { seq: lastSeq }).catch(
+    () => undefined,
+  )
+  // 重连增量锚点
+  current.seenSeq = lastSeq
   if (meta.type === 'user') $('#composer').classList.remove('hidden')
   else $('#composer').classList.add('hidden')
 }
@@ -188,27 +197,57 @@ function appendMessage(who, text, cls) {
   return body
 }
 
+let wsReconnectDelay = 1000
+
 function connectWs(pid) {
   if (ws) ws.close()
-  ws = new WebSocket(
-    `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?projectId=${pid}`,
-  )
   let streaming = null
-  ws.onmessage = (evt) => {
-    const e = JSON.parse(evt.data)
-    if (e.sessionId && e.sessionId !== current.sessionId) return
-    if (e.type === 'message.chunk') {
-      if (!streaming) {
-        streaming = appendMessage('Agent…', '', 'agent')
+  const open = () => {
+    ws = new WebSocket(
+      `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?projectId=${pid}`,
+    )
+    ws.onopen = () => {
+      wsReconnectDelay = 1000
+    }
+    ws.onmessage = (evt) => {
+      const e = JSON.parse(evt.data)
+      if (e.sessionId && e.sessionId !== current.sessionId) {
+        refreshUnread().catch(() => undefined)
+        return
       }
-      streaming.textContent += e.payload.delta ?? ''
-    } else if (e.type === 'message.commit') {
-      streaming = null
-      refreshPanels()
-    } else if (e.type === 'session.updated') {
-      refreshPanels().catch(() => undefined)
+      if (e.type === 'message.chunk') {
+        if (!streaming) {
+          streaming = appendMessage('Agent…', '', 'agent')
+        }
+        streaming.textContent += e.payload.delta ?? ''
+      } else if (e.type === 'message.commit') {
+        streaming = null
+        current.seenSeq = e.payload?.seq ?? current.seenSeq
+        refreshPanels()
+      } else if (e.type === 'session.updated' || e.type === 'event.appended') {
+        refreshPanels().catch(() => undefined)
+      }
+    }
+    ws.onclose = () => {
+      if (current.pid !== pid) return
+      setTimeout(() => {
+        if (current.pid !== pid) return
+        toast(`连接断开，${wsReconnectDelay / 1000}s 后重连…`)
+        connectWs(pid)
+        wsReconnectDelay = Math.min(wsReconnectDelay * 2, 8000)
+      }, wsReconnectDelay)
     }
   }
+  open()
+}
+
+// 刷新未读（会话列表徽标）
+async function refreshUnread() {
+  if (!current.pid) return
+  const s = await api(`/projects/${current.pid}/sessions`).catch(() => null)
+  if (!s) return
+  current.sessions = s.sessions ?? []
+  renderSessions()
 }
 
 async function sendMessage() {
@@ -332,6 +371,20 @@ function renderMeetings() {
         await refreshPanels()
       }
       li.appendChild(ask)
+      // 点名成员发言（轮次）
+      const members = (mt.meeting?.members ?? []).filter((m) => m !== mt.meeting?.host)
+      if (members.length) {
+        const talk = document.createElement('button')
+        talk.textContent = `点名 ${members[0]} 发言`
+        talk.onclick = async () => {
+          await api(`/projects/${current.pid}/meetings/${mt.id}/talk`, 'POST', {
+            host: mt.meeting?.host,
+            member: members[0],
+          })
+          await refreshPanels()
+        }
+        li.appendChild(talk)
+      }
     }
     if (state === 'blocked_waiting_user') {
       const ok = document.createElement('button')
@@ -367,6 +420,18 @@ function renderMeetings() {
         $('#memory-panel').innerHTML = `<pre>${escapeHtml(d.minutes.text)}</pre>`
       }
       li.appendChild(min)
+      const regen = document.createElement('button')
+      regen.textContent = '重新生成纪要'
+      regen.onclick = async () => {
+        const d = await api(
+          `/projects/${current.pid}/meetings/${mt.id}/regenerate-minutes`,
+          'POST',
+          {},
+        )
+        $('#memory-panel').innerHTML = `<pre>${escapeHtml(d.minutes.text)}</pre>`
+        toast('纪要已重新生成')
+      }
+      li.appendChild(regen)
     }
     ul.appendChild(li)
   }
