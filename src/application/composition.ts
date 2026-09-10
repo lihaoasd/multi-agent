@@ -11,6 +11,7 @@ import { TeamService } from './team/team-service.js'
 import { SessionStore } from './session/session-store.js'
 import { SessionService } from './session/session-service.js'
 import { AgentLoopRunner } from './agent-loop/loop-runner.js'
+import type { ActiveTask, TurnContext } from './agent-loop/loop-runner.js'
 import { ApprovalService } from './approval/approval-service.js'
 import { ToolCoordinator } from './tools/tool-coordinator.js'
 import { OccupancyStore } from './dispatcher/occupancy-store.js'
@@ -27,6 +28,7 @@ import { registerServiceTools } from './tools/service-tools.js'
 import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
+import { executeTool, listToolDefs } from '../infra/tools/executor.js'
 
 export interface Services {
   config: PlatformConfig
@@ -176,6 +178,56 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   )
   const attention = new AttentionService(approvals, meetings)
 
+  // 当前激活任务（in_progress 且属本会话）：系统提示注入 + workdir_edit 聚合锚点（D15）
+  const activeTaskOf = async (ctx: TurnContext): Promise<ActiveTask | null> => {
+    const list = await tasks.list(ctx.projectId, {
+      assignee: ctx.member.instanceId,
+      state: 'in_progress',
+    })
+    const t = list.find((x) => x.sessionId === ctx.sessionId) ?? list[0]
+    return t ? { id: t.id, title: t.title, desc: t.desc } : null
+  }
+
+  // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性
+  loopOpts.toolRuntime = {
+    listTools: (ctx, sessionType) => {
+      const allowed = new Set(ctx.member.tools ?? [])
+      return listToolDefs()
+        .filter((d) => allowed.has(d.name) && d.availableIn.includes(sessionType))
+        .map((d) => ({
+          name: d.name,
+          description: d.description,
+          parameters: d.paramsSchema ?? { type: 'object', properties: {} },
+        }))
+    },
+    exec: async (ctx, sessionType, name, args) => {
+      const task = await activeTaskOf(ctx)
+      const env = await buildToolEnv({ config, projectService }, ctx.projectId, ctx.member.instanceId, {
+        taskId: task?.id,
+        sessionType: sessionType === 'meeting' ? 'meeting' : 'user',
+      })
+      return executeTool(name, args, env)
+    },
+    requestApproval: async (ctx, name, args) => {
+      if (name !== 'cmd_run') return null
+      const argv = Array.isArray(args.args) ? args.args.map(String) : []
+      const rec = await tools.requestCommand({
+        projectId: ctx.projectId,
+        actor: ctx.member.instanceId,
+        sessionId: ctx.sessionId,
+        summary: `执行命令：${String(args.program ?? '')} ${argv.join(' ')}`.trim().slice(0, 200),
+        command: {
+          program: String(args.program ?? ''),
+          args: argv,
+          cwd: String(args.cwd ?? 'workdir://'),
+        },
+      })
+      return rec.id
+    },
+    activeTask: activeTaskOf,
+    maxSteps: 6,
+  }
+
   // 甲模式任务分派钩子（2026-09-09）：config.task.assignByAgent 时由 pm/product 的
   // user 会话回合解析分派指令并创建/激活任务（loop 运行期经 loopOpts 读取）。
   loopOpts.taskDispatch = config.task.assignByAgent
@@ -236,12 +288,28 @@ export async function composeToolEnv(
   svc: Services,
   projectId: string,
   instanceId: string,
+  opts: { taskId?: string; sessionType?: 'user' | 'meeting' } = {},
 ): Promise<ToolEnv> {
-  const project = await svc.projectService.get(projectId)
-  const team = await svc.projectService.listTeam(projectId)
+  return buildToolEnv(
+    { config: svc.config, projectService: svc.projectService },
+    projectId,
+    instanceId,
+    opts,
+  )
+}
+
+/** ToolEnv 构造（composition 内部与 composeToolEnv 共用）。 */
+export async function buildToolEnv(
+  deps: Pick<Services, 'config' | 'projectService'>,
+  projectId: string,
+  instanceId: string,
+  opts: { taskId?: string; sessionType?: 'user' | 'meeting' } = {},
+): Promise<ToolEnv> {
+  const project = await deps.projectService.get(projectId)
+  const team = await deps.projectService.listTeam(projectId)
   const member = team.find((m) => m.instanceId === instanceId)
   if (!member) throw new Error(`实例不存在: ${instanceId}`)
-  const projectsRoot = join(svc.config.dataDir, 'projects')
+  const projectsRoot = join(deps.config.dataDir, 'projects')
   const runtimeRoot = join(projectsRoot, projectId)
   return {
     roots: {
@@ -251,9 +319,10 @@ export async function composeToolEnv(
       runtimeRoot,
     },
     instanceId,
-    sessionType: 'user',
+    sessionType: opts.sessionType ?? 'user',
     projectId,
     approvalPolicy: project.approvalPolicy,
-    offline: svc.config.sandbox.network === 'offline',
+    offline: deps.config.sandbox.network === 'offline',
+    taskId: opts.taskId,
   }
 }

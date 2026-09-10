@@ -27,6 +27,15 @@ export function registerServiceTools(deps: {
       scope: 'workspace',
       availableIn: ['user', 'meeting'],
       idempotent: true,
+      paramsSchema: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: '记忆内容' },
+          type: { type: 'string', description: 'fact|decision|preference|meeting_summary 等' },
+          scope: { type: 'string', enum: ['own', 'global'], description: '缺省 own' },
+        },
+        required: ['content'],
+      },
     },
     async (args, env) => {
       const content = String(args.content ?? '').trim()
@@ -63,6 +72,11 @@ export function registerServiceTools(deps: {
       scope: 'readonly-global',
       availableIn: ['user', 'meeting'],
       idempotent: true,
+      paramsSchema: {
+        type: 'object',
+        properties: { q: { type: 'string', description: '检索关键词' } },
+        required: ['q'],
+      },
     },
     async (args, env) => {
       const q = String(args.q ?? '').trim()
@@ -80,6 +94,11 @@ export function registerServiceTools(deps: {
       scope: 'readonly-global',
       availableIn: ['user', 'meeting'],
       idempotent: true,
+      paramsSchema: {
+        type: 'object',
+        properties: { q: { type: 'string', description: '检索关键词' } },
+        required: ['q'],
+      },
     },
     async (args, env) => {
       const q = String(args.q ?? '').trim()
@@ -102,6 +121,27 @@ export function registerServiceTools(deps: {
       scope: 'workdir',
       availableIn: ['user'],
       idempotent: false,
+      paramsSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '工作目录内虚拟路径，如 workdir://src/a.ts' },
+          edits: {
+            type: 'array',
+            description: '按顺序应用的编辑；write 覆盖全文，replace 做精确替换',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['write', 'replace'] },
+                text: { type: 'string', description: 'type=write 时的全文' },
+                oldText: { type: 'string', description: 'type=replace 时的被替换文本' },
+                newText: { type: 'string', description: 'type=replace 时的替换文本' },
+              },
+              required: ['type'],
+            },
+          },
+        },
+        required: ['path', 'edits'],
+      },
     },
     async (args, env) => {
       const path = String(args.path ?? '')
@@ -114,7 +154,8 @@ export function registerServiceTools(deps: {
         return { ok: false, code: 'FS_BOUNDARY', reason: 'workdir_edit 仅限 workdir:// 内文件' }
       }
       const abs = ensureInside(env.roots.workdirRoot, r.absolute, 'relPath')
-      const taskId = args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`
+      // 归属锚点：dispatcher 注入的当前任务优先（D15）；模型自报仅作兜底
+      const taskId = env.taskId ?? (args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`)
 
       // 逐条应用编辑（整体事务：任一步失败不改文件）
       let current = await readFile(abs, 'utf8').catch(() => '')

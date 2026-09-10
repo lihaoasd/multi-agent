@@ -8,7 +8,7 @@ import type { ModelsConfig } from '../../shared/config.js'
 import { createMockProvider } from './mock.js'
 import { createOpenAiCompatibleProvider } from './openai-compatible.js'
 import { createOllamaProvider } from './ollama.js'
-import type { ChatMessage, ChatStreamItem } from './provider.js'
+import type { ChatMessage, ChatStreamItem, ToolSchema } from './provider.js'
 
 export interface ModelGatewayOptions {
   models: ModelsConfig
@@ -32,6 +32,7 @@ export class ModelGateway {
   async *streamChat(opts: {
     providerId?: string
     messages: ChatMessage[]
+    tools?: ToolSchema[]
     signal?: AbortSignal
   }): AsyncIterable<ChatStreamItem> {
     const providerId = opts.providerId && opts.providerId !== 'mock' ? opts.providerId : null
@@ -64,6 +65,7 @@ export class ModelGateway {
 
     for await (const chunk of provider.streamChat({
       messages: opts.messages,
+      tools: opts.tools,
       baseUrl: cfg.baseUrl,
       apiKey,
       model: cfg.model ?? targetId,
@@ -77,6 +79,7 @@ export class ModelGateway {
   async complete(opts: {
     providerId?: string
     messages: ChatMessage[]
+    tools?: ToolSchema[]
     signal?: AbortSignal
   }): Promise<string> {
     let out = ''

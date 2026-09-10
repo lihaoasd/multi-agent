@@ -693,7 +693,32 @@ function appendPlan(who, steps) {
   return div
 }
 
-/** 工具/系统动作审计行（如任务分派）。 */
+/** 审计行文案：任务分派可读化，其余工具展示参数/结果摘要。 */
+function toolAuditDetail(e) {
+  const p = e.payload ?? {}
+  const tool = String(p.tool ?? '工具')
+  if (e.kind === 'tool_call') {
+    const input = p.input ?? {}
+    if (input.assignee) {
+      return `${tool} → ${input.assignee}：${String(input.title ?? '').slice(0, 60)}`
+    }
+    return `${tool}(${briefJson(input)})`
+  }
+  const ok = p.ok === false ? '✗' : '✓'
+  if (p.taskId) return `${tool} ${ok} ${String(p.taskId)}${p.assignee ? ' → ' + p.assignee : ''}`
+  const tail = String(p.summary ?? p.reason ?? p.code ?? '')
+  return `${tool} ${ok}${tail ? '：' + tail.slice(0, 120) : ''}`
+}
+
+function briefJson(obj) {
+  try {
+    return JSON.stringify(obj).slice(0, 100)
+  } catch {
+    return ''
+  }
+}
+
+/** 工具/系统动作审计行（如任务分派、文件读写）。 */
 function appendToolAudit(who, e) {
   const box = $('#messages')
   const div = document.createElement('div')
@@ -701,16 +726,10 @@ function appendToolAudit(who, e) {
   const label = document.createElement('span')
   label.className = 'activity-label'
   const isCall = e.kind === 'tool_call'
-  const p = e.payload ?? {}
-  const tool = String(p.tool ?? '')
-  const target = isCall ? String(p.input?.assignee ?? '') : String(p.assignee ?? '')
-  const detail = isCall
-    ? `${tool} → ${target}：${String(p.input?.title ?? '').slice(0, 60)}`
-    : `${tool}${p.ok === false ? ' ✗' : ' ✓'} ${String(p.taskId ?? '')}${target ? ' → ' + target : ''}`
   label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
   const text = document.createElement('span')
-  text.textContent = detail
-  div.title = JSON.stringify(p)
+  text.textContent = toolAuditDetail(e)
+  div.title = JSON.stringify(e.payload ?? {})
   div.appendChild(label)
   div.appendChild(text)
   box.appendChild(div)
@@ -969,16 +988,10 @@ function buildToolNode(who, e) {
   const label = document.createElement('span')
   label.className = 'activity-label'
   const isCall = e.kind === 'tool_call'
-  const p = e.payload ?? {}
-  const tool = String(p.tool ?? '')
-  const target = isCall ? String(p.input?.assignee ?? '') : String(p.assignee ?? '')
-  const detail = isCall
-    ? `${tool} → ${target}：${String(p.input?.title ?? '').slice(0, 60)}`
-    : `${tool}${p.ok === false ? ' ✗' : ' ✓'} ${String(p.taskId ?? '')}${target ? ' → ' + target : ''}`
   label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
   const text = document.createElement('span')
-  text.textContent = detail
-  div.title = JSON.stringify(p)
+  text.textContent = toolAuditDetail(e)
+  div.title = JSON.stringify(e.payload ?? {})
   div.appendChild(label)
   div.appendChild(text)
   return div

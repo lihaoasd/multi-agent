@@ -26,17 +26,33 @@ export function ensureInside(root: string, candidate: string, what = 'path'): st
   return absTarget
 }
 
-/** 原子写文本文件：写临时文件 → rename。 */
+/** 原子写文本文件：写临时文件 → rename（Windows 上目标被并发读时 rename 可能 EPERM/EBUSY，短暂重试）。 */
 export async function atomicWriteFile(filePath: string, data: string | Uint8Array): Promise<void> {
   const dir = dirname(filePath)
   await fs.mkdir(dir, { recursive: true })
   const tmp = join(dir, `.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`)
   try {
     await fs.writeFile(tmp, data, 'utf8')
-    await fs.rename(tmp, filePath)
+    await renameWithRetry(tmp, filePath)
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => undefined)
     throw err
+  }
+}
+
+/** rename 重试：仅对并发读导致的瞬时错误重试（EPERM/EBUSY/EACCES），其余直接抛出。 */
+async function renameWithRetry(tmp: string, filePath: string): Promise<void> {
+  const delays = [0, 20, 50, 100, 200, 400]
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]))
+    try {
+      await fs.rename(tmp, filePath)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      const retryable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+      if (!retryable || i === delays.length - 1) throw err
+    }
   }
 }
 

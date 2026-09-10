@@ -51,7 +51,29 @@ export function buildUserSessionMeta(
 }
 
 export class SessionStore {
+  /** 每会话写入串行队列：并发追加（回合/审批/产出物投影）不重号、meta 不回退。 */
+  private readonly writeLocks = new Map<string, Promise<unknown>>()
+
   constructor(private readonly projectsRoot: string) {}
+
+  private lockKey(projectId: string, sessionId: string): string {
+    return `${projectId}:${sessionId}`
+  }
+
+  private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.writeLocks.get(key) ?? Promise.resolve()
+    const run = prev.then(fn, fn)
+    const wrapped = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.writeLocks.set(key, wrapped)
+    try {
+      return await run
+    } finally {
+      if (this.writeLocks.get(key) === wrapped) this.writeLocks.delete(key)
+    }
+  }
 
   private runtimeDir(projectId: string): string {
     return join(this.projectsRoot, projectId)
@@ -109,28 +131,32 @@ export class SessionStore {
   }
 
   /**
-   * 追加事件（先盘后推 D18-⑤a）：log 落盘成功 = 事实生效；
-   * meta.lastSeq 就地递增并同步落盘（投影，重启时按 log 尾部对账补齐）。
-   * 注意：调用方持有的 meta 会被就地更新，连续追加时 seq 单调递增。
+   * 追加事件（先盘后推 D18-⑤a）：log 落盘成功 = 事实生效。
+   * seq 以磁盘 meta 为准（调用方可能持有过期 meta：并发追加者一律取 max(磁盘, 传入)），
+   * 每会话串行，保证 seq 严格递增不重复；写完后把最新 meta 同步回调用方对象。
    */
   async appendEvent(
     meta: SessionMeta,
     event: Omit<SessionLogEvent, 'seq' | 'ts' | 'sessionId'>,
   ): Promise<SessionLogEvent> {
-    const seq = meta.lastSeq + 1
-    const full: SessionLogEvent = {
-      ...event,
-      seq,
-      ts: nowIso(),
-      sessionId: meta.id,
-    }
-    const line = JSON.stringify(full)
-    await fs.appendFile(this.logFile(meta.projectId, meta.id), line + '\n', 'utf8')
-    meta.lastSeq = seq
-    meta.updatedAt = full.ts
-    // meta 投影写失败不阻断（重启对账）
-    await this.writeMeta({ ...meta }).catch(() => undefined)
-    return full
+    return this.withLock(this.lockKey(meta.projectId, meta.id), async () => {
+      const fresh = await this.tryReadMeta(meta.projectId, meta.id)
+      const base = fresh ?? meta
+      const lastSeq = Math.max(meta.lastSeq, fresh?.lastSeq ?? 0)
+      const seq = lastSeq + 1
+      const full: SessionLogEvent = {
+        ...event,
+        seq,
+        ts: nowIso(),
+        sessionId: meta.id,
+      }
+      await fs.appendFile(this.logFile(meta.projectId, meta.id), JSON.stringify(full) + '\n', 'utf8')
+      Object.assign(base, { lastSeq: seq, updatedAt: full.ts })
+      Object.assign(meta, base)
+      // meta 投影写失败不阻断（重启对账）
+      await this.writeMeta({ ...base }).catch(() => undefined)
+      return full
+    })
   }
 
   /** 读会话窗口：fromSeq 起至多 limit 条（含 thought/tool，UI 可按 kind 过滤）。 */

@@ -51,7 +51,14 @@ async function waitTurnEnd(pid: string, sid: string) {
       method: 'GET',
       url: `/api/projects/${pid}/sessions/${sid}/log`,
     })
-    if ((log.json().events as Array<{ kind: string }>).some((e) => e.kind === 'turn_end')) return
+    const events = log.json().events as Array<{ kind: string; seq: number }>
+    if (events.some((e) => e.kind === 'turn_end')) {
+      // 先盘后推：log 先生效，meta.lastSeq 是投影、可能略滞后；等对账一致再断言未读
+      const maxSeq = Math.max(...events.map((e) => e.seq))
+      const list = await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions` })
+      const s = list.json().sessions.find((x: { id: string; lastSeq: number }) => x.id === sid)
+      if (s && s.lastSeq >= maxSeq) return
+    }
     if (Date.now() > deadline) throw new Error('等待回合超时')
     await new Promise((r) => setTimeout(r, 25))
   }

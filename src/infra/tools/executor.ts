@@ -21,6 +21,8 @@ export interface ToolDef {
   /** 会话可用性：user|meeting（数组） */
   availableIn: string[]
   idempotent: boolean
+  /** function-calling 参数 schema（JSON Schema；缺省视为无参对象） */
+  paramsSchema?: Record<string, unknown>
 }
 
 export type ToolHandler = (args: Record<string, unknown>, env: ToolEnv) => Promise<ToolResult>
@@ -32,6 +34,8 @@ export interface ToolEnv {
   projectId: string
   approvalPolicy: { highRiskCommands: boolean }
   offline: boolean
+  /** 当前激活任务 id（dispatcher 注入）：workdir_edit 等按任务聚合归属 */
+  taskId?: string
   /** 用户已批准该次调用时置 true（approval 桥续跑） */
   approvalBypass?: boolean
 }
@@ -82,6 +86,11 @@ registerTool(
     scope: 'readonly-global',
     availableIn: ['user', 'meeting'],
     idempotent: true,
+    paramsSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: '虚拟路径，如 workdir://src/a.ts' } },
+      required: ['path'],
+    },
   },
   async (args, env) => {
     const p = String(args.path ?? '')
@@ -105,6 +114,10 @@ registerTool(
     scope: 'readonly-global',
     availableIn: ['user', 'meeting'],
     idempotent: true,
+    paramsSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: '虚拟路径，缺省 workdir://' } },
+    },
   },
   async (args, env) => {
     const p = String(args.path ?? 'workdir://')
@@ -126,6 +139,15 @@ registerTool(
     scope: 'workspace',
     availableIn: ['user'],
     idempotent: false,
+    paramsSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '私有区路径，如 ws://notes/a.md' },
+        action: { type: 'string', enum: ['write', 'append', 'delete'], description: '缺省 write' },
+        content: { type: 'string', description: '写入内容' },
+      },
+      required: ['path'],
+    },
   },
   async (args, env) => {
     const r = resolveVirtual(String(args.path ?? ''), env.roots)
@@ -159,6 +181,11 @@ registerTool(
     scope: 'workspace',
     availableIn: ['user', 'meeting'],
     idempotent: true,
+    paramsSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: '私有区路径，如 ws://notes/a.md' } },
+      required: ['path'],
+    },
   },
   async (args, env) => {
     const r = resolveVirtual(String(args.path ?? ''), env.roots)
@@ -186,6 +213,15 @@ registerTool(
     scope: 'workdir',
     availableIn: ['user'],
     idempotent: false,
+    paramsSchema: {
+      type: 'object',
+      properties: {
+        program: { type: 'string', description: '可执行程序，如 node/npm/git' },
+        args: { type: 'array', items: { type: 'string' }, description: 'argv 数组' },
+        cwd: { type: 'string', description: 'workdir:// 内子目录，缺省 workdir://' },
+      },
+      required: ['program'],
+    },
   },
   async (args, env) => {
     const program = String(args.program ?? '')

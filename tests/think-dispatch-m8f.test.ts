@@ -178,13 +178,17 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
 
     // 2) 回复末尾带平台说明（诚实反馈）
     const evts = (await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions/${sid}/log` }))
-      .json().events as Array<{ kind: string; role?: string; content?: { text?: string } }>
+      .json().events as Array<{ kind: string; role?: string; seq: number; content?: { text?: string } }>
     const agentMsg = evts.find((e) => e.kind === 'message' && e.role === 'agent')!
     expect(agentMsg.content?.text).toContain('【系统 · 任务分派】')
     expect(agentMsg.content?.text).toContain(mine!.id)
     // 审计事件
     expect(evts.filter((e) => e.kind === 'tool_call').length).toBeGreaterThan(0)
     expect(evts.filter((e) => e.kind === 'tool_result').length).toBeGreaterThan(0)
+    // seq 严格递增且不重复（分派路径曾用独立 meta 追加 → 重复 seq 回归保护）
+    const seqs = evts.map((e) => e.seq)
+    expect(new Set(seqs).size).toBe(seqs.length)
+    expect([...seqs].sort((a, b) => a - b)).toEqual(seqs)
 
     // 3) 受派者自动开工：dev_1 的 user 会话收到唤醒消息并完成回合
     const devSid = `u_${dev.instanceId}`
