@@ -2,6 +2,8 @@
  * Agent Haness 前端（无构建静态 ESM；M7 工作台 MVP）。
  * 覆盖：项目列表/创建(选目录+勾角色)、团队与会话列表、聊天(WS 流式/历史)、审批、会议、产出物、记忆/纪要。
  */
+import { renderMarkdown } from './markdown.js'
+
 const $ = (sel) => document.querySelector(sel)
 const $$ = (sel) => [...document.querySelectorAll(sel)]
 
@@ -597,9 +599,7 @@ async function openSession(pid, sid) {
   const box = $('#messages')
   box.innerHTML = ''
   streaming = null
-  const msgs = (d.messages ?? []).filter(
-    (e) => e.role !== 'system' && RENDER_KINDS.has(e.kind),
-  )
+  const msgs = (d.messages ?? []).filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind))
   let lastSeq = meta.lastSeq ?? 0
   let oldest = null
   let renderedAny = false
@@ -664,12 +664,19 @@ function appendMessage(who, text, cls) {
   whoEl.className = 'who'
   whoEl.textContent = who
   const body = document.createElement('div')
-  body.textContent = text
+  fillMessageBody(body, text, cls === 'agent')
   div.appendChild(whoEl)
   div.appendChild(body)
   box.appendChild(div)
   box.scrollTop = box.scrollHeight
   return body
+}
+
+/** 消息正文填充：助手回复渲染 Markdown（已转义），其余纯文本。 */
+function fillMessageBody(el, text, asMarkdown) {
+  if (asMarkdown) el.innerHTML = renderMarkdown(text ?? '')
+  else el.textContent = text ?? ''
+  return el
 }
 
 /** 思考块（可折叠；live 模式省略名字避免与正在流的回答重复）。 */
@@ -768,7 +775,15 @@ function scrollBottom() {
 /** 取当前 sender 的流式状态；换 sender（换回合/换人）则重置。 */
 function streamState(sender) {
   if (!streaming || streaming.sender !== sender) {
-    streaming = { sender, who: '', think: null, thinkHead: null, thinkBody: null, answer: null, answerBody: null }
+    streaming = {
+      sender,
+      who: '',
+      think: null,
+      thinkHead: null,
+      thinkBody: null,
+      answer: null,
+      answerBody: null,
+    }
   }
   if (!streaming.who) {
     streaming.who = sender && sender !== 'user' ? senderName(sender) : 'Agent'
@@ -804,7 +819,7 @@ function ensureThinkBlock(sender) {
   return st
 }
 
-/** 助手回复气泡：与思考块分开的独立块。 */
+/** 助手回复气泡：与思考块分开的独立块；正文按 Markdown 渲染。 */
 function ensureAnswerBlock(sender) {
   const st = streamState(sender)
   if (st.answer && document.body.contains(st.answer)) return st
@@ -821,8 +836,23 @@ function ensureAnswerBlock(sender) {
   box.appendChild(wrap)
   st.answer = wrap
   st.answerBody = body
+  st.raw = ''
   scrollBottom()
   return st
+}
+
+/** 流式增量重渲染 Markdown（按帧节流，避免每个分片全量重排）。 */
+function renderStreamMarkdown(st) {
+  if (!st.answerBody) return
+  if (st.renderPending) return
+  st.renderPending = true
+  const run = () => {
+    st.renderPending = false
+    st.answerBody.innerHTML = renderMarkdown(st.raw ?? '')
+    scrollBottom()
+  }
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+  else setTimeout(run, 0)
 }
 
 let wsReconnectDelay = 1000
@@ -843,13 +873,13 @@ function connectWs(pid) {
         return
       }
       if (e.type === 'message.chunk') {
-        // 助手回复：独立气泡（与思考块分开）
+        // 助手回复：独立气泡（与思考块分开）；正文按 Markdown 渲染
         setTyping(false)
         const st = ensureAnswerBlock(e.payload?.sender)
-        st.answerBody.textContent += e.payload.delta ?? ''
-        scrollBottom()
+        st.raw = (st.raw ?? '') + (e.payload.delta ?? '')
+        renderStreamMarkdown(st)
       } else if (e.type === 'thought.chunk') {
-        // 思考：独立块（不并入回复气泡）
+        // 思考：独立块（纯文本，不并入回复气泡）
         const st = ensureThinkBlock(e.payload?.sender)
         st.thinkBody.textContent += e.payload.delta ?? ''
         scrollBottom()
@@ -857,12 +887,12 @@ function connectWs(pid) {
         if (streaming?.thinkHead && document.body.contains(streaming.thinkHead)) {
           streaming.thinkHead.textContent = `${streaming.who} · 🧠 思考过程`
         }
+        if (streaming?.answerBody) {
+          streaming.answerBody.innerHTML = renderMarkdown(streaming.raw ?? '')
+        }
         streaming = null
         current.seenSeq = e.payload?.seq ?? current.seenSeq
-        current.lastRenderedSeq = Math.max(
-          current.lastRenderedSeq,
-          Number(e.payload?.seq ?? 0),
-        )
+        current.lastRenderedSeq = Math.max(current.lastRenderedSeq, Number(e.payload?.seq ?? 0))
         setTyping(false)
         setSendBusy(false)
         refreshPanels()
@@ -956,7 +986,7 @@ async function loadOlder() {
         whoEl.className = 'who'
         whoEl.textContent = m.role === 'user' ? '我' : senderName(m.sender)
         const body = document.createElement('div')
-        body.textContent = m.content?.text ?? ''
+        fillMessageBody(body, m.content?.text ?? '', m.role !== 'user')
         div.appendChild(whoEl)
         div.appendChild(body)
         box.insertBefore(div, beforeEl)

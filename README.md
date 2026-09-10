@@ -24,19 +24,20 @@ npm run build && npm start   # 生产：tsc 编译后单端口运行
 
 ## 已实现能力（对应 v0.2 需求基线）
 
-| 模块 | 落地内容 |
-| --- | --- |
-| 角色库与组队 | 8 内置模板(YAML) + 自定义模板 CRUD(内置只读) + 项目内实例化(模板快照/停用保留数据) |
-| 会话与聊天 | user 会话骨架；消息/回合事件(seq/turn/turn_start/end)落盘；Mock/OpenAI/Ollama 网关；**WS 流式 chunk+commit、先盘后推**；重启恢复 |
-| think 展示(2026-09-09) | 模型 reasoning 增量经 `thought.chunk` 实时上屏（🧠 思考块，可折叠），流结束以 `thought` 事件落盘、重进可见；`plan/tool_call` 以"计划/将执行"行展示，告知用户 Agent 接下来要做什么 |
-| Agent 运行时 | 单工占用 occupancy(runtime.state 落盘)；loop 按实例策略提示(direct/reflective/plan-execute)；**工具循环**：模型 function-calling → 角色白名单工具执行 → 结果回注，至多 6 步 |
-| 工具与审批 | PolicyEngine 命令判定 + 虚拟路径 L0 边界 + 工具执行器(fs/ws/cmd_run/workdir_edit/记忆检索) + 高危命令审批桥(approvals.jsonl，批准续跑/拒绝不执行)；**工具调用全程落 tool_call/tool_result 审计事件并在会话流中可见** |
-| 代码受控编辑(2026-09-09) | `workdir_edit` 单文件声明式写/替换 + diff 轨迹；dispatcher 注入**当前任务**为归属锚点（改动按 taskId 聚合），任务 done/terminated 时结算为 code artifact 快照（D14-⑧/D17-①） |
-| 产出物提交制 | 静态产物(ws→workdir 拷贝+sha256+版本快照 v<n>)；doc 门审批(只读预览)；回退按快照恢复；manifest 审计 |
-| 记忆与检索 | L3 记忆(全局/角色, active/superseded)；滚动摘要(summary 事件+summaryRefs)；中文 2-gram 倒排索引(可再生)+跨会话/记忆搜索 |
-| 会议 | queued/proposed/open/blocked_waiting_user/closed 状态机；成员接受转 open；**用户决策点阻塞→拍板继续**；结束纪要回写参与者与全局记忆 |
-| 工作台 | 无构建静态 SPA(web/)：项目向导、聊天(WS 流式)、审批、会议、产出物回退、记忆/纪要；项目导出 zip |
-| 存储 | 纯文件系统(JSON/JSONL/YAML)；无数据库；数据目录不入库，拷贝即迁移 |
+| 模块                     | 落地内容                                                                                                                                                                                                             |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 角色库与组队             | 8 内置模板(YAML) + 自定义模板 CRUD(内置只读) + 项目内实例化(模板快照/停用保留数据)                                                                                                                                   |
+| 会话与聊天               | user 会话骨架；消息/回合事件(seq/turn/turn_start/end)落盘；Mock/OpenAI/Ollama 网关；**WS 流式 chunk+commit、先盘后推**；重启恢复                                                                                     |
+| think 展示(2026-09-09)   | 模型 reasoning 增量经 `thought.chunk` 实时上屏（🧠 思考块，可折叠、独立于回复气泡），流结束以 `thought` 事件落盘、重进可见；`plan/tool_call` 以"计划/将执行"行展示，告知用户 Agent 接下来要做什么                    |
+| 回复渲染(2026-09-09)     | 助手回复按 Markdown 渲染（自研无依赖渲染器 `web/markdown.js`：标题/列表/代码块/行内代码/粗斜体/链接/引用/表格/hr）；先转义后渲染、链接仅放行 http(s)/mailto；用户消息与思考块保持纯文本                              |
+| Agent 运行时             | 单工占用 occupancy(runtime.state 落盘)；loop 按实例策略提示(direct/reflective/plan-execute)；**工具循环**：模型 function-calling → 角色白名单工具执行 → 结果回注，至多 6 步                                          |
+| 工具与审批               | PolicyEngine 命令判定 + 虚拟路径 L0 边界 + 工具执行器(fs/ws/cmd_run/workdir_edit/记忆检索) + 高危命令审批桥(approvals.jsonl，批准续跑/拒绝不执行)；**工具调用全程落 tool_call/tool_result 审计事件并在会话流中可见** |
+| 代码受控编辑(2026-09-09) | `workdir_edit` 单文件声明式写/替换 + diff 轨迹；dispatcher 注入**当前任务**为归属锚点（改动按 taskId 聚合），任务 done/terminated 时结算为 code artifact 快照（D14-⑧/D17-①）                                         |
+| 产出物提交制             | 静态产物(ws→workdir 拷贝+sha256+版本快照 v<n>)；doc 门审批(只读预览)；回退按快照恢复；manifest 审计                                                                                                                  |
+| 记忆与检索               | L3 记忆(全局/角色, active/superseded)；滚动摘要(summary 事件+summaryRefs)；中文 2-gram 倒排索引(可再生)+跨会话/记忆搜索                                                                                              |
+| 会议                     | queued/proposed/open/blocked_waiting_user/closed 状态机；成员接受转 open；**用户决策点阻塞→拍板继续**；结束纪要回写参与者与全局记忆                                                                                  |
+| 工作台                   | 无构建静态 SPA(web/)：项目向导(角色可全选)、聊天(WS 流式 + Markdown 回复 + 思考块)、审批、会议、产出物回退、记忆/纪要；项目导出 zip                                                                                  |
+| 存储                     | 纯文件系统(JSON/JSONL/YAML)；无数据库；数据目录不入库，拷贝即迁移                                                                                                                                                    |
 
 ## 已知边界 / 待办（诚实清单）
 
