@@ -486,6 +486,31 @@ fieldset {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+/* 创建项目：角色全选 + 角色网格 */
+#w-roles legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+}
+.role-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent);
+}
+.role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 2px;
+}
+.role-list .who {
+  color: var(--muted);
+  font-size: 12px;
+}
 .card h3 {
   margin: 4px 0;
 }

@@ -169,11 +169,23 @@ function bindGlobal() {
   $('#btn-home').addEventListener('click', () => showProjectsView())
   $('#btn-new-project').addEventListener('click', loadRolePicker)
   // 每次打开弹窗都重新拉角色（容错：失败 toast，避免空列表）
+  /** 同步「全选」勾选态（含半选）与已选计数。 */
+  function syncRoleAll() {
+    const boxes = $$('#w-roles-list input[type="checkbox"]')
+    const all = $('#w-role-all')
+    const checked = boxes.filter((b) => b.checked).length
+    all.checked = boxes.length > 0 && checked === boxes.length
+    all.indeterminate = checked > 0 && checked < boxes.length
+    all.disabled = boxes.length === 0
+    $('#w-role-count').textContent = boxes.length ? `已选 ${checked}/${boxes.length}` : ''
+  }
+
   async function loadRolePicker() {
     const w = $('#wizard')
     w.classList.remove('hidden')
-    const box = $('#w-roles')
-    box.innerHTML = '<li class="who">加载角色…</li>'
+    const box = $('#w-roles-list')
+    box.innerHTML = '<div class="who">加载角色…</div>'
+    $('#w-role-count').textContent = ''
     try {
       const d = await api('/roles')
       box.innerHTML = ''
@@ -184,20 +196,27 @@ function bindGlobal() {
         cb.type = 'checkbox'
         cb.value = r.roleId
         cb.checked = ['pm', 'product', 'dev'].includes(r.roleId)
+        cb.addEventListener('change', syncRoleAll)
         lab.appendChild(cb)
         lab.appendChild(document.createTextNode(`${r.name}(${r.roleId})`))
         box.appendChild(lab)
       }
       if (!(d.roles ?? []).length) {
-        box.innerHTML = '<li class="who">暂无角色模板（检查服务端 src/shared/roles）</li>'
+        box.innerHTML = '<div class="who">暂无角色模板（检查服务端 src/shared/roles）</div>'
       }
     } catch (e) {
-      box.innerHTML = '<li class="who">角色加载失败：' + escapeHtml(e.message) + '</li>'
+      box.innerHTML = '<div class="who">角色加载失败：' + escapeHtml(e.message) + '</div>'
     }
+    syncRoleAll()
   }
+  // 「全选」：一次勾选/取消全部角色（手动增删后由 syncRoleAll 回写半选态）
+  $('#w-role-all').addEventListener('change', (e) => {
+    for (const cb of $$('#w-roles-list input[type="checkbox"]')) cb.checked = e.target.checked
+    syncRoleAll()
+  })
   $('#btn-wizard-close').addEventListener('click', () => $('#wizard').classList.add('hidden'))
   $('#btn-create').addEventListener('click', async () => {
-    const team = $$('#w-roles input:checked').map((c) => ({ roleTemplateId: c.value }))
+    const team = $$('#w-roles-list input:checked').map((c) => ({ roleTemplateId: c.value }))
     if (!team.length) {
       toast('请至少勾选一个角色（如 产品/开发）')
       return

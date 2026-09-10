@@ -80,7 +80,16 @@
             <button type="button" id="btn-pick-dir">选择文件夹…</button>
           </div>
         </label>
-        <fieldset id="w-roles"><legend>角色</legend></fieldset>
+        <fieldset id="w-roles">
+          <legend>
+            角色
+            <label class="role-all" title="勾选/取消全部角色"
+              ><input type="checkbox" id="w-role-all" /> 全选</label
+            >
+            <span id="w-role-count" class="who"></span>
+          </legend>
+          <div id="w-roles-list" class="role-list"></div>
+        </fieldset>
         <div class="row">
           <button id="btn-create" class="primary">创建并进入</button>
           <button id="btn-wizard-close">取消</button>
