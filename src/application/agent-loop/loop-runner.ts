@@ -438,10 +438,15 @@ export class AgentLoopRunner {
       '回复要求：中文、简洁、直接给结论；涉及需要用户拍板/审批的事项必须明确说明，不替用户做决定。',
     ]
     if (tools.length) {
+      const hasAsk = tools.some((t) => t.name === 'ask_user')
       parts.push(
         `[可用工具] ${tools.map((t) => t.name).join('、')}。` +
           '需要查看/修改工作目录或检索信息时请直接调用工具，不要凭空猜测文件内容；' +
-          '写工作目录用 workdir_edit，运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。',
+          '写工作目录用 workdir_edit，运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。' +
+          (hasAsk
+            ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
+              '不要替用户决定；调用后请结束本轮并等待用户在会话中回答。'
+            : ''),
       )
     }
     if (activeTask) {

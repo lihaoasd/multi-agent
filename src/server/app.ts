@@ -17,6 +17,7 @@ import AdmZip from 'adm-zip'
 import type { RoleTemplate } from '../shared/types/role.js'
 import type { Services } from '../application/composition.js'
 import { composeToolEnv } from '../application/composition.js'
+import { QuestionService } from '../application/question/question-service.js'
 import type { TeamAddInput, TeamPatchInput } from '../application/team/team-service.js'
 
 /** 组装应用（不监听端口，便于测试注入）。 */
@@ -48,6 +49,7 @@ export async function buildApp(svc: Services): Promise<FastifyInstance> {
   registerMemorySearchRoutes(app, svc)
   registerMeetingRoutes(app, svc)
   registerTaskRoutes(app, svc)
+  registerQuestionRoutes(app, svc)
   registerAttentionRoute(app, svc)
   registerExportRoutes(app, svc)
   registerBrowseRoutes(app)
@@ -447,6 +449,48 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       assignee: b.assignee,
     })
     return { task }
+  })
+}
+
+function registerQuestionRoutes(app: FastifyInstance, svc: Services): void {
+  const { questions, sessionService, sessionStore } = svc
+
+  app.get<{
+    Params: { pid: string }
+    Querystring: { status?: string; sessionId?: string }
+  }>('/api/projects/:pid/questions', async (req) => ({
+    questions: await questions.list(req.params.pid, {
+      status: req.query.status,
+      sessionId: req.query.sessionId,
+    }),
+  }))
+
+  /**
+   * 回答提问：落 answered → 把答复作为一条用户消息写回会话 → 触发 Agent 回合继续。
+   * （会话不存在/非 user 会话/角色停用时只落记录，返回 wakeError 说明。）
+   */
+  app.post<{
+    Params: { pid: string; qid: string }
+    Body: { choice?: string; choices?: string[]; text?: string }
+  }>('/api/projects/:pid/questions/:qid/answer', async (req) => {
+    const pid = req.params.pid
+    const rec = await questions.answer(pid, req.params.qid, {
+      choice: req.body?.choice,
+      choices: req.body?.choices,
+      text: req.body?.text,
+    })
+    let wakeError: string | null = null
+    const meta = await sessionStore.tryReadMeta(pid, rec.sessionId)
+    if (!meta) wakeError = `会话不存在: ${rec.sessionId}`
+    else if (meta.type !== 'user') wakeError = '非 user 会话，答复未回注 Agent'
+    else {
+      try {
+        await sessionService.sendUserMessage(pid, rec.sessionId, QuestionService.answerText(rec))
+      } catch (e) {
+        wakeError = `答复未触发 Agent 回合：${e instanceof Error ? e.message : String(e)}`
+      }
+    }
+    return { question: rec, wakeError }
   })
 }
 

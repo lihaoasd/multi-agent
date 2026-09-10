@@ -1,7 +1,8 @@
 /**
- * 应用级工具注册（记忆/检索/受控编辑类，需服务依赖），组合根启动时调用一次。
+ * 应用级工具注册（记忆/检索/受控编辑/用户交互类，需服务依赖），组合根启动时调用一次。
  * 只读/检索类在 user+meeting 可用；memory_append own 写入、全局仅 pm_1（D18-② 权限）。
  * workdir_edit：code 受控编辑（写通道①，D14-⑧），仅 user 会话，改动归属 taskId 聚合轨迹。
+ * ask_user：向用户提问/确认（单选·多选·确认·文本），仅 user 会话；用户回答后唤醒新回合。
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -12,13 +13,15 @@ import { resolveVirtual } from '../../domain/rules/path-resolver.js'
 import { MemoryStore } from '../memory/memory-store.js'
 import { SearchService } from '../search/search-service.js'
 import { CodeEditStore } from '../code-edit/code-edit-store.js'
+import type { QuestionService } from '../question/question-service.js'
 
 export function registerServiceTools(deps: {
   memory: MemoryStore
   search: SearchService
   codeEdits: CodeEditStore
+  questions?: QuestionService
 }): void {
-  const { memory, search, codeEdits } = deps
+  const { memory, search, codeEdits, questions } = deps
 
   registerTool(
     {
@@ -155,7 +158,8 @@ export function registerServiceTools(deps: {
       }
       const abs = ensureInside(env.roots.workdirRoot, r.absolute, 'relPath')
       // 归属锚点：dispatcher 注入的当前任务优先（D15）；模型自报仅作兜底
-      const taskId = env.taskId ?? (args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`)
+      const taskId =
+        env.taskId ?? (args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`)
 
       // 逐条应用编辑（整体事务：任一步失败不改文件）
       let current = await readFile(abs, 'utf8').catch(() => '')
@@ -200,6 +204,68 @@ export function registerServiceTools(deps: {
       }
     },
   )
+
+  // 用户询问/确认（单选·多选·确认·文本）：落 pending 提问，用户在会话内卡片回答后唤醒新回合
+  if (questions) {
+    registerTool(
+      {
+        name: 'ask_user',
+        description:
+          '向用户（老板）提问/请求确认：kind=confirm 确认、single 单选、multi 多选、text 自由文本；' +
+          '当你需要用户拍板、选择方案或补充信息时使用，不要替用户决定',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: '要问用户的问题（清晰、可回答）' },
+            kind: {
+              type: 'string',
+              enum: ['confirm', 'single', 'multi', 'text'],
+              description: '交互形式，缺省 confirm（确认/取消）',
+            },
+            options: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'single/multi 必填（≥2 项）；confirm 缺省「确认/取消」',
+            },
+            allowText: { type: 'boolean', description: '是否允许用户附加补充说明' },
+          },
+          required: ['question'],
+        },
+      },
+      async (args, env) => {
+        try {
+          const rec = await questions.ask({
+            projectId: env.projectId,
+            sessionId: env.sessionId ?? `u_${env.instanceId}`,
+            asker: env.instanceId,
+            question: String(args.question ?? ''),
+            kind: args.kind === undefined ? undefined : String(args.kind),
+            options: Array.isArray(args.options) ? args.options.map(String) : undefined,
+            allowText: args.allowText === true,
+          })
+          return {
+            ok: true,
+            summary:
+              `已向用户提问（${rec.id}，${rec.kind}）：${rec.question}` +
+              (rec.options.length ? `\n选项：${rec.options.join(' / ')}` : '') +
+              '\n请结束本轮并等待用户在会话中回答；不要臆测用户的答复。',
+          }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_TOOL_REJECTED',
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      },
+    )
+  }
 }
 
 function isVisibleTo(sessionId: string | undefined, env: { instanceId: string }): boolean {

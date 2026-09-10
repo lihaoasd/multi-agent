@@ -34,6 +34,8 @@ export interface ToolEnv {
   projectId: string
   approvalPolicy: { highRiskCommands: boolean }
   offline: boolean
+  /** 当前回合所在会话 id（ask_user 等需要绑定会话的工具使用） */
+  sessionId?: string
   /** 当前激活任务 id（dispatcher 注入）：workdir_edit 等按任务聚合归属 */
   taskId?: string
   /** 用户已批准该次调用时置 true（approval 桥续跑） */

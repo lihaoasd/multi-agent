@@ -498,6 +498,57 @@ button.ghost {
 #attention-items .att-title {
   flex: 1;
 }
+/* 待回答提问卡片（会话内 + 需你处理弹窗） */
+#question-zone {
+  margin-top: 6px;
+}
+.q-card {
+  border: 1px solid #f0c36d;
+  background: #fffaf0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.q-card .q-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #b8860b;
+}
+.q-card .q-text {
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.q-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.q-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.q-input {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  width: 100%;
+}
+.q-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+#attention-items li.att-question {
+  flex-direction: column;
+  align-items: stretch;
+}
 .task-item {
   border-bottom: 1px dashed var(--line);
   padding: 4px 0;

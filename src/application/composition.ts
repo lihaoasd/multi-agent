@@ -22,6 +22,7 @@ import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
 import { TaskService } from './task/task-service.js'
 import { dispatchTasksFromText } from './task/task-dispatch.js'
+import { QuestionService } from './question/question-service.js'
 import { CodeEditStore } from './code-edit/code-edit-store.js'
 import { AttentionService } from './attention/attention-service.js'
 import { registerServiceTools } from './tools/service-tools.js'
@@ -47,6 +48,7 @@ export interface Services {
   search: SearchService
   meetings: MeetingService
   tasks: TaskService
+  questions: QuestionService
   attention: AttentionService
 }
 
@@ -71,6 +73,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const gateway = new ModelGateway({ models: config.models })
   const memory = new MemoryStore(projectsRoot)
   const summary = new SummaryEngine(sessionStore)
+  const questions = new QuestionService(projectsRoot)
   // loop opts 可变：taskDispatch 依赖 tasks（后建），组合尾部再绑定（运行期读取）
   const loopOpts: ConstructorParameters<typeof AgentLoopRunner>[0] = {
     store: sessionStore,
@@ -97,8 +100,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   )
   const search = new SearchService(projectsRoot, sessionStore)
   const codeEdits = new CodeEditStore(projectsRoot)
-  // 应用级工具注册（记忆/检索/受控编辑）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
-  registerServiceTools({ memory, search, codeEdits })
+  // 应用级工具注册（记忆/检索/受控编辑/用户交互）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
+  registerServiceTools({ memory, search, codeEdits, questions })
   const meetings = new MeetingService(
     sessionStore,
     memory,
@@ -176,7 +179,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
         })
     },
   )
-  const attention = new AttentionService(approvals, meetings)
+  const attention = new AttentionService(approvals, meetings, questions)
 
   // 当前激活任务（in_progress 且属本会话）：系统提示注入 + workdir_edit 聚合锚点（D15）
   const activeTaskOf = async (ctx: TurnContext): Promise<ActiveTask | null> => {
@@ -188,12 +191,18 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     return t ? { id: t.id, title: t.title, desc: t.desc } : null
   }
 
-  // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性
+  // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性。
+  // ask_user 为平台交互能力：user 会话始终可用（老项目快照的 tools 里没有也能用）。
+  const PLATFORM_USER_TOOLS = new Set(['ask_user'])
   loopOpts.toolRuntime = {
     listTools: (ctx, sessionType) => {
       const allowed = new Set(ctx.member.tools ?? [])
       return listToolDefs()
-        .filter((d) => allowed.has(d.name) && d.availableIn.includes(sessionType))
+        .filter(
+          (d) =>
+            d.availableIn.includes(sessionType) &&
+            (allowed.has(d.name) || (sessionType === 'user' && PLATFORM_USER_TOOLS.has(d.name))),
+        )
         .map((d) => ({
           name: d.name,
           description: d.description,
@@ -202,10 +211,16 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     },
     exec: async (ctx, sessionType, name, args) => {
       const task = await activeTaskOf(ctx)
-      const env = await buildToolEnv({ config, projectService }, ctx.projectId, ctx.member.instanceId, {
-        taskId: task?.id,
-        sessionType: sessionType === 'meeting' ? 'meeting' : 'user',
-      })
+      const env = await buildToolEnv(
+        { config, projectService },
+        ctx.projectId,
+        ctx.member.instanceId,
+        {
+          taskId: task?.id,
+          sessionId: ctx.sessionId,
+          sessionType: sessionType === 'meeting' ? 'meeting' : 'user',
+        },
+      )
       return executeTool(name, args, env)
     },
     requestApproval: async (ctx, name, args) => {
@@ -279,6 +294,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     search,
     meetings,
     tasks,
+    questions,
     attention,
   }
 }
@@ -288,7 +304,7 @@ export async function composeToolEnv(
   svc: Services,
   projectId: string,
   instanceId: string,
-  opts: { taskId?: string; sessionType?: 'user' | 'meeting' } = {},
+  opts: { taskId?: string; sessionId?: string; sessionType?: 'user' | 'meeting' } = {},
 ): Promise<ToolEnv> {
   return buildToolEnv(
     { config: svc.config, projectService: svc.projectService },
@@ -303,7 +319,7 @@ export async function buildToolEnv(
   deps: Pick<Services, 'config' | 'projectService'>,
   projectId: string,
   instanceId: string,
-  opts: { taskId?: string; sessionType?: 'user' | 'meeting' } = {},
+  opts: { taskId?: string; sessionId?: string; sessionType?: 'user' | 'meeting' } = {},
 ): Promise<ToolEnv> {
   const project = await deps.projectService.get(projectId)
   const team = await deps.projectService.listTeam(projectId)
@@ -324,5 +340,6 @@ export async function buildToolEnv(
     approvalPolicy: project.approvalPolicy,
     offline: deps.config.sandbox.network === 'offline',
     taskId: opts.taskId,
+    sessionId: opts.sessionId,
   }
 }

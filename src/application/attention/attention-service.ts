@@ -1,27 +1,36 @@
 /**
- * 「需你处理」待办聚合（D17-③ 阻塞级三类之服务端汇总：会议拍板 / 高危命令与提交审批）。
+ * 「需你处理」待办聚合（D17-③ 阻塞级三类之服务端汇总：会议拍板 / 高危命令与提交审批 / 角色提问）。
  * 供顶部待办条与 UI 角标使用；解除=对应原处操作后自动消失（不做第二份状态）。
  */
 import { ApprovalService } from '../approval/approval-service.js'
 import { MeetingService, type MeetingRecord } from '../meeting/meeting-service.js'
+import type { QuestionService } from '../question/question-service.js'
 
 export interface AttentionItem {
-  kind: 'approval' | 'meeting'
+  kind: 'approval' | 'meeting' | 'question'
   id: string
   title: string
   detail: string
   sessionId: string | null
   at: string
-  /** 原地操作引用：审批=approvalId；会议拍板=meetingId+questionId */
+  /** 原地操作引用：审批=approvalId；会议拍板=meetingId+questionId；提问=questionId */
   approvalId?: string
   meetingId?: string
   questionId?: string
+}
+
+const KIND_ZH: Record<string, string> = {
+  confirm: '确认',
+  single: '单选',
+  multi: '多选',
+  text: '文本',
 }
 
 export class AttentionService {
   constructor(
     private readonly approvals: ApprovalService,
     private readonly meetings: MeetingService,
+    private readonly questions?: QuestionService,
   ) {}
 
   async list(projectId: string): Promise<AttentionItem[]> {
@@ -55,6 +64,20 @@ export class AttentionService {
           at: dp.at,
           meetingId: m.id,
           questionId: dp.id,
+        })
+      }
+    }
+    if (this.questions) {
+      const pendingQ = await this.questions.list(projectId, { status: 'pending' })
+      for (const q of pendingQ) {
+        out.push({
+          kind: 'question',
+          id: q.id,
+          title: `${q.asker} 问你：${q.question.slice(0, 60)}`,
+          detail: `需要你${KIND_ZH[q.kind] ?? q.kind}${q.options.length ? `：${q.options.join(' / ')}` : ''}`,
+          sessionId: q.sessionId,
+          at: q.createdAt,
+          questionId: q.id,
         })
       }
     }

@@ -17,6 +17,7 @@ let current = {
   meetings: [],
   artifacts: [],
   tasks: [],
+  questions: [],
   oldestSeq: null,
   /** 本次已从历史渲染到的最新 seq（用于过滤广播中重复事件） */
   lastRenderedSeq: 0,
@@ -774,6 +775,7 @@ async function openSession(pid, sid) {
   const d = await api(`/projects/${pid}/sessions/${sid}`)
   const meta = d.session
   renderSessionHeader(meta)
+  renderQuestions()
   const box = $('#messages')
   box.innerHTML = ''
   streaming = null
@@ -821,6 +823,132 @@ async function openSession(pid, sid) {
   } else {
     composer.classList.add('hidden')
   }
+}
+
+/** 提问交互类型中文名。 */
+const Q_KIND_ZH = { confirm: '确认', single: '单选', multi: '多选', text: '文本' }
+
+/**
+ * 待回答提问卡片（会话内交互，也用于「需你处理」弹窗）：
+ * confirm/single → radio；multi → checkbox；text → 输入框；allowText → 附加说明。
+ */
+function buildQuestionCard(q, opts = {}) {
+  const card = document.createElement('div')
+  card.className = 'q-card'
+  const head = document.createElement('div')
+  head.className = 'q-head'
+  head.textContent = `❓ ${senderName(q.asker)} 需要你${Q_KIND_ZH[q.kind] ?? q.kind}${
+    q.kind === 'confirm' || q.kind === 'text' ? '' : '选择'
+  }`
+  const text = document.createElement('div')
+  text.className = 'q-text'
+  text.textContent = q.question
+  card.appendChild(head)
+  card.appendChild(text)
+
+  const inputs = { choice: null, choices: [], text: null }
+  if (q.kind === 'confirm' || q.kind === 'single') {
+    const box = document.createElement('div')
+    box.className = 'q-options'
+    for (const o of q.options ?? []) {
+      const lab = document.createElement('label')
+      lab.className = 'q-option'
+      const radio = document.createElement('input')
+      radio.type = 'radio'
+      radio.name = `q_${q.id}`
+      radio.value = o
+      radio.addEventListener('change', () => {
+        inputs.choice = o
+      })
+      lab.appendChild(radio)
+      lab.appendChild(document.createTextNode(o))
+      box.appendChild(lab)
+    }
+    card.appendChild(box)
+  } else if (q.kind === 'multi') {
+    const box = document.createElement('div')
+    box.className = 'q-options'
+    for (const o of q.options ?? []) {
+      const lab = document.createElement('label')
+      lab.className = 'q-option'
+      const cb = document.createElement('input')
+      cb.type = 'checkbox'
+      cb.value = o
+      cb.addEventListener('change', () => {
+        inputs.choices = [...box.querySelectorAll('input:checked')].map((c) => c.value)
+      })
+      lab.appendChild(cb)
+      lab.appendChild(document.createTextNode(o))
+      box.appendChild(lab)
+    }
+    card.appendChild(box)
+  } else {
+    const ta = document.createElement('textarea')
+    ta.className = 'q-input'
+    ta.rows = 2
+    ta.placeholder = '请输入你的回答'
+    ta.addEventListener('input', () => {
+      inputs.text = ta.value
+    })
+    card.appendChild(ta)
+  }
+  if (q.allowText && q.kind !== 'text') {
+    const note = document.createElement('input')
+    note.className = 'q-input'
+    note.placeholder = '补充说明（可选）'
+    note.addEventListener('input', () => {
+      inputs.text = note.value
+    })
+    card.appendChild(note)
+  }
+
+  const row = document.createElement('div')
+  row.className = 'q-actions'
+  const submit = document.createElement('button')
+  submit.className = 'primary'
+  submit.textContent = '提交回答'
+  submit.addEventListener('click', async () => {
+    submit.disabled = true
+    const ok = await submitQuestionAnswer(q, inputs, opts)
+    submit.disabled = false
+    if (ok && opts.compact) $('#attention-modal').classList.add('hidden')
+  })
+  row.appendChild(submit)
+  card.appendChild(row)
+  return card
+}
+
+/** 提交回答：成功后刷新面板（Agent 回合由服务端唤醒，WS 流式返回）。 */
+async function submitQuestionAnswer(q, inputs, opts = {}) {
+  const body = {}
+  if (q.kind === 'multi') body.choices = inputs.choices
+  else if (q.kind === 'text') body.text = String(inputs.text ?? '').trim()
+  else body.choice = inputs.choice
+  if (q.allowText && q.kind !== 'text' && inputs.text) body.text = String(inputs.text).trim()
+  try {
+    const d = await api(`/projects/${current.pid}/questions/${q.id}/answer`, 'POST', body)
+    toast(d.wakeError ? d.wakeError : `已提交回答，${senderName(q.asker)} 继续处理…`)
+    await refreshPanels()
+    if (opts.onDone) await opts.onDone()
+    return true
+  } catch (e) {
+    toast('提交失败：' + e.message)
+    return false
+  }
+}
+
+/** 会话窗口内的待回答提问卡片（输入框上方）。 */
+function renderQuestions() {
+  const zone = $('#question-zone')
+  if (!zone) return
+  zone.innerHTML = ''
+  const list = (current.questions ?? []).filter((q) => q.sessionId === current.sessionId)
+  if (!list.length) {
+    zone.classList.add('hidden')
+    return
+  }
+  zone.classList.remove('hidden')
+  for (const q of list) zone.appendChild(buildQuestionCard(q))
 }
 
 function senderName(sender) {
@@ -1337,19 +1465,22 @@ function buildToolNode(who, e) {
 async function refreshPanels() {
   if (!current.pid) return
   try {
-    const [a, m, ar, mem, att, tk] = await Promise.all([
+    const [a, m, ar, mem, att, tk, qs] = await Promise.all([
       api(`/projects/${current.pid}/approvals?status=pending`),
       api(`/projects/${current.pid}/meetings`),
       api(`/projects/${current.pid}/artifacts`),
       api(`/projects/${current.pid}/memories?scope=global`),
       api(`/projects/${current.pid}/needs-attention`),
       api(`/projects/${current.pid}/tasks`),
+      api(`/projects/${current.pid}/questions?status=pending`),
     ])
     current.approvals = a.approvals ?? []
     current.meetings = m.meetings ?? []
     current.artifacts = ar.artifacts ?? []
     current.tasks = tk.tasks ?? []
+    current.questions = qs.questions ?? []
     renderApprovals()
+    renderQuestions()
     renderMeetings()
     renderMeetingsNav()
     renderArtifacts()
@@ -1425,9 +1556,10 @@ async function openAttentionModal() {
   ul.innerHTML = ''
   for (const it of items) {
     const li = document.createElement('li')
+    const KIND_LABEL = { approval: '审批', meeting: '会议', question: '提问' }
     const title = document.createElement('span')
     title.className = 'att-title'
-    title.textContent = `[${it.kind === 'approval' ? '审批' : '会议'}] ${it.title}`
+    title.textContent = `[${KIND_LABEL[it.kind] ?? it.kind}] ${it.title}`
     li.appendChild(title)
     if (it.kind === 'approval') {
       const ok = document.createElement('button')
@@ -1467,6 +1599,27 @@ async function openAttentionModal() {
         openAttentionModal()
       }
       li.appendChild(ok)
+    } else if (it.kind === 'question') {
+      // 直接就地交互（单选/多选/确认/文本）；找不到详情时提供跳转
+      const q = (current.questions ?? []).find((x) => x.id === it.questionId)
+      li.classList.add('att-question')
+      if (q) {
+        li.appendChild(
+          buildQuestionCard(q, {
+            compact: true,
+            onDone: () => openAttentionModal(),
+          }),
+        )
+      } else {
+        const go = document.createElement('button')
+        go.className = 'primary'
+        go.textContent = '去会话回答'
+        go.onclick = async () => {
+          $('#attention-modal').classList.add('hidden')
+          if (it.sessionId) await openSession(current.pid, it.sessionId)
+        }
+        li.appendChild(go)
+      }
     }
     ul.appendChild(li)
   }
