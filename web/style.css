@@ -284,6 +284,26 @@ li.active {
   border-left-color: #9aa5b5;
   background: #f7f8fa;
 }
+/* 工具行状态：进行中 / 完成 / 失败（一次调用只占一行） */
+.msg.audit.running {
+  border-left-color: #e0a92e;
+}
+.msg.audit.done {
+  border-left-color: var(--ok);
+}
+.msg.audit.failed {
+  border-left-color: var(--danger);
+  background: #fdf3f2;
+}
+.msg.audit.running .activity-label {
+  color: #b8860b;
+}
+.msg.audit.done .activity-label {
+  color: var(--ok);
+}
+.msg.audit.failed .activity-label {
+  color: var(--danger);
+}
 .msg .activity-label {
   font-weight: 600;
   color: var(--accent);

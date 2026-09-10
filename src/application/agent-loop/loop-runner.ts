@@ -151,12 +151,18 @@ export class AgentLoopRunner {
     })
 
     const convo: ChatMessage[] = [{ role: 'system', content: system }, ...history]
-    const textParts: string[] = []
-    let reasoning = ''
+    /** 已落盘的步骤正文（拼起来供分派解析与兜底判断） */
+    const flushedTexts: string[] = []
+    /** 最后一步已收到、尚未落盘的正文（等分派说明合并后再落一条消息） */
+    let pendingText = ''
+    let thoughtCount = 0
+    let failureText = ''
+    let lastSeq = 0
     const maxSteps = Math.max(1, this.opts.toolRuntime?.maxSteps ?? 6)
     try {
       for (let step = 0; step < maxSteps; step++) {
         let stepText = ''
+        let stepReasoning = ''
         const calls = new Map<number, { id?: string; name?: string; args: string }>()
         for await (const item of this.opts.gateway.streamChat({
           providerId: ctx.member.model,
@@ -172,7 +178,7 @@ export class AgentLoopRunner {
             })
           }
           if (item.reasoning) {
-            reasoning += item.reasoning
+            stepReasoning += item.reasoning
             this.opts.bus.emitThoughtChunk(ctx.projectId, ctx.sessionId, {
               turnId,
               delta: item.reasoning,
@@ -187,8 +193,20 @@ export class AgentLoopRunner {
             calls.set(item.toolCall.index, cur)
           }
         }
-        if (stepText.trim()) textParts.push(stepText.trim())
-        if (!calls.size || !this.opts.toolRuntime) break
+        // 步骤边界：按时间顺序落盘本步的「思考 → 正文」。
+        // 有工具调用的步骤必须立即落盘，否则刷新后（历史按 seq 回放）顺序会与实时不一致。
+        if (stepReasoning.trim()) {
+          lastSeq = await this.appendThought(ctx, meta, stepReasoning, turnId)
+          thoughtCount++
+        }
+        if (!calls.size || !this.opts.toolRuntime) {
+          pendingText = stepText.trim() // 最后一步：待分派说明合并后落一条消息
+          break
+        }
+        if (stepText.trim()) {
+          lastSeq = await this.appendStepMessage(ctx, meta, stepText.trim(), turnId)
+          flushedTexts.push(stepText.trim())
+        }
 
         const toolCalls: ChatToolCall[] = []
         const toolMessages: ChatMessage[] = []
@@ -199,6 +217,7 @@ export class AgentLoopRunner {
           toolCalls.push({ id, name, arguments: cur.args || '{}' })
           const args = parseToolArgs(cur.args)
           await this.appendAudit(ctx, meta, 'tool_call', {
+            callId: id,
             tool: name,
             input: summarizeValue(args),
           })
@@ -234,6 +253,7 @@ export class AgentLoopRunner {
             }
           }
           await this.appendAudit(ctx, meta, 'tool_result', {
+            callId: id,
             tool: name,
             ...(result.ok
               ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
@@ -260,53 +280,51 @@ export class AgentLoopRunner {
         },
       })
       this.opts.bus.emitLogEvent(ctx.projectId, errEvent)
-      textParts.push(`（模型调用失败：${err instanceof Error ? err.message : err}）`)
-    }
-    let text = textParts.join('\n')
-    // 推理型模型可能"只出思考、未出正文"（预算耗尽/流中断）：给用户明确交代，不留空气泡。
-    // 注意：思考（reasoning）与正文（content）是两路，思考只进 thought 事件，永不作为回复正文。
-    if (!text.trim() && reasoning.trim()) {
-      text =
-        '（模型本次只给出了思考过程、未输出正文；可直接重试，或调大该 provider 的 maxTokens）'
+      failureText = `（模型调用失败：${err instanceof Error ? err.message : err}）`
     }
 
-    // 甲模式任务分派（pm/product 的 user 会话）：解析模型文本中的分派指令并执行；
-    // 结果以平台说明追加进最终消息（诚实反馈登记/开工/排队/失败）。失败不影响回合。
+    const mergedText = [...flushedTexts, pendingText].filter(Boolean).join('\n')
+    // 甲模式任务分派（pm/product 的 user 会话）：解析整回合文本中的分派指令并执行；
+    // 结果以平台说明追加进尾部消息（诚实反馈登记/开工/排队/失败）。失败不影响回合。
     let dispatchNote = ''
     if (this.dispatchEligible(ctx, sessionType)) {
-      dispatchNote = await this.opts.taskDispatch!.run(ctx, text).catch(
-        (e: unknown) =>
-          `\n\n【系统】任务分派处理失败：${String(e instanceof Error ? e.message : e)}`,
+      dispatchNote = await this.opts
+        .taskDispatch!.run(ctx, mergedText)
+        .catch(
+          (e: unknown) =>
+            `\n\n【系统】任务分派处理失败：${String(e instanceof Error ? e.message : e)}`,
+        )
+    }
+
+    // 尾部消息 = 最后一步正文 + 失败说明 + 平台分派说明；本回合完全没有正文时给出兜底。
+    // 注意：思考（reasoning）与正文（content）是两路，思考只进 thought 事件，永不作为回复正文。
+    const tailParts: string[] = []
+    if (pendingText) tailParts.push(pendingText)
+    if (failureText) tailParts.push(failureText)
+    if (!pendingText && !failureText && flushedTexts.length === 0 && thoughtCount > 0) {
+      tailParts.push(
+        '（模型本次只给出了思考过程、未输出正文；可直接重试，或调大该 provider 的 maxTokens）',
       )
     }
-    const finalText = text + dispatchNote
+    let tailText = tailParts.join('\n')
+    if (dispatchNote) tailText = tailText ? tailText + dispatchNote : dispatchNote.trim()
 
-    // 思考事件落盘（先于 message，语义上思考先于正文）
-    const thoughtText = reasoning.trim()
-    if (thoughtText) {
-      const thoughtEvent = await store.appendEvent(meta, {
-        kind: 'thought',
+    let msgEvent: SessionLogEvent | null = null
+    if (tailText || flushedTexts.length === 0) {
+      msgEvent = await store.appendEvent(meta, {
+        kind: 'message',
         role: 'agent',
         sender: ctx.member.instanceId,
-        content: { text: cut(thoughtText, MAX_REASONING_CHARS, '\n…(思考过长已截断)'), blocks: [] },
+        content: { text: tailText, blocks: [] },
+        model: ctx.member.model,
         payload: { turnId },
       })
-      this.opts.bus.emitLogEvent(ctx.projectId, thoughtEvent)
+      // 先盘后推：commit 在 message 事件广播后
+      this.opts.bus.emitLogEvent(ctx.projectId, msgEvent)
+      lastSeq = msgEvent.seq
     }
-
-    // 完整消息落盘（一条 message 事件，D14-⑦ 流式文本整体落盘）
-    const msgEvent = await store.appendEvent(meta, {
-      kind: 'message',
-      role: 'agent',
-      sender: ctx.member.instanceId,
-      content: { text: finalText, blocks: [] },
-      model: ctx.member.model,
-      payload: { turnId },
-    })
-    // 先盘后推：commit 在 message 事件广播后
-    this.opts.bus.emitLogEvent(ctx.projectId, msgEvent)
     this.opts.bus.emitCommit(ctx.projectId, ctx.sessionId, {
-      seq: msgEvent.seq,
+      seq: lastSeq,
       turnId,
     })
 
@@ -315,7 +333,56 @@ export class AgentLoopRunner {
       sender: ctx.member.instanceId,
       payload: { turnId, ok: true },
     })
-    return msgEvent
+    return (
+      msgEvent ?? {
+        seq: lastSeq,
+        ts: new Date().toISOString(),
+        sessionId: ctx.sessionId,
+        kind: 'message',
+        role: 'agent',
+        sender: ctx.member.instanceId,
+        content: { text: tailText, blocks: [] },
+        model: ctx.member.model,
+        payload: { turnId },
+      }
+    )
+  }
+
+  /** 思考事件落盘（先盘后推）；返回事件 seq。 */
+  private async appendThought(
+    ctx: TurnContext,
+    meta: SessionMeta,
+    text: string,
+    turnId: string,
+  ): Promise<number> {
+    const evt = await this.opts.store.appendEvent(meta, {
+      kind: 'thought',
+      role: 'agent',
+      sender: ctx.member.instanceId,
+      content: { text: cut(text.trim(), MAX_REASONING_CHARS, '\n…(思考过长已截断)'), blocks: [] },
+      payload: { turnId },
+    })
+    this.opts.bus.emitLogEvent(ctx.projectId, evt)
+    return evt.seq
+  }
+
+  /** 步骤正文落盘（多步回合中间步骤；先盘后推）；返回事件 seq。 */
+  private async appendStepMessage(
+    ctx: TurnContext,
+    meta: SessionMeta,
+    text: string,
+    turnId: string,
+  ): Promise<number> {
+    const evt = await this.opts.store.appendEvent(meta, {
+      kind: 'message',
+      role: 'agent',
+      sender: ctx.member.instanceId,
+      content: { text, blocks: [] },
+      model: ctx.member.model,
+      payload: { turnId, step: true },
+    })
+    this.opts.bus.emitLogEvent(ctx.projectId, evt)
+    return evt.seq
   }
 
   /** 审计事件（tool_call/tool_result）：先盘后推。 */
@@ -392,7 +459,9 @@ export class AgentLoopRunner {
   /** 甲模式分派说明（pm/product 的 user 会话且提供了可派对象时注入）。 */
   private buildDispatchHint(ctx: TurnContext, sessionType: string): string | null {
     if (!this.dispatchEligible(ctx, sessionType)) return null
-    const peers = (ctx.assignableMembers ?? []).filter((x) => x.instanceId !== ctx.member.instanceId)
+    const peers = (ctx.assignableMembers ?? []).filter(
+      (x) => x.instanceId !== ctx.member.instanceId,
+    )
     if (!peers.length) return null
     const list = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
     return [

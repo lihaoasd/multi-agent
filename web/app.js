@@ -777,6 +777,9 @@ async function openSession(pid, sid) {
   const box = $('#messages')
   box.innerHTML = ''
   streaming = null
+  // 重新回放历史：清空工具行配对索引（避免指向已卸载节点）
+  toolRowByCallId.clear()
+  toolRowPendingByTool.clear()
   const msgs = (d.messages ?? []).filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind))
   let lastSeq = meta.lastSeq ?? 0
   let oldest = null
@@ -953,21 +956,23 @@ function appendPlan(who, steps) {
   return div
 }
 
-/** 审计行文案：任务分派可读化，其余工具展示参数/结果摘要。 */
-function toolAuditDetail(e) {
-  const p = e.payload ?? {}
+/** 工具调用行文案（进行中）。 */
+function toolCallDetail(p) {
   const tool = String(p.tool ?? '工具')
-  if (e.kind === 'tool_call') {
-    const input = p.input ?? {}
-    if (input.assignee) {
-      return `${tool} → ${input.assignee}：${String(input.title ?? '').slice(0, 60)}`
-    }
-    return `${tool}(${briefJson(input)})`
-  }
-  const ok = p.ok === false ? '✗' : '✓'
-  if (p.taskId) return `${tool} ${ok} ${String(p.taskId)}${p.assignee ? ' → ' + p.assignee : ''}`
+  const input = p.input ?? {}
+  if (input.assignee)
+    return `${tool} → ${input.assignee}：${String(input.title ?? '').slice(0, 60)}`
+  return `${tool}(${briefJson(input)})`
+}
+
+/** 工具结果文案（合并进同一行）。 */
+function toolResultDetail(p) {
+  const tool = String(p.tool ?? '工具')
+  const mark = p.ok === false ? '✗' : '✓'
+  if (p.taskId)
+    return `${tool} → ${mark} ${String(p.taskId)}${p.assignee ? ' → ' + p.assignee : ''}`
   const tail = String(p.summary ?? p.reason ?? p.code ?? '')
-  return `${tool} ${ok}${tail ? '：' + tail.slice(0, 120) : ''}`
+  return `${tool} → ${mark}${tail ? ' ' + tail.slice(0, 120) : ''}`
 }
 
 function briefJson(obj) {
@@ -978,23 +983,66 @@ function briefJson(obj) {
   }
 }
 
-/** 工具/系统动作审计行（如任务分派、文件读写）。 */
-function appendToolAudit(who, e) {
-  const box = $('#messages')
+/** 已渲染的工具行索引：callId → 行；无 callId 的老日志/平台动作按 tool 名配对。 */
+const toolRowByCallId = new Map()
+const toolRowPendingByTool = new Map()
+
+/**
+ * 工具审计行：**一次调用只占一行**——tool_call 建行（进行中），
+ * 对应的 tool_result 回写同一行（✓/✗ + 结果摘要），不再出现"将执行/已执行"两行。
+ * 返回 { node, merged }：merged=true 表示结果已并入既有行（调用方不要再插入新行）。
+ */
+function renderToolAudit(who, e) {
+  const p = e.payload ?? {}
+  const tool = String(p.tool ?? '工具')
+  if (e.kind === 'tool_result') {
+    const callId = p.callId ? String(p.callId) : null
+    let hit = callId ? toolRowByCallId.get(callId) : null
+    if (hit) {
+      toolRowByCallId.delete(callId)
+      const queue = toolRowPendingByTool.get(tool)
+      const idx = queue ? queue.indexOf(hit) : -1
+      if (queue && idx >= 0) queue.splice(idx, 1) // 已配对，移出待配对队列
+    }
+    if (!hit) {
+      const queue = toolRowPendingByTool.get(tool)
+      if (queue && queue.length) hit = queue.shift()
+    }
+    if (hit && hit.row && document.body.contains(hit.row)) {
+      hit.row.classList.remove('running')
+      hit.row.classList.add(p.ok === false ? 'failed' : 'done')
+      hit.detail.textContent = toolResultDetail(p)
+      hit.row.title = JSON.stringify(p)
+      return { node: hit.row, merged: true }
+    }
+  }
   const div = document.createElement('div')
-  div.className = 'msg audit'
+  div.className = 'msg audit' + (e.kind === 'tool_call' ? ' running' : '')
   const label = document.createElement('span')
   label.className = 'activity-label'
-  const isCall = e.kind === 'tool_call'
-  label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
-  const text = document.createElement('span')
-  text.textContent = toolAuditDetail(e)
-  div.title = JSON.stringify(e.payload ?? {})
+  label.textContent = `🛠 ${who}`
+  const detail = document.createElement('span')
+  detail.textContent = e.kind === 'tool_call' ? toolCallDetail(p) : toolResultDetail(p)
+  div.title = JSON.stringify(p)
   div.appendChild(label)
-  div.appendChild(text)
-  box.appendChild(div)
+  div.appendChild(detail)
+  if (e.kind === 'tool_call') {
+    const entry = { row: div, detail }
+    if (p.callId) toolRowByCallId.set(String(p.callId), entry)
+    const queue = toolRowPendingByTool.get(tool) ?? []
+    queue.push(entry)
+    toolRowPendingByTool.set(tool, queue)
+  }
+  return { node: div, merged: false }
+}
+
+/** 工具/系统动作审计行（追加到消息流末尾）。 */
+function appendToolAudit(who, e) {
+  const box = $('#messages')
+  const { node, merged } = renderToolAudit(who, e)
+  if (!merged) box.appendChild(node)
   box.scrollTop = box.scrollHeight
-  return div
+  return node
 }
 
 /** 正在流式输出的元素：思考块与助手回复气泡**各自独立**（不合并进同一条消息）。 */
@@ -1074,6 +1122,19 @@ function renderStreamMarkdown(st) {
   else setTimeout(run, 0)
 }
 
+/**
+ * 结束当前流式正文气泡（遇到 plan/tool 等过程事件时调用）。
+ * 之后的正文会**另起一个气泡**，保证「过程 → 正文」按时间顺序排列，
+ * 不会出现"工具行之后的新文本被追加到工具行上方的旧气泡里"。
+ */
+function sealAnswerStream() {
+  if (!streaming || !streaming.answerBody) return
+  streaming.answerBody.innerHTML = renderMarkdown(streaming.raw ?? '')
+  streaming.answer = null
+  streaming.answerBody = null
+  streaming.raw = ''
+}
+
 let wsReconnectDelay = 1000
 
 function connectWs(pid) {
@@ -1120,12 +1181,16 @@ function connectWs(pid) {
         if (seq > 0 && seq <= current.lastRenderedSeq) return
         if (seq > 0) current.lastRenderedSeq = seq
         if (p.kind === 'plan') {
+          sealAnswerStream()
           const who = p.sender && p.sender !== 'user' ? senderName(p.sender) : 'Agent'
           const steps = Array.isArray(p.steps)
             ? p.steps.map((s) => (s && s.title ? s.title : String(s)))
             : []
           appendPlan(who, steps)
         } else if (p.kind === 'tool_call' || p.kind === 'tool_result') {
+          // 过程事件出现 = 当前正文段落结束：封口后再追加工具行，
+          // 之后的正文会另起气泡 → 与后端落盘顺序（过程 → 正文）一致
+          sealAnswerStream()
           appendToolAudit(p.sender && p.sender !== 'user' ? senderName(p.sender) : 'Agent', {
             kind: p.kind,
             sender: p.sender,
@@ -1223,7 +1288,9 @@ async function loadOlder() {
             : []
           box.insertBefore(buildPlanNode(who, steps), beforeEl)
         } else {
-          box.insertBefore(buildToolNode(who, m), beforeEl)
+          // tool_result 会并入对应调用行；merged 时返回 null（无需插入新节点）
+          const node = buildToolNode(who, m)
+          if (node) box.insertBefore(node, beforeEl)
         }
       }
     }
@@ -1261,19 +1328,10 @@ function buildPlanNode(who, steps) {
 }
 
 /** 构造审计行节点（用于前向翻页插入）。 */
+/** 构造审计行节点（用于前向翻页插入；结果会并入对应的调用行）。 */
 function buildToolNode(who, e) {
-  const div = document.createElement('div')
-  div.className = 'msg audit'
-  const label = document.createElement('span')
-  label.className = 'activity-label'
-  const isCall = e.kind === 'tool_call'
-  label.textContent = isCall ? `🛠 ${who} 将执行` : `${who} 已执行`
-  const text = document.createElement('span')
-  text.textContent = toolAuditDetail(e)
-  div.title = JSON.stringify(e.payload ?? {})
-  div.appendChild(label)
-  div.appendChild(text)
-  return div
+  const { node, merged } = renderToolAudit(who, e)
+  return merged ? null : node
 }
 
 async function refreshPanels() {

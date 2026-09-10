@@ -50,7 +50,11 @@ async function setupProject(): Promise<{ pid: string; dev: TeamMemberConfig }> {
   const res = await ready().inject({
     method: 'POST',
     url: '/api/projects',
-    payload: { name: 'tl', workdir, team: [{ roleTemplateId: 'dev' }, { roleTemplateId: 'product' }] },
+    payload: {
+      name: 'tl',
+      workdir,
+      team: [{ roleTemplateId: 'dev' }, { roleTemplateId: 'product' }],
+    },
   })
   const p = res.json().project
   const dev = (p.team as TeamMemberConfig[]).find((t) => t.roleTemplateId === 'dev')!
@@ -58,10 +62,7 @@ async function setupProject(): Promise<{ pid: string; dev: TeamMemberConfig }> {
 }
 
 /** 按调用次序产出脚本化流的假网关；记录每次调用的 messages。 */
-function scriptedGateway(
-  steps: ChatStreamItem[][],
-  calls: ChatMessage[][],
-): ModelGateway {
+function scriptedGateway(steps: ChatStreamItem[][], calls: ChatMessage[][]): ModelGateway {
   let i = 0
   return {
     async *streamChat(opts: { messages: ChatMessage[] }) {
@@ -80,22 +81,25 @@ function realToolRuntime(activeTask?: () => Promise<ActiveTask | null>): ToolRun
       const allowed = new Set(ctx.member.tools ?? [])
       return listToolDefs()
         .filter((d) => allowed.has(d.name) && d.availableIn.includes(sessionType))
-        .map(
-          (d): ToolSchema => ({
-            name: d.name,
-            description: d.description,
-            parameters: d.paramsSchema ?? { type: 'object', properties: {} },
-          }),
-        )
+        .map((d): ToolSchema => ({
+          name: d.name,
+          description: d.description,
+          parameters: d.paramsSchema ?? { type: 'object', properties: {} },
+        }))
     },
     exec: async (ctx, sessionType, name, args) =>
       executeTool(
         name,
         args,
-        await buildToolEnv({ config, projectService: svc.projectService }, ctx.projectId, ctx.member.instanceId, {
-          taskId: (await activeTask?.())?.id,
-          sessionType: sessionType === 'meeting' ? 'meeting' : 'user',
-        }),
+        await buildToolEnv(
+          { config, projectService: svc.projectService },
+          ctx.projectId,
+          ctx.member.instanceId,
+          {
+            taskId: (await activeTask?.())?.id,
+            sessionType: sessionType === 'meeting' ? 'meeting' : 'user',
+          },
+        ),
       ),
     activeTask,
     maxSteps: 4,
@@ -142,7 +146,10 @@ describe('Agent 工具循环（function-calling）', () => {
 
     // 审计事件 + 最终回复
     const evts = (
-      await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log` })
+      await ready().inject({
+        method: 'GET',
+        url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+      })
     ).json().events as Array<{ kind: string; payload?: Record<string, unknown> }>
     const call = evts.find((e) => e.kind === 'tool_call')
     expect(call?.payload?.tool).toBe('fs_read_file')
@@ -150,6 +157,56 @@ describe('Agent 工具循环（function-calling）', () => {
     expect(result?.payload?.ok).toBe(true)
     expect(String(result?.payload?.summary ?? '')).toContain('hello-agent')
     expect(evt.content?.text).toContain('文件内容为：hello-agent')
+  })
+
+  it('多步回合：正文与工具按时间顺序落盘（正文→工具→正文），刷新后顺序不乱', async () => {
+    const { pid, dev } = await setupProject()
+    await writeFile(join(workdir, 'a.txt'), 'A\n', 'utf8')
+    const gateway = scriptedGateway(
+      [
+        [
+          { content: '我先看一下目录里有什么。' },
+          { toolCall: { index: 0, id: 'call_o', name: 'fs_list_dir' } },
+          { toolCall: { index: 0, argumentsDelta: JSON.stringify({ path: 'workdir://' }) } },
+        ],
+        [{ content: '目录里有 a.txt，已确认。' }],
+      ],
+      [],
+    )
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      toolRuntime: realToolRuntime(),
+    })
+    await loop.runDirectTurn(turnCtx(pid, dev))
+
+    const evts = (
+      await ready().inject({
+        method: 'GET',
+        url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+      })
+    ).json().events as Array<{
+      kind: string
+      role?: string
+      seq: number
+      content?: { text?: string }
+      payload?: Record<string, unknown>
+    }>
+    const agentMsgs = evts.filter((e) => e.kind === 'message' && e.role === 'agent')
+    const call = evts.find((e) => e.kind === 'tool_call')!
+    const result = evts.find((e) => e.kind === 'tool_result')!
+    // 两条正文分段落盘：过程（工具）夹在中间，而不是全部堆在末尾
+    expect(agentMsgs.map((m) => m.content?.text)).toEqual([
+      '我先看一下目录里有什么。',
+      '目录里有 a.txt，已确认。',
+    ])
+    expect(agentMsgs[0]!.seq).toBeLessThan(call.seq)
+    expect(call.seq).toBeLessThan(result.seq)
+    expect(result.seq).toBeLessThan(agentMsgs[1]!.seq)
+    // 工具调用/结果带 callId（前端据此把两行合并成一行）
+    expect(call.payload?.callId).toBe('call_o')
+    expect(result.payload?.callId).toBe('call_o')
   })
 
   it('workdir_edit 归属注入的当前任务（env.taskId 优先）并留 code-edits 轨迹', async () => {
@@ -195,10 +252,16 @@ describe('Agent 工具循环（function-calling）', () => {
     expect(agg).toContain('src/out.txt')
     // 任务归属来自注入，而非模型自报
     await expect(
-      readFile(join(config.dataDir, 'projects', pid, 'code-edits', 'spoofed_should_be_ignored.jsonl'), 'utf8'),
+      readFile(
+        join(config.dataDir, 'projects', pid, 'code-edits', 'spoofed_should_be_ignored.jsonl'),
+        'utf8',
+      ),
     ).rejects.toThrow()
     const evts = (
-      await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log` })
+      await ready().inject({
+        method: 'GET',
+        url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+      })
     ).json().events as Array<{ kind: string; payload?: Record<string, unknown> }>
     const result = evts.find((e) => e.kind === 'tool_result')
     expect(String(result?.payload?.summary ?? '')).toContain('t_demo')
@@ -251,7 +314,10 @@ describe('Agent 工具循环（function-calling）', () => {
     expect(pending[0]!.summary).toContain('git push')
 
     const evts = (
-      await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log` })
+      await ready().inject({
+        method: 'GET',
+        url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+      })
     ).json().events as Array<{ kind: string; payload?: Record<string, unknown> }>
     const result = evts.find((e) => e.kind === 'tool_result')
     expect(result?.payload?.code).toBe('APPROVAL_PENDING')
