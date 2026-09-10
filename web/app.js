@@ -645,7 +645,7 @@ function renderEvent(m) {
   if (m.kind === 'message') {
     appendMessage(who, m.content?.text ?? '', m.role === 'user' ? 'user' : 'agent')
   } else if (m.kind === 'thought') {
-    appendThink(who, m.content?.text ?? '', { live: false })
+    appendThinkNode(who, m.content?.text ?? '')
   } else if (m.kind === 'plan') {
     const steps = Array.isArray(m.payload?.steps)
       ? m.payload.steps.map((s) => (s && s.title ? s.title : String(s)))
@@ -679,27 +679,70 @@ function fillMessageBody(el, text, asMarkdown) {
   return el
 }
 
-/** 思考块（可折叠；live 模式省略名字避免与正在流的回答重复）。 */
-function appendThink(who, text, opts = {}) {
-  const box = $('#messages')
+/**
+ * 构造思考块：**默认折叠**（只显示一行「🧠 思考过程（N 字）」，点击展开/收起）。
+ * 历史回放与实时流式共用；实时流式下即使未展开也会更新字数。
+ */
+function createThinkBlock(who, opts = {}) {
   const wrap = document.createElement('div')
   wrap.className = 'msg think'
   const head = document.createElement('div')
   head.className = 'think-head'
-  head.textContent = `${opts.live ? '' : who + ' · '}🧠 思考过程`
-  head.title = '点击展开/收起'
   const body = document.createElement('div')
-  body.className = 'think-body'
-  body.textContent = text || '（无文本）'
+  body.className = 'think-body hidden'
+  const state = { who, open: false, live: !!opts.live, chars: 0 }
+
+  const renderHead = () => {
+    const arrow = state.open ? '▾' : '▸'
+    const label = state.live ? '思考中…' : '思考过程'
+    const count = state.chars ? `（${state.chars} 字）` : ''
+    head.textContent = `${state.who} · ${arrow} 🧠 ${label}${count}`
+    head.title = state.open ? '点击收起思考过程' : '点击展开思考过程'
+  }
   head.addEventListener('click', () => {
-    body.classList.toggle('hidden')
-    head.textContent = `${opts.live ? '' : who + ' · '}${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
+    state.open = !state.open
+    body.classList.toggle('hidden', !state.open)
+    renderHead()
   })
   wrap.appendChild(head)
   wrap.appendChild(body)
-  box.appendChild(wrap)
+  renderHead()
+
+  return {
+    wrap,
+    head,
+    body,
+    /** 设置完整文本（历史回放） */
+    setText(text) {
+      const t = text || ''
+      body.textContent = t || '（无文本）'
+      state.chars = t.length
+      renderHead()
+    },
+    /** 追加流式增量（默认折叠时不展开，仅更新字数） */
+    append(delta) {
+      const d = delta ?? ''
+      state.chars += d.length
+      body.textContent += d
+      renderHead()
+    },
+    /** 流结束：标题从「思考中…」收敛为「思考过程」 */
+    finish() {
+      state.live = false
+      state.chars = state.chars || body.textContent.length
+      renderHead()
+    },
+  }
+}
+
+/** 历史回放：追加一个思考块（默认折叠），返回其 DOM 节点。 */
+function appendThinkNode(who, text) {
+  const box = $('#messages')
+  const block = createThinkBlock(who)
+  block.setText(text)
+  box.appendChild(block.wrap)
   box.scrollTop = box.scrollHeight
-  return { wrap, head, body }
+  return block.wrap
 }
 
 /** 计划/行动行：告知用户 agent 将要干什么。 */
@@ -779,8 +822,7 @@ function streamState(sender) {
       sender,
       who: '',
       think: null,
-      thinkHead: null,
-      thinkBody: null,
+      thinkApi: null,
       answer: null,
       answerBody: null,
     }
@@ -791,30 +833,16 @@ function streamState(sender) {
   return streaming
 }
 
-/** 思考块：独立于助手回复单独成块（先思考后回复时插在回复之前）。 */
+/** 思考块：独立于助手回复单独成块（默认折叠；先思考后回复时插在回复之前）。 */
 function ensureThinkBlock(sender) {
   const st = streamState(sender)
   if (st.think && document.body.contains(st.think)) return st
   const box = $('#messages')
-  const wrap = document.createElement('div')
-  wrap.className = 'msg think'
-  const head = document.createElement('div')
-  head.className = 'think-head'
-  head.textContent = `${st.who} · 🧠 思考中…`
-  head.title = '点击展开/收起'
-  const body = document.createElement('div')
-  body.className = 'think-body'
-  head.addEventListener('click', () => {
-    body.classList.toggle('hidden')
-    head.textContent = `${st.who} · ${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
-  })
-  wrap.appendChild(head)
-  wrap.appendChild(body)
-  if (st.answer && document.body.contains(st.answer)) box.insertBefore(wrap, st.answer)
-  else box.appendChild(wrap)
-  st.think = wrap
-  st.thinkHead = head
-  st.thinkBody = body
+  const block = createThinkBlock(st.who, { live: true })
+  if (st.answer && document.body.contains(st.answer)) box.insertBefore(block.wrap, st.answer)
+  else box.appendChild(block.wrap)
+  st.think = block.wrap
+  st.thinkApi = block
   scrollBottom()
   return st
 }
@@ -879,14 +907,12 @@ function connectWs(pid) {
         st.raw = (st.raw ?? '') + (e.payload.delta ?? '')
         renderStreamMarkdown(st)
       } else if (e.type === 'thought.chunk') {
-        // 思考：独立块（纯文本，不并入回复气泡）
+        // 思考：独立块（纯文本、默认折叠；未展开时只更新字数）
         const st = ensureThinkBlock(e.payload?.sender)
-        st.thinkBody.textContent += e.payload.delta ?? ''
+        st.thinkApi.append(e.payload.delta ?? '')
         scrollBottom()
       } else if (e.type === 'message.commit') {
-        if (streaming?.thinkHead && document.body.contains(streaming.thinkHead)) {
-          streaming.thinkHead.textContent = `${streaming.who} · 🧠 思考过程`
-        }
+        streaming?.thinkApi?.finish()
         if (streaming?.answerBody) {
           streaming.answerBody.innerHTML = renderMarkdown(streaming.raw ?? '')
         }
@@ -1017,23 +1043,11 @@ async function loadOlder() {
   }
 }
 
-/** 构造独立思考块节点（用于前向翻页插入）。 */
+/** 构造独立思考块节点（用于前向翻页插入；默认折叠）。 */
 function buildThinkNode(who, text) {
-  const wrap = document.createElement('div')
-  wrap.className = 'msg think'
-  const head = document.createElement('div')
-  head.className = 'think-head'
-  head.textContent = `${who} · 🧠 思考过程`
-  const body = document.createElement('div')
-  body.className = 'think-body'
-  body.textContent = text || '（无文本）'
-  head.addEventListener('click', () => {
-    body.classList.toggle('hidden')
-    head.textContent = `${who} · ${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
-  })
-  wrap.appendChild(head)
-  wrap.appendChild(body)
-  return wrap
+  const block = createThinkBlock(who)
+  block.setText(text)
+  return block.wrap
 }
 
 /** 构造计划节点（用于前向翻页插入）。 */

@@ -28,7 +28,7 @@ npm run build && npm start   # 生产：tsc 编译后单端口运行
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 角色库与组队             | 8 内置模板(YAML) + 自定义模板 CRUD(内置只读) + 项目内实例化(模板快照/停用保留数据)                                                                                                                                   |
 | 会话与聊天               | user 会话骨架；消息/回合事件(seq/turn/turn_start/end)落盘；Mock/OpenAI/Ollama 网关；**WS 流式 chunk+commit、先盘后推**；重启恢复                                                                                     |
-| think 展示(2026-09-09)   | 模型 reasoning 增量经 `thought.chunk` 实时上屏（🧠 思考块，可折叠、独立于回复气泡），流结束以 `thought` 事件落盘、重进可见；`plan/tool_call` 以"计划/将执行"行展示，告知用户 Agent 接下来要做什么                    |
+| think 展示(2026-09-09)   | 模型 reasoning 增量经 `thought.chunk` 实时上屏（🧠 思考块**默认折叠**、点击展开，独立于回复气泡），流结束以 `thought` 事件落盘、重进可见；`plan/tool_call` 以"计划/将执行"行展示，告知用户 Agent 接下来要做什么      |
 | 回复渲染(2026-09-09)     | 助手回复按 Markdown 渲染（自研无依赖渲染器 `web/markdown.js`：标题/列表/代码块/行内代码/粗斜体/链接/引用/表格/hr）；先转义后渲染、链接仅放行 http(s)/mailto；用户消息与思考块保持纯文本                              |
 | Agent 运行时             | 单工占用 occupancy(runtime.state 落盘)；loop 按实例策略提示(direct/reflective/plan-execute)；**工具循环**：模型 function-calling → 角色白名单工具执行 → 结果回注，至多 6 步                                          |
 | 工具与审批               | PolicyEngine 命令判定 + 虚拟路径 L0 边界 + 工具执行器(fs/ws/cmd_run/workdir_edit/记忆检索) + 高危命令审批桥(approvals.jsonl，批准续跑/拒绝不执行)；**工具调用全程落 tool_call/tool_result 审计事件并在会话流中可见** |
