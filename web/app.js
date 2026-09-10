@@ -42,7 +42,8 @@ function setTyping(on) {
 
 function setSendBusy(on) {
   current.busy = on
-  $('#btn-send').disabled = on
+  // 停用角色的会话输入框为禁用态，忙碌态不能把它打开
+  $('#btn-send').disabled = on || $('#msg-text').disabled
 }
 
 function setDocTitle(text) {
@@ -251,6 +252,13 @@ function bindGlobal() {
   // 团队：添加成员 / 弹窗关闭
   $('#btn-add-member').addEventListener('click', openMemberModal)
   $('#btn-member-close').addEventListener('click', () => $('#member-modal').classList.add('hidden'))
+  // 会议：发起（主题 + 描述 + 参会人）
+  $('#btn-new-meeting').addEventListener('click', openMeetingModal)
+  $('#btn-meeting-cancel').addEventListener('click', () =>
+    $('#meeting-modal').classList.add('hidden'),
+  )
+  $('#btn-meeting-create').addEventListener('click', createMeetingFromModal)
+  $('#mt-host').addEventListener('change', renderMeetingMemberPicker)
   // Esc 关闭弹窗；点击遮罩关闭
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -441,12 +449,12 @@ async function openProject(pid) {
   ])
   current.team = team.team ?? []
   current.sessions = sessions.sessions ?? []
-  renderTeam()
-  renderSessions()
+  renderTeamNav()
+  renderMeetingsNav()
   await refreshPanels()
   const userSid = current.sessions.find((s) => s.type === 'user')?.id
   if (userSid) await openSession(pid, userSid)
-  else renderEmptyCenter('该项目暂无角色实例。请在左侧“团队”处点击 +开发/+产品 添加角色。')
+  else renderEmptyCenter('该项目暂无角色实例。请在左侧“团队”处点击 ＋添加 加入角色。')
 }
 
 /** 中央区空态提示（无会话/无角色时）。 */
@@ -462,35 +470,115 @@ function renderEmptyCenter(text) {
   box.appendChild(div)
 }
 
-function renderTeam() {
+/** 团队列表 = 与每个成员的一对一会话入口（点击进入；行内可停用/启用）。 */
+function renderTeamNav() {
   const ul = $('#team-list')
   ul.innerHTML = ''
   for (const m of current.team) {
+    const sid = `u_${m.instanceId}`
+    const s = current.sessions.find((x) => x.id === sid)
     const li = document.createElement('li')
-    const txt = document.createElement('span')
-    txt.textContent = `${m.displayName} [${m.instanceId}]${m.enabled ? '' : '（停用）'}`
-    li.appendChild(txt)
-    // 停用/启用（D14-9 保留数据）
+    li.className = 'nav-item'
+    if (!m.enabled) li.classList.add('disabled')
+    if (sid === current.sessionId) li.classList.add('active')
+
+    const title = document.createElement('span')
+    title.className = 'nav-title'
+    title.textContent = `${m.displayName}（${m.instanceId}）`
+    li.appendChild(title)
+    if (!m.enabled) {
+      const tag = document.createElement('span')
+      tag.className = 'tag-off'
+      tag.textContent = '已停用'
+      li.appendChild(tag)
+    }
+    if (Number(s?.unread ?? 0) > 0) {
+      const b = document.createElement('span')
+      b.className = 'badge'
+      b.textContent = s.unread
+      li.appendChild(b)
+    }
+
     const toggle = document.createElement('button')
+    toggle.className = 'ghost nav-action'
     toggle.textContent = m.enabled ? '停用' : '启用'
-    toggle.onclick = async () => {
+    toggle.title = m.enabled ? '停用该角色（数据保留，可随时启用）' : '重新启用该角色'
+    toggle.addEventListener('click', async (ev) => {
+      ev.stopPropagation() // 不要触发行点击（进入会话）
+      if (
+        m.enabled &&
+        !confirm(
+          `停用「${m.displayName}」？\n停用后该角色不再接活，其会话只读；数据全部保留，可随时启用。`,
+        )
+      ) {
+        return
+      }
       try {
         if (m.enabled) await api(`/projects/${current.pid}/team/${m.instanceId}`, 'DELETE')
         else await api(`/projects/${current.pid}/team/${m.instanceId}`, 'PATCH', { enabled: true })
         toast(m.enabled ? '已停用（数据保留，可重新启用）' : '已启用')
-        await reloadProjectView()
+        await reloadProjectView({ keepSession: true })
       } catch (e) {
-        toast(e.message)
+        toast('操作失败：' + e.message)
       }
-    }
+    })
     li.appendChild(toggle)
+
+    li.addEventListener('click', async () => {
+      let target = current.sessions.find((x) => x.id === sid)
+      if (!target) {
+        const d = await api(`/projects/${current.pid}/sessions`).catch(() => null)
+        current.sessions = d?.sessions ?? current.sessions
+        target = current.sessions.find((x) => x.id === sid)
+      }
+      if (!target) {
+        toast('该角色还没有会话')
+        return
+      }
+      await openSession(current.pid, sid)
+    })
     ul.appendChild(li)
   }
   if (!current.team.length) {
-    const li = document.createElement('div')
-    li.className = 'empty-tip'
-    li.textContent = '（暂无角色，点右上「＋添加」加入角色）'
+    const div = document.createElement('div')
+    div.className = 'empty-tip'
+    div.textContent = '（暂无角色，点右上「＋添加」加入角色）'
+    ul.appendChild(div)
+  }
+}
+
+/** 会议列表（左栏）：所有会议，点击进入会议会话。 */
+function renderMeetingsNav() {
+  const ul = $('#meeting-nav-list')
+  ul.innerHTML = ''
+  for (const mt of current.meetings ?? []) {
+    const li = document.createElement('li')
+    li.className = 'nav-item'
+    if (mt.id === current.sessionId) li.classList.add('active')
+    const title = document.createElement('span')
+    title.className = 'nav-title'
+    title.textContent = mt.meeting?.topic || mt.id
+    title.title = mt.meeting?.desc || ''
+    li.appendChild(title)
+    const st = document.createElement('span')
+    st.className = `badge state-${mt.state}`
+    st.textContent = stateZh(mt.state)
+    li.appendChild(st)
+    const s = current.sessions.find((x) => x.id === mt.id)
+    if (Number(s?.unread ?? 0) > 0) {
+      const b = document.createElement('span')
+      b.className = 'badge'
+      b.textContent = s.unread
+      li.appendChild(b)
+    }
+    li.addEventListener('click', () => openSession(current.pid, mt.id))
     ul.appendChild(li)
+  }
+  if (!(current.meetings ?? []).length) {
+    const div = document.createElement('div')
+    div.className = 'empty-tip'
+    div.textContent = '（暂无会议，点「＋发起」申请开会）'
+    ul.appendChild(div)
   }
 }
 
@@ -533,44 +621,102 @@ async function openMemberModal() {
   }
 }
 
-/** 重载项目内团队/会话并回默认会话（加成员后调用）。 */
-async function reloadProjectView() {
+/** 发起会议弹窗：主持人 + 主题 + 描述 + 议题 + 参会成员（至少 1 人）。 */
+function openMeetingModal() {
+  if (!current.pid) return
+  const enabled = current.team.filter((m) => m.enabled)
+  if (enabled.length < 2) {
+    toast('至少需要 2 个已启用角色才能开会（主持人 + 至少 1 位成员）')
+    return
+  }
+  const host = $('#mt-host')
+  host.innerHTML = ''
+  for (const m of enabled) {
+    const opt = document.createElement('option')
+    opt.value = m.instanceId
+    opt.textContent = `${m.displayName}（${m.instanceId}）`
+    host.appendChild(opt)
+  }
+  $('#mt-topic').value = ''
+  $('#mt-desc').value = ''
+  $('#mt-agenda').value = ''
+  renderMeetingMemberPicker()
+  $('#meeting-modal').classList.remove('hidden')
+}
+
+/** 参会成员多选（排除当前主持人，保留已勾选项）。 */
+function renderMeetingMemberPicker() {
+  const box = $('#mt-members')
+  const hostId = $('#mt-host').value
+  const picked = new Set($$('#mt-members input:checked').map((c) => c.value))
+  box.innerHTML = ''
+  let count = 0
+  for (const m of current.team) {
+    if (!m.enabled || m.instanceId === hostId) continue
+    const lab = document.createElement('label')
+    lab.className = 'role-check'
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.value = m.instanceId
+    cb.checked = picked.has(m.instanceId)
+    lab.appendChild(cb)
+    lab.appendChild(document.createTextNode(`${m.displayName}（${m.instanceId}）`))
+    box.appendChild(lab)
+    count++
+  }
+  $('#mt-member-count').textContent = count ? '' : '（无其他已启用角色可参会）'
+}
+
+/** 提交发起会议：主题与描述必填，参会成员至少 1 人。 */
+async function createMeetingFromModal() {
+  const host = $('#mt-host').value
+  const topic = $('#mt-topic').value.trim()
+  const desc = $('#mt-desc').value.trim()
+  const agenda = $('#mt-agenda')
+    .value.split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const members = $$('#mt-members input:checked').map((c) => c.value)
+  if (!topic) return toast('请填写会议主题')
+  if (!desc) return toast('请填写会议描述（为什么开、期望产出）')
+  if (!members.length) return toast('请至少勾选 1 位参会成员')
+  try {
+    const d = await api(`/projects/${current.pid}/meetings`, 'POST', {
+      host,
+      topic,
+      desc,
+      agenda,
+      members,
+    })
+    $('#meeting-modal').classList.add('hidden')
+    toast(`会议已发起：${topic}`)
+    await refreshPanels()
+    await openSession(current.pid, d.meeting.id)
+  } catch (e) {
+    toast('发起失败：' + e.message)
+  }
+}
+
+/**
+ * 重载项目内团队/会话并刷新两个导航区。
+ * opts.keepSession=true 时保持当前打开的会话（停用/启用角色后不跳走）。
+ */
+async function reloadProjectView(opts = {}) {
   const [team, sessions] = await Promise.all([
     api(`/projects/${current.pid}/team`),
     api(`/projects/${current.pid}/sessions`),
   ])
   current.team = team.team ?? []
   current.sessions = sessions.sessions ?? []
-  renderTeam()
-  renderSessions()
+  renderTeamNav()
+  renderMeetingsNav()
   await refreshPanels()
-  const userSid = current.sessions.find((s) => s.type === 'user')?.id
-  if (userSid) await openSession(current.pid, userSid)
-}
-
-function renderSessions() {
-  const ul = $('#session-list')
-  ul.innerHTML = ''
-  for (const s of current.sessions) {
-    const li = document.createElement('li')
-    const title = document.createElement('span')
-    title.textContent = sessionLabel(s)
-    const meta = document.createElement('span')
-    meta.className = 'who'
-    meta.textContent = s.type === 'meeting' ? ' ' + stateZh(s.state) : ''
-    li.appendChild(title)
-    if (Number(s.unread ?? 0) > 0) {
-      const b = document.createElement('span')
-      b.className = 'badge'
-      b.textContent = s.unread
-      li.appendChild(b)
-    }
-    li.appendChild(meta)
-    li.dataset.sid = s.id
-    li.addEventListener('click', () => openSession(current.pid, s.id))
-    if (s.id === current.sessionId) li.classList.add('active')
-    ul.appendChild(li)
-  }
+  const keep = opts.keepSession ? current.sessionId : null
+  const target =
+    (keep && current.sessions.some((s) => s.id === keep) ? keep : null) ??
+    current.sessions.find((s) => s.type === 'user')?.id
+  if (target) await openSession(current.pid, target)
+  else renderEmptyCenter('该项目暂无会话。请在左侧“团队”处点击 ＋添加 加入角色。')
 }
 
 const STATE_ZH = {
@@ -587,15 +733,47 @@ function stateZh(s) {
   return STATE_ZH[s] ?? s
 }
 
+/** 会话窗口顶部：会议显示主题/描述/参会人；用户会话隐藏副行。 */
+function renderSessionHeader(meta) {
+  const sub = $('#session-sub')
+  if (meta.type !== 'meeting') {
+    $('#session-title').textContent = sessionLabel(meta)
+    sub.classList.add('hidden')
+    sub.innerHTML = ''
+    return
+  }
+  const mt = meta.meeting ?? {}
+  $('#session-title').innerHTML =
+    `${escapeHtml(mt.topic || meta.id)} <span class="badge state-${escapeHtml(
+      meta.state,
+    )}">${escapeHtml(stateZh(meta.state))}</span>`
+  const hostName = `${senderName(mt.host)}（${mt.host}）`
+  const decisions = mt.memberDecisions ?? {}
+  const decisionZh = { accept: '已接受', later: '稍后', decline: '已拒绝' }
+  const memberLines = (mt.members ?? []).map((m) => {
+    const d = decisions[m]
+    return `${escapeHtml(senderName(m))}（${escapeHtml(m)}）${d ? '·' + decisionZh[d] : '·待回应'}`
+  })
+  const rows = [
+    `<div class="sh-row"><span class="sh-label">主持人</span>${escapeHtml(hostName)}</div>`,
+    `<div class="sh-row"><span class="sh-label">描述</span>${
+      mt.desc ? escapeHtml(mt.desc) : '<span class="who">（未填写）</span>'
+    }</div>`,
+    `<div class="sh-row"><span class="sh-label">参会人员</span>${escapeHtml(hostName)}（主持）｜${memberLines.join('｜')}｜我（用户）</div>`,
+  ]
+  sub.innerHTML = rows.join('')
+  sub.classList.remove('hidden')
+}
+
 async function openSession(pid, sid) {
   current.sessionId = sid
   setTyping(false)
   setSendBusy(false)
-  renderSessions()
+  renderTeamNav()
+  renderMeetingsNav()
   const d = await api(`/projects/${pid}/sessions/${sid}`)
   const meta = d.session
-  $('#session-title').textContent =
-    sessionLabel(meta) + (meta.type === 'meeting' ? ` · ${stateZh(meta.state)}` : '')
+  renderSessionHeader(meta)
   const box = $('#messages')
   box.innerHTML = ''
   streaming = null
@@ -625,8 +803,21 @@ async function openSession(pid, sid) {
   current.seenSeq = lastSeq
   current.oldestSeq = oldest
   $('#load-old-wrap').classList.toggle('hidden', !oldest || oldest <= 1)
-  if (meta.type === 'user') $('#composer').classList.remove('hidden')
-  else $('#composer').classList.add('hidden')
+  const composer = $('#composer')
+  const input = $('#msg-text')
+  if (meta.type === 'user') {
+    composer.classList.remove('hidden')
+    const iid = String(meta.id).replace(/^u_/, '')
+    const member = current.team.find((m) => m.instanceId === iid)
+    const off = member && !member.enabled
+    input.disabled = !!off
+    $('#btn-send').disabled = !!off || current.busy
+    input.placeholder = off
+      ? '该角色已停用，仅可查看历史；在左侧「团队」点“启用”后可继续'
+      : '发消息给 Agent'
+  } else {
+    composer.classList.add('hidden')
+  }
 }
 
 function senderName(sender) {
@@ -960,18 +1151,23 @@ function connectWs(pid) {
   open()
 }
 
-// 刷新未读（会话列表徽标）
+// 刷新未读（团队/会议导航徽标）
 async function refreshUnread() {
   if (!current.pid) return
   const s = await api(`/projects/${current.pid}/sessions`).catch(() => null)
   if (!s) return
   current.sessions = s.sessions ?? []
-  renderSessions()
+  renderTeamNav()
+  renderMeetingsNav()
 }
 
 async function sendMessage() {
   const text = $('#msg-text').value.trim()
   if (!text || !current.pid || !current.sessionId || current.busy) return
+  if ($('#msg-text').disabled) {
+    toast('该角色已停用，仅可查看历史；请先在左侧「团队」启用')
+    return
+  }
   $('#msg-text').value = ''
   appendMessage('我', text, 'user')
   setSendBusy(true)
@@ -1097,6 +1293,7 @@ async function refreshPanels() {
     current.tasks = tk.tasks ?? []
     renderApprovals()
     renderMeetings()
+    renderMeetingsNav()
     renderArtifacts()
     renderMemories(mem.entries ?? [])
     renderTasks()
@@ -1261,34 +1458,21 @@ function renderApprovals() {
   }
 }
 
+/** 右栏「当前会议」：只显示当前打开的会议及其控制（全部会议在左栏「会议」）。 */
 function renderMeetings() {
   const ul = $('#meeting-list')
   ul.innerHTML = ''
   const ma = $('#meeting-actions')
   ma.innerHTML = ''
-  if (current.team.length >= 2) {
-    const b = document.createElement('button')
-    b.textContent = '发起会议(评审)'
-    b.onclick = async () => {
-      const [host, ...members] = current.team.map((t) => t.instanceId)
-      const d = await api(`/projects/${current.pid}/meetings`, 'POST', {
-        host,
-        topic: '进度评审',
-        members: members.slice(0, 1),
-      })
-      const mid = d.meeting.id
-      const second = members.slice(1)[0]
-      if (second) {
-        await api(`/projects/${current.pid}/meetings/${mid}/respond`, 'POST', {
-          member: second,
-          decision: 'accept',
-        })
-      }
-      await refreshPanels()
-    }
-    ma.appendChild(b)
+  const active = (current.meetings ?? []).filter((x) => x.id === current.sessionId)
+  if (!active.length) {
+    const hint = document.createElement('div')
+    hint.className = 'empty-tip'
+    hint.textContent = '（未打开会议：在左侧「会议」里选择，或点「＋发起」申请开会）'
+    ul.appendChild(hint)
+    return
   }
-  for (const mt of current.meetings) {
+  for (const mt of active) {
     const li = document.createElement('div')
     li.className = 'meeting-item'
     const state = mt.state
@@ -1385,12 +1569,6 @@ function renderMeetings() {
       }
       li.appendChild(regen)
     }
-    ul.appendChild(li)
-  }
-  if (!current.meetings.length) {
-    const li = document.createElement('div')
-    li.className = 'empty-tip'
-    li.textContent = '（暂无会议；团队 ≥2 人后可发起评审）'
     ul.appendChild(li)
   }
 }

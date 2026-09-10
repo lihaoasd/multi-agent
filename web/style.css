@@ -117,6 +117,40 @@ li:hover,
 li.active {
   background: #eef3fd;
 }
+/* 左栏导航行（团队 = 一对一会话；会议 = 会议会话） */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-item .nav-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-item .nav-action {
+  opacity: 0;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.nav-item:hover .nav-action,
+.nav-item.active .nav-action {
+  opacity: 1;
+}
+.nav-item.disabled {
+  opacity: 0.6;
+}
+.nav-item.disabled .nav-title {
+  text-decoration: line-through;
+}
+.tag-off {
+  font-size: 11px;
+  color: #8a93a3;
+  background: #eef0f4;
+  border-radius: 4px;
+  padding: 0 4px;
+}
 #center {
   display: flex;
   flex-direction: column;
@@ -124,15 +158,43 @@ li.active {
 }
 #session-header {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
   font-weight: 600;
+}
+.sh-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   flex-wrap: wrap;
 }
 #session-title {
   flex: 1;
+}
+/* 会议信息（主题/描述/参会人）：会话窗口顶部 */
+.session-sub {
+  font-weight: 400;
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-sub .sh-row {
+  display: flex;
+  gap: 6px;
+  line-height: 1.5;
+}
+.session-sub .sh-label {
+  flex: none;
+  min-width: 56px;
+  color: #8a93a3;
+}
+.session-sub .sh-row:last-child {
+  color: var(--text);
 }
 .typing {
   color: var(--muted);

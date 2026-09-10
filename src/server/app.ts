@@ -318,7 +318,7 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
 
   app.post<{
     Params: { pid: string }
-    Body: { host?: string; topic?: string; agenda?: string[]; members?: string[] }
+    Body: { host?: string; topic?: string; desc?: string; agenda?: string[]; members?: string[] }
   }>('/api/projects/:pid/meetings', async (req, reply) => {
     const b = req.body ?? {}
     if (!b.host || !b.topic || !Array.isArray(b.members)) {
@@ -328,6 +328,7 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       projectId: req.params.pid,
       host: b.host,
       topic: b.topic,
+      desc: b.desc,
       agenda: b.agenda ?? [],
       members: b.members,
     })

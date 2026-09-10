@@ -52,11 +52,26 @@ describe('M6 会议机制', () => {
     const create = await ready().inject({
       method: 'POST',
       url: `/api/projects/${pid}/meetings`,
-      payload: { host: pm, topic: '技术评审', agenda: ['评审登录方案'], members: [dev] },
+      payload: {
+        host: pm,
+        topic: '技术评审',
+        desc: '评审登录方案的技术选型与风险，产出结论',
+        agenda: ['评审登录方案'],
+        members: [dev],
+      },
     })
     expect(create.statusCode).toBe(201)
     const mid = create.json().meeting.id
     expect(create.json().meeting.state).toBe('proposed')
+    expect(create.json().meeting.meeting.desc).toBe('评审登录方案的技术选型与风险，产出结论')
+
+    // 主题 + 描述可从会话详情读回（会议窗口顶部展示用）
+    const detail = await ready().inject({
+      method: 'GET',
+      url: `/api/projects/${pid}/sessions/${mid}`,
+    })
+    expect(detail.json().session.meeting.topic).toBe('技术评审')
+    expect(detail.json().session.meeting.desc).toBe('评审登录方案的技术选型与风险，产出结论')
 
     // 成员接受 → open
     const accept = await ready().inject({

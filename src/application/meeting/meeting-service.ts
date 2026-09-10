@@ -32,6 +32,8 @@ export interface MeetingRecord extends SessionMeta {
   type: 'meeting'
   meeting: {
     topic: string
+    /** 会议描述（发起人填写：为什么开、期望产出） */
+    desc?: string
     host: string
     agenda: MeetingAgendaItem[]
     members: string[]
@@ -46,6 +48,8 @@ export interface CreateMeetingInput {
   projectId: string
   host: string
   topic: string
+  /** 会议描述（可选，UI 发起时要求填写） */
+  desc?: string
   agenda?: string[]
   members: string[]
 }
@@ -167,6 +171,7 @@ export class MeetingService {
       summaryRefs: [],
       meeting: {
         topic: input.topic,
+        desc: input.desc?.trim() ?? '',
         host: input.host,
         agenda: (input.agenda ?? []).map((t) => ({ title: t, status: 'pending' as const })),
         members: [...input.members],
@@ -179,7 +184,7 @@ export class MeetingService {
     await this.append(rec, {
       kind: 'meeting_event',
       role: 'system',
-      payload: { action: 'create', topic: input.topic },
+      payload: { action: 'create', topic: input.topic, desc: rec.meeting.desc },
     })
     return rec
   }
