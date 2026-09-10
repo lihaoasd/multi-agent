@@ -237,3 +237,62 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     expect(queued!.state).toBe('todo') // 槽位占用，自动保持排队
   })
 })
+
+describe('think 与助手回复是两路（分离保证）', () => {
+  it('思考只进 thought 事件，不进正文、不回灌后续上下文', async () => {
+    const { pid, product } = await setupProject()
+    const sid = `u_${product.instanceId}`
+    const calls: Array<Array<{ role: string; content: string }>> = []
+    const gateway = {
+      async *streamChat(opts: { messages: Array<{ role: string; content: string }> }) {
+        calls.push(opts.messages)
+        yield { reasoning: '内部推理MARKER：先想清楚再答。' }
+        yield { content: '给用户的答复MARKER' }
+      },
+    } as unknown as ModelGateway
+    const loop = new AgentLoopRunner({ store: svc.sessionStore, gateway, bus: svc.bus })
+    const ctx: TurnContext = { projectId: pid, sessionId: sid, member: product, scenario: 'sep' }
+    await loop.runDirectTurn(ctx)
+
+    // 第二轮：先补一条用户消息，再看第二轮发给模型的上下文
+    const meta = await svc.sessionStore.readMeta(pid, sid)
+    await svc.sessionStore.appendEvent(meta, {
+      kind: 'message',
+      role: 'user',
+      sender: 'user',
+      content: { text: '继续', blocks: [] },
+    })
+    await loop.runDirectTurn(ctx)
+
+    const second = JSON.stringify(calls[1] ?? [])
+    expect(second).not.toContain('内部推理MARKER') // 思考不回灌上下文
+    expect(second).toContain('给用户的答复MARKER') // 上一轮正文作为历史
+    // 正文里也不含思考标记
+    const evts = (
+      await ready().inject({ method: 'GET', url: `/api/projects/${pid}/sessions/${sid}/log` })
+    ).json().events as Array<{ kind: string; role?: string; content?: { text?: string } }>
+    const msgs = evts.filter((e) => e.kind === 'message' && e.role === 'agent')
+    expect(msgs).toHaveLength(2)
+    for (const m of msgs) expect(m.content?.text ?? '').not.toContain('内部推理MARKER')
+    expect(evts.filter((e) => e.kind === 'thought')).toHaveLength(2)
+  })
+
+  it('只出思考不出正文时给出平台提示（不留空气泡）', async () => {
+    const { pid, product } = await setupProject()
+    const sid = `u_${product.instanceId}`
+    const gateway = {
+      async *streamChat() {
+        yield { reasoning: '想到了很多，但预算用尽。' }
+      },
+    } as unknown as ModelGateway
+    const loop = new AgentLoopRunner({ store: svc.sessionStore, gateway, bus: svc.bus })
+    const evt = await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: sid,
+      member: product,
+      scenario: 'reasoning-only',
+    })
+    expect(evt.content?.text ?? '').toContain('只给出了思考过程')
+    expect(evt.content?.text ?? '').not.toContain('预算用尽')
+  })
+})

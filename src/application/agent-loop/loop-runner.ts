@@ -262,7 +262,13 @@ export class AgentLoopRunner {
       this.opts.bus.emitLogEvent(ctx.projectId, errEvent)
       textParts.push(`（模型调用失败：${err instanceof Error ? err.message : err}）`)
     }
-    const text = textParts.join('\n')
+    let text = textParts.join('\n')
+    // 推理型模型可能"只出思考、未出正文"（预算耗尽/流中断）：给用户明确交代，不留空气泡。
+    // 注意：思考（reasoning）与正文（content）是两路，思考只进 thought 事件，永不作为回复正文。
+    if (!text.trim() && reasoning.trim()) {
+      text =
+        '（模型本次只给出了思考过程、未输出正文；可直接重试，或调大该 provider 的 maxTokens）'
+    }
 
     // 甲模式任务分派（pm/product 的 user 会话）：解析模型文本中的分派指令并执行；
     // 结果以平台说明追加进最终消息（诚实反馈登记/开工/排队/失败）。失败不影响回合。

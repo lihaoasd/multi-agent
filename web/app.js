@@ -756,7 +756,7 @@ function appendToolAudit(who, e) {
   return div
 }
 
-/** 正在流式输出（思考/正文）的容器状态。 */
+/** 正在流式输出的元素：思考块与助手回复气泡**各自独立**（不合并进同一条消息）。 */
 let streaming = null
 
 /** 把消息区滚到底。 */
@@ -765,46 +765,64 @@ function scrollBottom() {
   box.scrollTop = box.scrollHeight
 }
 
-/** 取（或建）当前流式输出的气泡：含思考块 + 正文区；同一 sender 复用。 */
-function streamBox(sender) {
-  const who = sender && sender !== 'user' ? senderName(sender) : 'Agent'
-  if (streaming && document.body.contains(streaming.wrap) && streaming.sender === sender) {
-    return streaming
+/** 取当前 sender 的流式状态；换 sender（换回合/换人）则重置。 */
+function streamState(sender) {
+  if (!streaming || streaming.sender !== sender) {
+    streaming = { sender, who: '', think: null, thinkHead: null, thinkBody: null, answer: null, answerBody: null }
   }
+  if (!streaming.who) {
+    streaming.who = sender && sender !== 'user' ? senderName(sender) : 'Agent'
+  }
+  return streaming
+}
+
+/** 思考块：独立于助手回复单独成块（先思考后回复时插在回复之前）。 */
+function ensureThinkBlock(sender) {
+  const st = streamState(sender)
+  if (st.think && document.body.contains(st.think)) return st
+  const box = $('#messages')
+  const wrap = document.createElement('div')
+  wrap.className = 'msg think'
+  const head = document.createElement('div')
+  head.className = 'think-head'
+  head.textContent = `${st.who} · 🧠 思考中…`
+  head.title = '点击展开/收起'
+  const body = document.createElement('div')
+  body.className = 'think-body'
+  head.addEventListener('click', () => {
+    body.classList.toggle('hidden')
+    head.textContent = `${st.who} · ${body.classList.contains('hidden') ? '💭' : '🧠'} 思考过程`
+  })
+  wrap.appendChild(head)
+  wrap.appendChild(body)
+  if (st.answer && document.body.contains(st.answer)) box.insertBefore(wrap, st.answer)
+  else box.appendChild(wrap)
+  st.think = wrap
+  st.thinkHead = head
+  st.thinkBody = body
+  scrollBottom()
+  return st
+}
+
+/** 助手回复气泡：与思考块分开的独立块。 */
+function ensureAnswerBlock(sender) {
+  const st = streamState(sender)
+  if (st.answer && document.body.contains(st.answer)) return st
   const box = $('#messages')
   const wrap = document.createElement('div')
   wrap.className = 'msg agent'
   const whoEl = document.createElement('div')
   whoEl.className = 'who'
-  whoEl.textContent = `${who}…`
-  const thinkWrap = document.createElement('div')
-  thinkWrap.className = 'think hidden'
-  const thinkHead = document.createElement('div')
-  thinkHead.className = 'think-head'
-  thinkHead.textContent = '🧠 思考中…'
-  const thinkBody = document.createElement('div')
-  thinkBody.className = 'think-body'
-  thinkWrap.appendChild(thinkHead)
-  thinkWrap.appendChild(thinkBody)
+  whoEl.textContent = st.who
   const body = document.createElement('div')
   body.className = 'stream-body'
   wrap.appendChild(whoEl)
-  wrap.appendChild(thinkWrap)
   wrap.appendChild(body)
   box.appendChild(wrap)
+  st.answer = wrap
+  st.answerBody = body
   scrollBottom()
-  streaming = {
-    wrap,
-    whoEl,
-    thinkWrap,
-    thinkHead,
-    thinkBody,
-    body,
-    thinkShown: false,
-    bodyShown: false,
-    sender,
-  }
-  return streaming
+  return st
 }
 
 let wsReconnectDelay = 1000
@@ -825,18 +843,20 @@ function connectWs(pid) {
         return
       }
       if (e.type === 'message.chunk') {
+        // 助手回复：独立气泡（与思考块分开）
         setTyping(false)
-        const st = streamBox(e.payload?.sender)
-        st.bodyShown = true
-        st.body.textContent += e.payload.delta ?? ''
+        const st = ensureAnswerBlock(e.payload?.sender)
+        st.answerBody.textContent += e.payload.delta ?? ''
         scrollBottom()
       } else if (e.type === 'thought.chunk') {
-        const st = streamBox(e.payload?.sender)
-        st.thinkShown = true
-        st.thinkWrap.classList.remove('hidden')
+        // 思考：独立块（不并入回复气泡）
+        const st = ensureThinkBlock(e.payload?.sender)
         st.thinkBody.textContent += e.payload.delta ?? ''
         scrollBottom()
       } else if (e.type === 'message.commit') {
+        if (streaming?.thinkHead && document.body.contains(streaming.thinkHead)) {
+          streaming.thinkHead.textContent = `${streaming.who} · 🧠 思考过程`
+        }
         streaming = null
         current.seenSeq = e.payload?.seq ?? current.seenSeq
         current.lastRenderedSeq = Math.max(
