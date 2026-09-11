@@ -52,16 +52,29 @@ function setDocTitle(text) {
   document.title = text ? `${text} · Agent Haness` : 'Agent Haness'
 }
 
-async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: {} }
+/**
+ * 统一请求封装：**带超时**（默认 10s，防挂死堆积）+ 错误归一化。
+ * 之前的版本没有超时，服务端繁忙时请求会一直挂着 → 前端不断重试 → 浏览器连接耗尽
+ * （net::ERR_INSUFFICIENT_RESOURCES），所有面板（含提问卡片）都刷新失败。
+ */
+async function api(path, method = 'GET', body = null, opts = {}) {
+  const { timeoutMs = 15000, signal } = opts
+  const init = { method, headers: {} }
   if (body) {
-    opts.headers['Content-Type'] = 'application/json'
-    opts.body = JSON.stringify(body)
+    init.headers['Content-Type'] = 'application/json'
+    init.body = JSON.stringify(body)
   }
-  const res = await fetch(`/api${path}`, opts)
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok && data.code) throw new Error(`${data.code}: ${data.message}`)
-  return data
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  if (signal) signal.addEventListener('abort', () => ac.abort(), { once: true })
+  try {
+    const res = await fetch(`/api${path}`, { ...init, signal: ac.signal })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok && data.code) throw new Error(`${data.code}: ${data.message}`)
+    return data
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function toast(msg) {
@@ -452,10 +465,10 @@ function dirParent(p) {
 async function openProject(pid) {
   current.pid = pid
   connectWs(pid)
-  // 角色状态定时刷新（occupancy 变化未必都有 WS 事件）
+  // 角色状态定时刷新（occupancy 变化未必都有 WS 事件）；走合并调度器，不会堆积
   if (agentStatusTimer) clearInterval(agentStatusTimer)
   agentStatusTimer = setInterval(() => {
-    refreshAgents().catch(() => undefined)
+    scheduleRefreshAgents()
   }, 5000)
   const [team, sessions] = await Promise.all([
     api(`/projects/${pid}/team`),
@@ -526,7 +539,8 @@ function renderTeamNav() {
     const st = document.createElement('span')
     st.className = `agent-state state-${state}`
     st.textContent = AGENT_STATE_ZH[state] ?? state
-    if (a?.currentTask) st.title = `当前任务：${a.currentTask.title}`
+    if (state === 'waiting') st.title = '有需要你处理的提问或审批：点击进入该角色会话'
+    else if (a?.currentTask) st.title = `当前任务：${a.currentTask.title}`
     li.appendChild(st)
 
     if (Number(s?.unread ?? 0) > 0) {
@@ -1391,9 +1405,9 @@ function connectWs(pid) {
     ws.onmessage = (evt) => {
       const e = JSON.parse(evt.data)
       if (e.sessionId && e.sessionId !== current.sessionId) {
-        // 其它会话的事件（别的角色在各自会话里干活）只影响未读徽标——
-        // 必须合并刷新，否则每个流式分片都会打一次 HTTP（请求风暴）
-        scheduleRefreshUnread()
+        // 其它会话：只有"落盘事件"才可能改变未读（流式分片不改变 lastSeq），
+        // 并且统一走合并刷新，避免每个分片打一次 HTTP（请求风暴）
+        if (e.type === 'event.appended' || e.type === 'message.commit') scheduleRefreshUnread()
         return
       }
       if (e.type === 'message.chunk') {
@@ -1465,34 +1479,37 @@ function connectWs(pid) {
   open()
 }
 
-// ── 刷新合并（防请求风暴）：流式分片等高频事件只触发一次合并刷新 ──
-let refreshPanelsTimer = null
-let refreshUnreadTimer = null
-let refreshAgentsTimer = null
-
-function scheduleRefreshPanels() {
-  if (refreshPanelsTimer) return
-  refreshPanelsTimer = setTimeout(() => {
-    refreshPanelsTimer = null
-    refreshPanels().catch(() => undefined)
-  }, 600)
+/** 去重调度器：同类刷新同时只允许一个在飞；期间只记一次待办，跑完再排一次。 */
+function createCoalesced(delayMs, run) {
+  let timer = null
+  let running = false
+  let again = false
+  const fire = () => {
+    timer = null
+    if (running) {
+      again = true
+      return
+    }
+    running = true
+    void Promise.resolve(run())
+      .catch(() => undefined)
+      .finally(() => {
+        running = false
+        if (again) {
+          again = false
+          fire()
+        }
+      })
+  }
+  return () => {
+    if (timer) return
+    timer = setTimeout(fire, delayMs)
+  }
 }
 
-function scheduleRefreshUnread() {
-  if (refreshUnreadTimer) return
-  refreshUnreadTimer = setTimeout(() => {
-    refreshUnreadTimer = null
-    refreshUnread().catch(() => undefined)
-  }, 1000)
-}
-
-function scheduleRefreshAgents() {
-  if (refreshAgentsTimer) return
-  refreshAgentsTimer = setTimeout(() => {
-    refreshAgentsTimer = null
-    refreshAgents().catch(() => undefined)
-  }, 800)
-}
+const scheduleRefreshPanels = createCoalesced(1200, () => refreshPanels())
+const scheduleRefreshUnread = createCoalesced(3000, () => refreshUnread())
+const scheduleRefreshAgents = createCoalesced(5000, () => refreshAgents())
 
 /** 会议事件中文名（会议会话里作为过程行展示）。 */
 const MEETING_ACTION_ZH = {

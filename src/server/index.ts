@@ -38,9 +38,20 @@ async function bootstrap(cwd: string = process.cwd()): Promise<void> {
   const svc = composeServices(config)
   const app = await buildApp(svc)
 
-  // 静态托管 web/（M7 工作台）
+  // 静态托管 web/（M7 工作台）：no-cache 强制浏览器每次校验，
+  // 避免前端改动后被浏览器缓存住旧 app.js（曾导致旧版请求风暴仍在跑）
   const webDir = join(repoRoot, 'web')
-  await app.register(fastifyStatic, { root: webDir, prefix: '/' })
+  await app.register(fastifyStatic, {
+    root: webDir,
+    prefix: '/',
+    setHeaders: (res) => {
+      // @fastify/static 的类型把 res 标成 FastifyReply，运行时实为原生 ServerResponse
+      ;(res as unknown as { setHeader(k: string, v: string): void }).setHeader(
+        'Cache-Control',
+        'no-cache',
+      )
+    },
+  })
   app.get('/', async (_req, reply) => reply.sendFile('index.html'))
 
   const { host, port: cfgPort } = config.server
