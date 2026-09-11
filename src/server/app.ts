@@ -295,6 +295,10 @@ function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {
       const env = await composeToolEnv(svc, req.params.pid, rec.actor).catch(() => null)
       if (env) resumed = await tools.resumeCommand(req.params.pid, rec.id, env)
     }
+    // 产出物提交门：批准后把私有区稿件实际落盘到项目工作目录（此前漏了这一步）
+    if (rec.status === 'approved' && rec.kind === 'submit') {
+      resumed = await svc.artifacts.finalizeApproved(req.params.pid, rec.id).catch(() => null)
+    }
     return { approval: rec, resumed }
   })
 }

@@ -447,10 +447,14 @@ export class AgentLoopRunner {
     ]
     if (tools.length) {
       const hasAsk = tools.some((t) => t.name === 'ask_user')
+      const hasSubmit = tools.some((t) => t.name === 'artifact_submit')
       parts.push(
         `[可用工具] ${tools.map((t) => t.name).join('、')}。` +
           '需要查看/修改工作目录或检索信息时请直接调用工具，不要凭空猜测文件内容；' +
           '写工作目录用 workdir_edit，运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。' +
+          (hasSubmit
+            ? 'ws:// 私有区只是草稿区：**交付物必须用 artifact_submit 提交到项目工作目录**才算交付，只写在 ws:// 里项目目录看不到。'
+            : '') +
           (hasAsk
             ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
               '不要替用户决定；调用后请结束本轮并等待用户在会话中回答。'

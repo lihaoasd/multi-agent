@@ -19,6 +19,7 @@ import type { TaskService } from '../task/task-service.js'
 import type { TaskState } from '../task/task-service.js'
 import { assignTaskFromIntent } from '../task/task-dispatch.js'
 import type { MeetingService } from '../meeting/meeting-service.js'
+import type { ArtifactService } from '../artifact/artifact-service.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 
 /** 可派单的角色（与 task-dispatch 的 DISPATCH_ROLES 保持一致）。 */
@@ -34,6 +35,11 @@ export function registerServiceTools(deps: {
   tasks?: TaskService
   meetings?: MeetingService
   listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
+  /** 产出物提交（ws 私有区 → 项目工作目录） */
+  artifacts?: ArtifactService
+  artifactPolicy?: (
+    projectId: string,
+  ) => Promise<{ codeSubmitApproval: boolean; docSubmitApproval: boolean }>
   /** 在会议会话内为某实例执行一轮（会议发言） */
   runMeetingTurn?: (
     projectId: string,
@@ -42,7 +48,18 @@ export function registerServiceTools(deps: {
     prompt: string,
   ) => Promise<void>
 }): void {
-  const { memory, search, codeEdits, questions, tasks, meetings, listTeam, runMeetingTurn } = deps
+  const {
+    memory,
+    search,
+    codeEdits,
+    questions,
+    tasks,
+    meetings,
+    listTeam,
+    artifacts,
+    artifactPolicy,
+    runMeetingTurn,
+  } = deps
 
   registerTool(
     {
@@ -614,6 +631,126 @@ export function registerServiceTools(deps: {
       },
     )
   }
+  // 产出物提交（交付通道②，workspaces-artifacts §2.1）：私有区定稿 → 项目工作目录 + 版本快照
+  if (artifacts) {
+    registerTool(
+      {
+        name: 'artifact_submit',
+        description:
+          '把私有工作区(ws://)里的定稿提交到项目工作目录：产生产出物记录 + 版本快照（可回退）。' +
+          'doc 类默认需要用户审批，code 类免审批直接落地。只写 ws:// 不算交付，必须用本工具提交',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: '产出物标题（如「登录模块 PRD」）' },
+            type: {
+              type: 'string',
+              enum: ['doc', 'code', 'config', 'test', 'deploy'],
+              description: '产出物类型，缺省 doc',
+            },
+            summary: { type: 'string', description: '一句话说明（可选）' },
+            files: {
+              type: 'array',
+              description:
+                '要提交的文件清单：fromWsRel=私有区路径，relPath=项目工作目录内的相对路径',
+              items: {
+                type: 'object',
+                properties: {
+                  fromWsRel: { type: 'string', description: '如 ws://docs/prd.md' },
+                  relPath: { type: 'string', description: '如 docs/prd.md' },
+                },
+                required: ['fromWsRel'],
+              },
+            },
+            path: {
+              type: 'string',
+              description: '单文件简写：私有区路径（等价 files=[{fromWsRel:path}]）',
+            },
+            relPath: {
+              type: 'string',
+              description: '单文件简写：工作目录相对路径（缺省=去掉 ws:// 前缀）',
+            },
+          },
+          required: ['title'],
+        },
+      },
+      async (args, env) => {
+        const title = String(args.title ?? '').trim()
+        if (!title) return { ok: false, code: 'ERR_VALIDATION', reason: 'title 必填' }
+        const type = String(args.type ?? 'doc').trim()
+        if (!['doc', 'code', 'config', 'test', 'deploy'].includes(type)) {
+          return { ok: false, code: 'ERR_VALIDATION', reason: `不支持的产出物类型: ${type}` }
+        }
+        const rawFiles = Array.isArray(args.files) ? args.files : []
+        const list: Array<{ fromWsRel: string; relPath: string }> = []
+        for (const f of rawFiles) {
+          if (typeof f !== 'object' || f === null) continue
+          const fromWsRel = String((f as Record<string, unknown>).fromWsRel ?? '').trim()
+          if (!fromWsRel) continue
+          const relRaw = (f as Record<string, unknown>).relPath
+          const relPath = (relRaw === undefined ? '' : String(relRaw)).trim() || stripWs(fromWsRel)
+          list.push({ fromWsRel, relPath })
+        }
+        if (!list.length && args.path) {
+          const fromWsRel = String(args.path).trim()
+          const relPath =
+            (args.relPath === undefined ? '' : String(args.relPath)).trim() || stripWs(fromWsRel)
+          list.push({ fromWsRel, relPath })
+        }
+        if (!list.length) {
+          return {
+            ok: false,
+            code: 'ERR_VALIDATION',
+            reason: 'files 不能为空（或提供 path 单文件简写）',
+          }
+        }
+        const policy = artifactPolicy ? await artifactPolicy(env.projectId).catch(() => null) : null
+        const needsApproval =
+          type === 'doc'
+            ? (policy?.docSubmitApproval ?? false)
+            : type === 'code'
+              ? (policy?.codeSubmitApproval ?? false)
+              : false
+        try {
+          const { record, approvalId } = await artifacts.submit({
+            projectId: env.projectId,
+            actor: env.instanceId,
+            sessionId: env.sessionId,
+            taskId: env.taskId ?? null,
+            type: type as never,
+            title,
+            summary: args.summary === undefined ? '' : String(args.summary),
+            files: list,
+            needsApproval,
+          })
+          const where = list.map((f) => f.relPath).join('、')
+          return {
+            ok: true,
+            summary: approvalId
+              ? `已提交产出物 ${record.id}「${title}」v${record.version}（${where}）→ 等待用户审批（${approvalId}）；批准后写入项目工作目录`
+              : `已提交产出物 ${record.id}「${title}」v${record.version} → 项目工作目录：${where}`,
+          }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_TOOL_REJECTED',
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      },
+    )
+  }
+}
+
+/** ws://docs/a.md → docs/a.md（提交到项目目录时的默认相对路径）。 */
+function stripWs(p: string): string {
+  return p.replace(/^ws:\/\//, '').replace(/^[/\\]+/, '')
 }
 
 function isVisibleTo(sessionId: string | undefined, env: { instanceId: string }): boolean {
