@@ -151,6 +151,58 @@ li.active {
   border-radius: 4px;
   padding: 0 4px;
 }
+/* 角色实时状态（左栏团队行）：空闲/工作中/会议中/等待你处理/已停用 */
+.agent-state {
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+  color: #6b7484;
+  background: #eef0f4;
+}
+.agent-state.state-working {
+  color: #1b6e3c;
+  background: #e6f6ec;
+}
+.agent-state.state-meeting {
+  color: #8a5a00;
+  background: #fdf3e0;
+}
+.agent-state.state-waiting {
+  color: #a33;
+  background: #fdeaea;
+}
+.agent-state.state-disabled {
+  color: #8a93a3;
+  background: #f2f3f5;
+}
+.nav-item .agent-state {
+  flex: none;
+}
+/* 任务面板状态（只读，由角色负责流转） */
+.task-state {
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 0 5px;
+  color: #6b7484;
+  background: #eef0f4;
+}
+.task-state.state-in_progress {
+  color: #1b6e3c;
+  background: #e6f6ec;
+}
+.task-state.state-done {
+  color: #1b6e3c;
+  background: #dff3e6;
+}
+.task-state.state-blocked {
+  color: #a33;
+  background: #fdeaea;
+}
+.task-state.state-terminated {
+  color: #8a93a3;
+  background: #f2f3f5;
+}
 #center {
   display: flex;
   flex-direction: column;

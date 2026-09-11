@@ -16,11 +16,15 @@ import { SearchService } from '../search/search-service.js'
 import { CodeEditStore } from '../code-edit/code-edit-store.js'
 import type { QuestionService } from '../question/question-service.js'
 import type { TaskService } from '../task/task-service.js'
+import type { TaskState } from '../task/task-service.js'
 import { assignTaskFromIntent } from '../task/task-dispatch.js'
+import type { MeetingService } from '../meeting/meeting-service.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 
 /** 可派单的角色（与 task-dispatch 的 DISPATCH_ROLES 保持一致）。 */
 const DISPATCH_ROLES = new Set(['pm', 'product'])
+/** 任务状态全集（task_update 校验用） */
+const TASK_STATES: TaskState[] = ['todo', 'in_progress', 'done', 'blocked', 'terminated']
 
 export function registerServiceTools(deps: {
   memory: MemoryStore
@@ -28,9 +32,10 @@ export function registerServiceTools(deps: {
   codeEdits: CodeEditStore
   questions?: QuestionService
   tasks?: TaskService
+  meetings?: MeetingService
   listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
 }): void {
-  const { memory, search, codeEdits, questions, tasks, listTeam } = deps
+  const { memory, search, codeEdits, questions, tasks, meetings, listTeam } = deps
 
   registerTool(
     {
@@ -337,6 +342,186 @@ export function registerServiceTools(deps: {
             r.state === 'in_progress'
               ? `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已开始执行）`
               : `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已排队 todo：${r.reason ?? '等待开工'}）`,
+        }
+      },
+    )
+  }
+
+  // 任务状态自管：受派者自己汇报 开工/完成/受阻/终止（默认作用于当前激活任务）
+  if (tasks) {
+    registerTool(
+      {
+        name: 'task_update',
+        description:
+          '更新任务状态（默认作用于你当前的进行中任务）：in_progress 开工 / done 完成 / blocked 受阻 / todo 回队 / terminated 终止。' +
+          '完成后请调用本工具把状态改为 done 再汇报',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            taskId: { type: 'string', description: '任务 id；缺省用你当前进行中的任务' },
+            state: {
+              type: 'string',
+              enum: ['todo', 'in_progress', 'done', 'blocked', 'terminated'],
+              description: '目标状态',
+            },
+            note: { type: 'string', description: '可选说明（写入会话汇报用）' },
+          },
+          required: ['state'],
+        },
+      },
+      async (args, env) => {
+        const taskId =
+          (args.taskId === undefined ? '' : String(args.taskId).trim()) || env.taskId || ''
+        if (!taskId) {
+          return {
+            ok: false,
+            code: 'ERR_VALIDATION',
+            reason: '未指定 taskId，且当前没有进行中的任务（请先由协调者派单）',
+          }
+        }
+        const state = String(args.state ?? '').trim() as TaskState
+        if (!TASK_STATES.includes(state)) {
+          return {
+            ok: false,
+            code: 'ERR_VALIDATION',
+            reason: `state 必须是 ${TASK_STATES.join('|')}`,
+          }
+        }
+        try {
+          const rec = await tasks.setState(env.projectId, taskId, state, env.instanceId)
+          return { ok: true, summary: `任务 ${rec.id}「${rec.title}」状态 → ${rec.state}` }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_CONFLICT',
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      },
+    )
+  }
+
+  // 发起/结束会议：任意角色都可发起（平台代受邀 AI 成员接受）；仅主持人可结束
+  if (meetings && listTeam) {
+    registerTool(
+      {
+        name: 'meeting_start',
+        description:
+          '发起会议（任意角色）：给定主题、描述与参会人（不含自己）；平台会代受邀 AI 成员接受并进入会议，用户可插话/拍板/结束',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            topic: { type: 'string', description: '会议主题' },
+            desc: { type: 'string', description: '会议描述：为什么开、期望产出' },
+            members: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '参会角色实例 id（如 dev_1、qa_1；不含自己）',
+            },
+            agenda: { type: 'array', items: { type: 'string' }, description: '议题（可选）' },
+          },
+          required: ['topic', 'members'],
+        },
+      },
+      async (args, env) => {
+        const topic = String(args.topic ?? '').trim()
+        const desc = args.desc === undefined ? '' : String(args.desc).trim()
+        const members = (Array.isArray(args.members) ? args.members.map(String) : [])
+          .map((s) => s.trim())
+          .filter(Boolean)
+        const agenda = (Array.isArray(args.agenda) ? args.agenda.map(String) : [])
+          .map((s) => s.trim())
+          .filter(Boolean)
+        if (!topic) return { ok: false, code: 'ERR_VALIDATION', reason: 'topic 必填' }
+        if (!members.length)
+          return { ok: false, code: 'ERR_VALIDATION', reason: 'members 至少 1 人' }
+        if (members.includes(env.instanceId)) {
+          return { ok: false, code: 'ERR_VALIDATION', reason: '你是主持人，members 不要包含自己' }
+        }
+        const team = await listTeam(env.projectId)
+        const enabled = team.filter((m) => m.enabled).map((m) => m.instanceId)
+        const bad = members.filter((m) => !enabled.includes(m))
+        if (bad.length) {
+          return {
+            ok: false,
+            code: 'ERR_VALIDATION',
+            reason: `实例不存在或已停用：${bad.join('、')}（可选：${enabled.join('、')}）`,
+          }
+        }
+        try {
+          const rec = await meetings.create({
+            projectId: env.projectId,
+            host: env.instanceId,
+            topic,
+            desc,
+            agenda,
+            members,
+          })
+          // 平台代受邀 AI 成员接受邀请 → 会议进入 open（占用=会议中）
+          for (const m of members) {
+            await meetings.respond(env.projectId, rec.id, m, 'accept').catch(() => undefined)
+          }
+          return {
+            ok: true,
+            summary:
+              `已发起会议 ${rec.id}「${topic}」，参会：我（${env.instanceId}，主持）、${members.join('、')}、用户。` +
+              '会议已开始；请在会议会话中跟进结论，结束后用 meeting_close 收尾（会生成纪要）。',
+          }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_CONFLICT',
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      },
+    )
+
+    registerTool(
+      {
+        name: 'meeting_close',
+        description: '结束你主持的会议并生成纪要（仅主持人）',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: { meetingId: { type: 'string', description: '会议 id（m_…）' } },
+          required: ['meetingId'],
+        },
+      },
+      async (args, env) => {
+        const meetingId = String(args.meetingId ?? '').trim()
+        if (!meetingId) return { ok: false, code: 'ERR_VALIDATION', reason: 'meetingId 必填' }
+        try {
+          const rec = (await meetings.list(env.projectId)).find((m) => m.id === meetingId)
+          if (!rec) return { ok: false, code: 'ERR_NOT_FOUND', reason: `会议不存在: ${meetingId}` }
+          if (rec.meeting.host !== env.instanceId) {
+            return { ok: false, code: 'ERR_TOOL_REJECTED', reason: '只有主持人才可以结束会议' }
+          }
+          await meetings.close(env.projectId, meetingId, env.instanceId)
+          return { ok: true, summary: `已结束会议 ${meetingId}，纪要已生成` }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_CONFLICT',
+            reason: e instanceof Error ? e.message : String(e),
+          }
         }
       },
     )

@@ -197,8 +197,13 @@ export class MeetingService {
     decision: 'accept' | 'later' | 'decline',
   ): Promise<MeetingRecord> {
     const rec = await this.get(projectId, meetingId)
-    if (rec.state !== 'proposed') {
-      throw new AppError(ErrorCodes.CONFLICT, `仅 proposed 会议可回应邀请（当前 ${rec.state}）`)
+    // 会议已 open 时仍允许**未回应过的成员**补回应（接受→入会占用；稍后/拒绝→记录）
+    const alreadyOpen = rec.state === 'open'
+    if (rec.state !== 'proposed' && !alreadyOpen) {
+      throw new AppError(
+        ErrorCodes.CONFLICT,
+        `仅 proposed/open 会议可回应邀请（当前 ${rec.state}）`,
+      )
     }
     if (!rec.meeting.members.includes(member) && member !== rec.meeting.host) {
       throw new AppError(ErrorCodes.VALIDATION, `成员不在本会议: ${member}`)
@@ -216,17 +221,20 @@ export class MeetingService {
       .filter(([, d]) => d === 'accept')
       .map(([m]) => m)
     if (decision === 'accept') {
-      rec.state = 'open'
-      rec.updatedAt = nowIso()
-      await this.store.writeMeta(rec)
-      await this.append(rec, {
-        kind: 'meeting_event',
-        role: 'system',
-        payload: { action: 'open', members: accepts },
-      })
+      if (!alreadyOpen) {
+        rec.state = 'open'
+        rec.updatedAt = nowIso()
+        await this.store.writeMeta(rec)
+        await this.append(rec, {
+          kind: 'meeting_event',
+          role: 'system',
+          payload: { action: 'open', members: accepts },
+        })
+      }
       // 阵容聚合消息（D17-②）：谁在会/稍后/拒绝 汇总成一条，不逐条打扰
       await this.emitLineup(rec, decision)
-      await this.onOpen?.(projectId, rec.meeting.host, accepts)
+      // 已 open 时只为"新入会成员"补占用（onOpen 内部对主持人幂等）
+      await this.onOpen?.(projectId, rec.meeting.host, alreadyOpen ? [member] : accepts)
     } else {
       rec.updatedAt = nowIso()
       await this.store.writeMeta(rec)

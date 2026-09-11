@@ -22,8 +22,8 @@ export interface TurnContext {
   member: TeamMemberConfig
   /** 项目名/场景设定 */
   scenario: string
-  /** 可指派对象（分派提示用；由上层按项目团队注入） */
-  assignableMembers?: Array<{ instanceId: string; displayName: string }>
+  /** 团队名册（所有角色都注入；由上层按项目团队提供） */
+  assignableMembers?: Array<{ instanceId: string; displayName: string; roleTemplateId?: string }>
 }
 
 /** 当前激活任务（注入提示 + workdir_edit 聚合锚点）。 */
@@ -104,11 +104,13 @@ export class AgentLoopRunner {
       return await this.runTurnCore(ctx)
     } finally {
       if (occupancy) {
-        await occupancy.release(ctx.projectId, iid)
+        // 只释放本回合会话的占用：回合中若已入会，会议占用不能被清掉
+        await occupancy.release(ctx.projectId, iid, ctx.sessionId)
+        const left = await occupancy.get(ctx.projectId, iid).catch(() => null)
         this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
           instanceId: iid,
-          state: 'idle',
-          sessionId: null,
+          state: left ? left.activity : 'idle',
+          sessionId: left?.sessionId ?? null,
         })
       }
     }
@@ -453,12 +455,32 @@ export class AgentLoopRunner {
       parts.push(
         `[当前任务] ${activeTask.id}「${activeTask.title}」（in_progress）` +
           (activeTask.desc ? `：${activeTask.desc}` : '') +
-          '\n请围绕该任务工作；代码改动会自动归属该任务，完成后向用户汇报。',
+          '\n纪律：任务做完后**必须**调用 task_update（state=done）上报状态，平台据此结算并在任务面板显示；' +
+          '受阻时置 blocked 并说明原因；不要只在聊天里口头说完成。',
       )
     }
+    const roster = this.buildTeamRoster(ctx, tools)
+    if (roster) parts.push(roster)
     const hint = this.buildDispatchHint(ctx, sessionType, tools)
     if (hint) parts.push(hint)
     return parts.join('\n')
+  }
+
+  /** 团队名册：让每个角色都知道队伍里有哪些成员（可直接用实例 id 协作/开会/派单）。 */
+  private buildTeamRoster(ctx: TurnContext, tools: ToolSchema[]): string | null {
+    const all = ctx.assignableMembers ?? []
+    const peers = all.filter((x) => x.instanceId !== ctx.member.instanceId)
+    if (!peers.length) return null
+    const me = `我：${ctx.member.instanceId}（${ctx.member.displayName}）`
+    const others = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
+    const hasMeeting = tools.some((t) => t.name === 'meeting_start')
+    return (
+      `[团队成员] ${me}｜其他成员：${others}。` +
+      '需要协作、派活或对齐时直接用这些实例 id；' +
+      (hasMeeting
+        ? '需要评审/对齐时调用 meeting_start 发起会议（自行定主题、描述与参会人）。'
+        : '需要开会时请让用户发起会议。')
+    )
   }
 
   /** 甲模式分派说明（pm/product 的 user 会话且提供了可派对象时注入）。 */

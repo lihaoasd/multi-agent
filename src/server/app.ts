@@ -116,11 +116,54 @@ function registerProjectRoutes(app: FastifyInstance, svc: Services): void {
 }
 
 function registerTeamRoutes(app: FastifyInstance, svc: Services): void {
-  const { teamService } = svc
+  const { teamService, occupancy, tasks, approvals, questions } = svc
 
   app.get<{ Params: { pid: string } }>('/api/projects/:pid/team', async (req) => ({
     team: await teamService.list(req.params.pid),
   }))
+
+  /**
+   * 团队实时状态（左栏团队列表用）：
+   * disabled（停用）/ meeting（会议中）/ working（工作中）/ waiting（等你处理审批或提问）/ idle（空闲），
+   * 并附当前进行中任务，便于一眼看出每个角色在干什么。
+   */
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/agents', async (req) => {
+    const pid = req.params.pid
+    const [team, occ, taskList, pendingApprovals, pendingQuestions] = await Promise.all([
+      teamService.list(pid),
+      occupancy.read(pid),
+      tasks.list(pid),
+      approvals.list(pid, 'pending'),
+      questions.list(pid, { status: 'pending' }),
+    ])
+    const agents = team.map((m) => {
+      const o = occ.occupancy[m.instanceId] ?? null
+      const waiting =
+        pendingApprovals.some((a) => a.actor === m.instanceId) ||
+        pendingQuestions.some((q) => q.asker === m.instanceId)
+      const state = !m.enabled
+        ? 'disabled'
+        : o?.activity === 'meeting'
+          ? 'meeting'
+          : o?.activity === 'working'
+            ? 'working'
+            : waiting
+              ? 'waiting'
+              : 'idle'
+      const current = taskList.find((t) => t.assignee === m.instanceId && t.state === 'in_progress')
+      return {
+        instanceId: m.instanceId,
+        displayName: m.displayName,
+        roleTemplateId: m.roleTemplateId,
+        enabled: m.enabled,
+        state,
+        sessionId: o?.sessionId ?? null,
+        since: o?.since ?? null,
+        currentTask: current ? { id: current.id, title: current.title } : null,
+      }
+    })
+    return { agents }
+  })
 
   app.post<{ Params: { pid: string }; Body: TeamAddInput }>(
     '/api/projects/:pid/team',

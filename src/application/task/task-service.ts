@@ -121,19 +121,20 @@ export class TaskService {
     return rec
   }
 
-  /** 状态流转；由用户（UI）驱动。 */
+  /**
+   * 状态流转：**默认由受派者自己汇报**（开工/完成/受阻/终止），用户与协调者也可干预。
+   * 权限：user / 受派者本人 /（甲模式下）协调者；其余角色被拒。
+   */
   async setState(
     projectId: string,
     taskId: string,
     to: TaskState,
     actor: 'user' | string = 'user',
   ): Promise<TaskRecord> {
-    if (actor !== 'user' && !this.assignByAgent) {
-      throw new AppError(ErrorCodes.CONFLICT, '甲模式未开启：状态仅可由 user 流转')
-    }
     const cur = await this.get(projectId, taskId)
+    this.assertActor(cur, actor)
     const next: TaskRecord = { ...cur, state: to, updatedAt: nowIso() }
-    this.assertTransition(cur, to, actor)
+    this.assertTransition(cur, to)
 
     // 置 in_progress 前检查单工槽位（每 Agent 至多 1）
     if (to === 'in_progress') {
@@ -152,19 +153,29 @@ export class TaskService {
       await this.settle(projectId, cur)
     }
     await this.rewrite(projectId, next)
-    // 激活即唤醒（D18-③）
-    if (to === 'in_progress') {
+    // 激活即唤醒（D18-③）：只有"别人替我开工"才需要唤醒；受派者自己置位说明它已在干活
+    if (to === 'in_progress' && actor !== cur.assignee) {
       await this.wake(projectId, cur.assignee, cur.title, cur.id).catch(() => undefined)
     }
     return next
   }
 
-  private assertTransition(cur: TaskRecord, to: TaskState, actor: string): void {
+  /** 谁能改这条任务：user / 受派者本人 /（甲模式下）协调者 pm·product 等。 */
+  private assertActor(cur: TaskRecord, actor: string): void {
+    if (actor === 'user' || actor === cur.assignee) return
+    if (this.assignByAgent) return
+    throw new AppError(
+      ErrorCodes.CONFLICT,
+      `任务 ${cur.id} 由受派者 ${cur.assignee} 自己汇报状态（或用户/协调者干预）；${actor} 无权修改`,
+    )
+  }
+
+  private assertTransition(cur: TaskRecord, to: TaskState): void {
     const from = cur.state
     const allow: Record<string, TaskState[]> = {
       todo: ['in_progress', 'blocked'],
-      blocked: ['todo'],
-      in_progress: ['done', 'terminated'],
+      blocked: ['todo', 'in_progress'],
+      in_progress: ['done', 'terminated', 'blocked'],
       done: [],
       terminated: [],
     }
@@ -174,13 +185,6 @@ export class TaskService {
         ErrorCodes.CONFLICT,
         `非法状态流转 ${from} → ${to}（允许: ${(allow[from] ?? []).join(', ') || '无（终态）'}）`,
       )
-    }
-    // done 需用户确认；terminated 仅用户显式终止
-    if (to === 'done' && actor !== 'user') {
-      throw new AppError(ErrorCodes.CONFLICT, '任务完成需用户确认（done 仅可由 user 置位）')
-    }
-    if (to === 'terminated' && actor !== 'user') {
-      throw new AppError(ErrorCodes.CONFLICT, '任务终止仅可由用户显式执行')
     }
   }
 

@@ -187,6 +187,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     codeEdits,
     questions,
     tasks,
+    meetings,
     listTeam: (pid) => projectService.listTeam(pid),
   })
 
@@ -201,9 +202,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   }
 
   // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性。
-  // ask_user / task_assign 为平台交互能力：user 会话始终可用（老项目快照的 tools 里没有也能用）；
-  // task_assign 的角色权限在工具内部校验（仅 pm/product）。
-  const PLATFORM_USER_TOOLS = new Set(['ask_user', 'task_assign'])
+  // ask_user / task_assign / task_update 为平台交互能力：user 会话始终可用
+  // （老项目快照的 tools 里没有也能用）；task_assign 的角色权限在工具内部校验（仅 pm/product）。
+  const PLATFORM_USER_TOOLS = new Set(['ask_user', 'task_assign', 'task_update'])
   loopOpts.toolRuntime = {
     listTools: (ctx, sessionType) => {
       const allowed = new Set(ctx.member.tools ?? [])

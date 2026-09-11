@@ -44,8 +44,14 @@ export class OccupancyStore {
     await atomicWriteJson(this.file(projectId), st)
   }
 
-  async release(projectId: string, instanceId: string): Promise<void> {
+  /**
+   * 释放占用。传 sessionId 时**只释放该会话的占用**——
+   * 避免回合结束时把"回合中刚加入的会议占用"一并清掉（主持人状态会丢）。
+   */
+  async release(projectId: string, instanceId: string, sessionId?: string): Promise<void> {
     const st = await this.read(projectId)
+    const cur = st.occupancy[instanceId]
+    if (sessionId !== undefined && cur && cur.sessionId !== sessionId) return
     delete st.occupancy[instanceId]
     await atomicWriteJson(this.file(projectId), st)
   }

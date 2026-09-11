@@ -18,6 +18,7 @@ let current = {
   artifacts: [],
   tasks: [],
   questions: [],
+  agents: [],
   oldestSeq: null,
   /** 本次已从历史渲染到的最新 seq（用于过滤广播中重复事件） */
   lastRenderedSeq: 0,
@@ -80,6 +81,10 @@ async function showProjectsView() {
   current.pid = null
   current.sessionId = null
   current.busy = false
+  if (agentStatusTimer) {
+    clearInterval(agentStatusTimer)
+    agentStatusTimer = null
+  }
   setDocTitle('')
   if (ws) {
     ws.onclose = null
@@ -152,6 +157,9 @@ async function refreshProjectList() {
     toast('加载项目失败: ' + e.message)
   }
 }
+
+/** 角色状态轮询定时器（进入项目时启动，回项目列表时清理）。 */
+let agentStatusTimer = null
 
 /** 页 2：进入某项目的会话工作台。 */
 async function enterProject(pid) {
@@ -444,6 +452,11 @@ function dirParent(p) {
 async function openProject(pid) {
   current.pid = pid
   connectWs(pid)
+  // 角色状态定时刷新（occupancy 变化未必都有 WS 事件）
+  if (agentStatusTimer) clearInterval(agentStatusTimer)
+  agentStatusTimer = setInterval(() => {
+    refreshAgents().catch(() => undefined)
+  }, 5000)
   const [team, sessions] = await Promise.all([
     api(`/projects/${pid}/team`),
     api(`/projects/${pid}/sessions`),
@@ -471,13 +484,33 @@ function renderEmptyCenter(text) {
   box.appendChild(div)
 }
 
-/** 团队列表 = 与每个成员的一对一会话入口（点击进入；行内可停用/启用）。 */
+/** 角色状态中文名（团队列表用）。 */
+const AGENT_STATE_ZH = {
+  idle: '空闲',
+  working: '工作中',
+  meeting: '会议中',
+  waiting: '等待你处理',
+  disabled: '已停用',
+}
+
+/** 拉取团队实时状态（/agents）并刷新左栏团队行。 */
+async function refreshAgents() {
+  if (!current.pid) return
+  const d = await api(`/projects/${current.pid}/agents`).catch(() => null)
+  if (!d) return
+  current.agents = d.agents ?? []
+  renderTeamNav()
+}
+
+/** 团队列表 = 与每个成员的一对一会话入口（行内显示实时状态、可停用/启用）。 */
 function renderTeamNav() {
   const ul = $('#team-list')
   ul.innerHTML = ''
   for (const m of current.team) {
     const sid = `u_${m.instanceId}`
     const s = current.sessions.find((x) => x.id === sid)
+    const a = (current.agents ?? []).find((x) => x.instanceId === m.instanceId)
+    const state = !m.enabled ? 'disabled' : (a?.state ?? 'idle')
     const li = document.createElement('li')
     li.className = 'nav-item'
     if (!m.enabled) li.classList.add('disabled')
@@ -486,13 +519,16 @@ function renderTeamNav() {
     const title = document.createElement('span')
     title.className = 'nav-title'
     title.textContent = `${m.displayName}（${m.instanceId}）`
+    title.title = a?.currentTask ? `当前任务：${a.currentTask.title}` : ''
     li.appendChild(title)
-    if (!m.enabled) {
-      const tag = document.createElement('span')
-      tag.className = 'tag-off'
-      tag.textContent = '已停用'
-      li.appendChild(tag)
-    }
+
+    // 实时状态：空闲/工作中/会议中/等待你处理/已停用（+ 当前任务提示）
+    const st = document.createElement('span')
+    st.className = `agent-state state-${state}`
+    st.textContent = AGENT_STATE_ZH[state] ?? state
+    if (a?.currentTask) st.title = `当前任务：${a.currentTask.title}`
+    li.appendChild(st)
+
     if (Number(s?.unread ?? 0) > 0) {
       const b = document.createElement('span')
       b.className = 'badge'
@@ -1327,6 +1363,9 @@ function connectWs(pid) {
         }
         // message/thought 由流式或历史渲染负责，仅刷新面板
         refreshPanels()
+      } else if (e.type === 'agent.state') {
+        // 角色状态变化（开工/入会/空闲）→ 刷新左栏团队状态
+        refreshAgents().catch(() => undefined)
       } else if (e.type === 'session.updated') {
         refreshPanels().catch(() => undefined)
       }
@@ -1465,7 +1504,7 @@ function buildToolNode(who, e) {
 async function refreshPanels() {
   if (!current.pid) return
   try {
-    const [a, m, ar, mem, att, tk, qs] = await Promise.all([
+    const [a, m, ar, mem, att, tk, qs, ag] = await Promise.all([
       api(`/projects/${current.pid}/approvals?status=pending`),
       api(`/projects/${current.pid}/meetings`),
       api(`/projects/${current.pid}/artifacts`),
@@ -1473,14 +1512,17 @@ async function refreshPanels() {
       api(`/projects/${current.pid}/needs-attention`),
       api(`/projects/${current.pid}/tasks`),
       api(`/projects/${current.pid}/questions?status=pending`),
+      api(`/projects/${current.pid}/agents`),
     ])
     current.approvals = a.approvals ?? []
     current.meetings = m.meetings ?? []
     current.artifacts = ar.artifacts ?? []
     current.tasks = tk.tasks ?? []
     current.questions = qs.questions ?? []
+    current.agents = ag.agents ?? []
     renderApprovals()
     renderQuestions()
+    renderTeamNav()
     renderMeetings()
     renderMeetingsNav()
     renderArtifacts()
@@ -1499,6 +1541,15 @@ async function refreshPanels() {
   }
 }
 
+/** 任务状态中文名（任务面板用；状态由角色自己汇报）。 */
+const TASK_STATE_ZH = {
+  todo: '排队',
+  in_progress: '进行中',
+  done: '已完成',
+  blocked: '受阻',
+  terminated: '已终止',
+}
+
 function renderTasks() {
   const ul = $('#task-list')
   ul.innerHTML = ''
@@ -1513,40 +1564,21 @@ function renderTasks() {
   for (const t of tasks.slice(0, 12)) {
     const li = document.createElement('div')
     li.className = 'task-item'
+    const state = document.createElement('span')
+    state.className = `state task-state state-${t.state}`
+    state.textContent = TASK_STATE_ZH[t.state] ?? t.state
     const title = document.createElement('span')
     title.textContent = `${t.title} → ${t.assignee}`
     title.title = `${t.id}\n${t.desc ?? ''}`
-    const state = document.createElement('span')
-    state.className = 'state'
-    state.textContent = t.state
     li.appendChild(state)
     li.appendChild(title)
-    if (t.state === 'todo') {
-      li.appendChild(actionBtn('开工', async () => setTask(t, 'in_progress')))
-    } else if (t.state === 'in_progress') {
-      li.appendChild(actionBtn('完成', async () => setTask(t, 'done')))
-      li.appendChild(actionBtn('终止', async () => setTask(t, 'terminated')))
-    }
     ul.appendChild(li)
   }
-  function actionBtn(label, fn) {
-    const b = document.createElement('button')
-    b.textContent = label
-    b.onclick = async () => {
-      try {
-        await fn()
-        toast('任务状态已更新')
-        await refreshPanels()
-      } catch (e) {
-        toast(e.message)
-      }
-    }
-    return b
-  }
-}
-
-async function setTask(t, state) {
-  await api(`/projects/${current.pid}/tasks/${t.id}`, 'PATCH', { state, actor: 'user' })
+  // 状态由角色自己汇报（task_update / 会话里报告），用户只查看
+  const tip = document.createElement('div')
+  tip.className = 'empty-tip'
+  tip.textContent = '状态由角色自行汇报（开工/完成/受阻），你无需手动点击'
+  ul.appendChild(tip)
 }
 
 async function openAttentionModal() {

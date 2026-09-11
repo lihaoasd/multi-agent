@@ -39,16 +39,18 @@ export class SessionService {
     private readonly teamLister?: (projectId: string) => Promise<TeamMemberConfig[]>,
   ) {}
 
-  /** 可派角色（pm/product）回合注入可指派对象清单（甲模式分派提示用）。 */
-  private async fillAssignables(
-    ctx: TurnContext,
-    member: TeamMemberConfig,
-  ): Promise<TurnContext> {
-    if (!this.teamLister || !['pm', 'product'].includes(member.roleTemplateId)) return ctx
+  /** 每个角色回合都注入团队名册（谁在队伍里），pm/product 另外据此生成可派对象清单。 */
+  private async fillAssignables(ctx: TurnContext, member: TeamMemberConfig): Promise<TurnContext> {
+    if (!this.teamLister) return ctx
     const team = await this.teamLister(ctx.projectId).catch(() => [])
     ctx.assignableMembers = team
       .filter((m) => m.enabled)
-      .map((m) => ({ instanceId: m.instanceId, displayName: m.displayName }))
+      .map((m) => ({
+        instanceId: m.instanceId,
+        displayName: m.displayName,
+        roleTemplateId: m.roleTemplateId,
+      }))
+    void member
     return ctx
   }
 
