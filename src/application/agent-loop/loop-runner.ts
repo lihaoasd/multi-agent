@@ -456,30 +456,46 @@ export class AgentLoopRunner {
           '\n请围绕该任务工作；代码改动会自动归属该任务，完成后向用户汇报。',
       )
     }
-    const hint = this.buildDispatchHint(ctx, sessionType)
+    const hint = this.buildDispatchHint(ctx, sessionType, tools)
     if (hint) parts.push(hint)
     return parts.join('\n')
   }
 
   /** 甲模式分派说明（pm/product 的 user 会话且提供了可派对象时注入）。 */
-  private buildDispatchHint(ctx: TurnContext, sessionType: string): string | null {
+  private buildDispatchHint(
+    ctx: TurnContext,
+    sessionType: string,
+    tools: ToolSchema[],
+  ): string | null {
     if (!this.dispatchEligible(ctx, sessionType)) return null
     const peers = (ctx.assignableMembers ?? []).filter(
       (x) => x.instanceId !== ctx.member.instanceId,
     )
     if (!peers.length) return null
     const list = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
-    return [
+    const hasTool = tools.some((t) => t.name === 'task_assign')
+    const lines = [
       '[任务分派（甲模式已开启）] 当用户要求你拆解/安排/指派开发任务时：',
       '1. 先用自然语言说明你的安排（做什么、交给谁、为什么）；',
-      '2. 然后在回复末尾输出一个 json 代码块，逐项列出要创建的任务，例如：',
-      '```json',
-      '[{"assignee":"dev_1","title":"实现登录接口","desc":"补充边界与验收说明","start":true}]',
-      '```',
-      `3. 约束：assignee 必须来自可指派对象——${list}；不可捏造实例 id。`,
-      '4. start=true 表示创建后立即开工（受派者空闲时平台会自动触发）；对方已有进行中任务时平台自动保持排队并说明。',
-      '5. 平台会在回复末尾自动追加登记结果，你无需虚构“已创建成功”。',
-    ].join('\n')
+    ]
+    if (hasTool) {
+      lines.push(
+        '2. 然后调用 task_assign 工具逐个派单（assignee/title/desc/start），一次一个任务，可连续调用多个。',
+      )
+    } else {
+      lines.push(
+        '2. 然后在回复末尾输出 JSON 数组（仅当无法调用工具时）：',
+        '```json',
+        '[{"assignee":"dev_1","title":"实现登录接口","desc":"补充边界与验收说明","start":true}]',
+        '```',
+      )
+    }
+    lines.push(
+      `3. 约束：assignee 必须来自可指派对象——${list}；不可捏造实例 id，也不要派给自己。`,
+      '4. start=true 表示创建后立即开工（受派者空闲时平台自动触发）；对方已有进行中任务时平台自动排队并说明。',
+      '5. 平台会给出真实登记结果，你无需虚构“已创建成功”。',
+    )
+    return lines.join('\n')
   }
 
   private async buildHistory(ctx: TurnContext): Promise<ChatMessage[]> {

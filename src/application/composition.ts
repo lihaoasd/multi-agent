@@ -100,8 +100,6 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   )
   const search = new SearchService(projectsRoot, sessionStore)
   const codeEdits = new CodeEditStore(projectsRoot)
-  // 应用级工具注册（记忆/检索/受控编辑/用户交互）：组合时执行一次（模块级 registry，重复调用幂等覆盖）
-  registerServiceTools({ memory, search, codeEdits, questions })
   const meetings = new MeetingService(
     sessionStore,
     memory,
@@ -181,6 +179,17 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   )
   const attention = new AttentionService(approvals, meetings, questions)
 
+  // 应用级工具注册（记忆/检索/受控编辑/用户交互/派单）：组合时执行一次（模块级 registry，重复调用幂等覆盖）。
+  // 放在 tasks 之后，以便把 TaskService 注入 task_assign 工具。
+  registerServiceTools({
+    memory,
+    search,
+    codeEdits,
+    questions,
+    tasks,
+    listTeam: (pid) => projectService.listTeam(pid),
+  })
+
   // 当前激活任务（in_progress 且属本会话）：系统提示注入 + workdir_edit 聚合锚点（D15）
   const activeTaskOf = async (ctx: TurnContext): Promise<ActiveTask | null> => {
     const list = await tasks.list(ctx.projectId, {
@@ -192,8 +201,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   }
 
   // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性。
-  // ask_user 为平台交互能力：user 会话始终可用（老项目快照的 tools 里没有也能用）。
-  const PLATFORM_USER_TOOLS = new Set(['ask_user'])
+  // ask_user / task_assign 为平台交互能力：user 会话始终可用（老项目快照的 tools 里没有也能用）；
+  // task_assign 的角色权限在工具内部校验（仅 pm/product）。
+  const PLATFORM_USER_TOOLS = new Set(['ask_user', 'task_assign'])
   loopOpts.toolRuntime = {
     listTools: (ctx, sessionType) => {
       const allowed = new Set(ctx.member.tools ?? [])

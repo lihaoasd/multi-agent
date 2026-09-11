@@ -3,6 +3,7 @@
  * 只读/检索类在 user+meeting 可用；memory_append own 写入、全局仅 pm_1（D18-② 权限）。
  * workdir_edit：code 受控编辑（写通道①，D14-⑧），仅 user 会话，改动归属 taskId 聚合轨迹。
  * ask_user：向用户提问/确认（单选·多选·确认·文本），仅 user 会话；用户回答后唤醒新回合。
+ * task_assign：产品/项目经理给团队成员派单（创建任务 + 默认立即开工），仅 user 会话。
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -14,14 +15,22 @@ import { MemoryStore } from '../memory/memory-store.js'
 import { SearchService } from '../search/search-service.js'
 import { CodeEditStore } from '../code-edit/code-edit-store.js'
 import type { QuestionService } from '../question/question-service.js'
+import type { TaskService } from '../task/task-service.js'
+import { assignTaskFromIntent } from '../task/task-dispatch.js'
+import type { TeamMemberConfig } from '../../shared/types/project.js'
+
+/** 可派单的角色（与 task-dispatch 的 DISPATCH_ROLES 保持一致）。 */
+const DISPATCH_ROLES = new Set(['pm', 'product'])
 
 export function registerServiceTools(deps: {
   memory: MemoryStore
   search: SearchService
   codeEdits: CodeEditStore
   questions?: QuestionService
+  tasks?: TaskService
+  listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
 }): void {
-  const { memory, search, codeEdits, questions } = deps
+  const { memory, search, codeEdits, questions, tasks, listTeam } = deps
 
   registerTool(
     {
@@ -262,6 +271,72 @@ export function registerServiceTools(deps: {
                 : 'ERR_TOOL_REJECTED',
             reason: e instanceof Error ? e.message : String(e),
           }
+        }
+      },
+    )
+  }
+
+  // 派单（甲模式）：产品/项目经理给团队成员创建任务并默认立即开工（受派者空闲时自动唤醒）
+  if (tasks && listTeam) {
+    registerTool(
+      {
+        name: 'task_assign',
+        description:
+          '给团队成员派发任务（仅产品/项目经理可调用）：创建任务并默认让对方立即开工；' +
+          '受派者已有进行中任务时自动排队为 todo。一次调用派一个任务，可连续调用多个',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            assignee: { type: 'string', description: '受派者实例 id（如 dev_1 / architect_1）' },
+            title: { type: 'string', description: '任务标题（一句话说明要交付什么）' },
+            desc: { type: 'string', description: '任务说明：产出、边界、验收要点' },
+            start: { type: 'boolean', description: '是否立即开工，缺省 true' },
+          },
+          required: ['assignee', 'title'],
+        },
+      },
+      async (args, env) => {
+        const team = await listTeam(env.projectId)
+        const me = team.find((m) => m.instanceId === env.instanceId)
+        if (!me || !DISPATCH_ROLES.has(me.roleTemplateId)) {
+          return {
+            ok: false,
+            code: 'ERR_TOOL_REJECTED',
+            reason: `只有产品/项目经理可以派单（当前角色 ${me?.roleTemplateId ?? env.instanceId}）`,
+          }
+        }
+        const assignee = String(args.assignee ?? '').trim()
+        const title = String(args.title ?? '').trim()
+        if (!assignee || !title) {
+          return { ok: false, code: 'ERR_VALIDATION', reason: 'assignee/title 必填' }
+        }
+        const r = await assignTaskFromIntent(
+          {
+            projectId: env.projectId,
+            actorId: env.instanceId,
+            team,
+            tasks,
+            emitTool: async () => undefined, // 工具调用本身已由工具循环记审计事件
+          },
+          {
+            assignee,
+            title,
+            desc: args.desc === undefined ? undefined : String(args.desc),
+            start: args.start !== false,
+          },
+        )
+        if (!r.ok) {
+          return { ok: false, code: 'ERR_CONFLICT', reason: r.reason ?? '派发失败' }
+        }
+        return {
+          ok: true,
+          summary:
+            r.state === 'in_progress'
+              ? `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已开始执行）`
+              : `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已排队 todo：${r.reason ?? '等待开工'}）`,
         }
       },
     )
