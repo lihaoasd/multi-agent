@@ -326,4 +326,92 @@ describe('任意角色可发起会议（meeting_start/meeting_close 工具）', 
     expect(ghost.ok).toBe(false)
     expect(await svc.meetings.list(pid)).toHaveLength(0)
   }, 20000)
+
+  it('会议真正"开起来"：主持人开场 + 受邀成员在会议会话发言', async () => {
+    const { pid, id, team } = await setup(['dev', 'pm'])
+    const dev = id('dev')
+    const pm = id('pm')
+    const member = team.find((t) => t.instanceId === dev)!
+    const gateway = scripted([
+      [
+        {
+          toolCall: {
+            index: 0,
+            id: 'm1',
+            name: 'meeting_start',
+            argumentsDelta: JSON.stringify({
+              topic: '接口方案对齐',
+              desc: '对齐接口与验收口径',
+              members: [pm],
+            }),
+          },
+        },
+      ],
+      [{ content: '会议已发起，我在会议里做开场。' }],
+    ])
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      toolRuntime: toolRuntime(),
+    })
+    await loop.runDirectTurn({ projectId: pid, sessionId: `u_${dev}`, member, scenario: 'ts' })
+    const mid = (await svc.meetings.list(pid))[0]!.id
+
+    // 后台链：主持人开场 → 成员发言（会议会话里应同时出现两者的 message）
+    const deadline = Date.now() + 15000
+    let gotBoth = false
+    while (!gotBoth && Date.now() < deadline) {
+      const evts = await svc.sessionStore.readWindow(pid, mid, { limit: 1000 })
+      const senders = new Set(
+        evts.filter((e) => e.kind === 'message' && e.role === 'agent').map((e) => String(e.sender)),
+      )
+      gotBoth = senders.has(dev) && senders.has(pm)
+      if (!gotBoth) await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(gotBoth).toBe(true) // 主持人开场 + 受邀成员发言都已写入会议会话
+    // 会议内发言不应改变会议状态
+    expect((await svc.meetings.list(pid))[0]!.state).toBe('open')
+  }, 30000)
+
+  it('meeting_talk 仅主持人可点名成员发言', async () => {
+    const { pid, id } = await setup(['dev', 'pm'])
+    const dev = id('dev')
+    const pm = id('pm')
+    const created = await svc.meetings.create({
+      projectId: pid,
+      host: dev,
+      topic: '接口对齐',
+      desc: 'x',
+      members: [pm],
+    })
+    await svc.meetings.respond(pid, created.id, pm, 'accept')
+
+    const nonHost = await executeTool(
+      'meeting_talk',
+      { meetingId: created.id, member: pm },
+      await buildToolEnv({ config, projectService: svc.projectService }, pid, pm, {
+        sessionId: `u_${pm}`,
+      }),
+    )
+    expect(nonHost.ok).toBe(false)
+
+    const host = await executeTool(
+      'meeting_talk',
+      { meetingId: created.id, member: pm, question: '你的结论？' },
+      await buildToolEnv({ config, projectService: svc.projectService }, pid, dev, {
+        sessionId: `u_${dev}`,
+      }),
+    )
+    expect(host.ok).toBe(true)
+    // 被点名成员的发言（异步）最终写入会议会话
+    const deadline = Date.now() + 10000
+    let spoke = false
+    while (!spoke && Date.now() < deadline) {
+      const evts = await svc.sessionStore.readWindow(pid, created.id, { limit: 1000 })
+      spoke = evts.some((e) => e.kind === 'message' && e.role === 'agent' && e.sender === pm)
+      if (!spoke) await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(spoke).toBe(true)
+  }, 30000)
 })

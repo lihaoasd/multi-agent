@@ -157,7 +157,24 @@ export class TaskService {
     if (to === 'in_progress' && actor !== cur.assignee) {
       await this.wake(projectId, cur.assignee, cur.title, cur.id).catch(() => undefined)
     }
+    // 槽位释放 → 自动接下一单（否则排队任务会永远卡在 todo，表现为"派了单却不开工"）
+    if (to === 'done' || to === 'terminated') {
+      await this.promoteNext(projectId, cur.assignee).catch(() => undefined)
+    }
     return next
+  }
+
+  /** 该受派者最旧的 todo 任务自动开工（槽位刚释放时调用）。 */
+  private async promoteNext(projectId: string, assignee: string): Promise<TaskRecord | null> {
+    const queued = (await this.list(projectId, { assignee }))
+      .filter((t) => t.state === 'todo')
+      .sort((a, b) => (a.ts < b.ts ? -1 : 1))
+    const next = queued[0]
+    if (!next) return null
+    const updated: TaskRecord = { ...next, state: 'in_progress', updatedAt: nowIso() }
+    await this.rewrite(projectId, updated)
+    await this.wake(projectId, assignee, next.title, next.id).catch(() => undefined)
+    return updated
   }
 
   /** 谁能改这条任务：user / 受派者本人 /（甲模式下）协调者 pm·product 等。 */

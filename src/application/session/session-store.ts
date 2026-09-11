@@ -97,7 +97,20 @@ export class SessionStore {
     return readJson<SessionMeta>(this.metaFile(projectId, sessionId))
   }
 
+  /**
+   * 写 meta 投影：与 appendEvent 共用同一把会话锁，并把 lastSeq 取"磁盘更大者"，避免
+   * 服务层（会议状态、已读位点等）与并发追加互相覆盖（曾导致 close 后又被写回 open）。
+   */
   async writeMeta(meta: SessionMeta): Promise<void> {
+    await this.withLock(this.lockKey(meta.projectId, meta.id), async () => {
+      const fresh = await this.tryReadMeta(meta.projectId, meta.id)
+      const next: SessionMeta = { ...meta }
+      if (fresh) next.lastSeq = Math.max(fresh.lastSeq ?? 0, meta.lastSeq ?? 0)
+      await this.writeMetaUnlocked(next)
+    })
+  }
+
+  private async writeMetaUnlocked(meta: SessionMeta): Promise<void> {
     const file = this.metaFile(meta.projectId, meta.id)
     await fs.mkdir(dirname(file), { recursive: true })
     await atomicWriteJson(file, meta)
@@ -150,11 +163,15 @@ export class SessionStore {
         ts: nowIso(),
         sessionId: meta.id,
       }
-      await fs.appendFile(this.logFile(meta.projectId, meta.id), JSON.stringify(full) + '\n', 'utf8')
+      await fs.appendFile(
+        this.logFile(meta.projectId, meta.id),
+        JSON.stringify(full) + '\n',
+        'utf8',
+      )
       Object.assign(base, { lastSeq: seq, updatedAt: full.ts })
       Object.assign(meta, base)
-      // meta 投影写失败不阻断（重启对账）
-      await this.writeMeta({ ...base }).catch(() => undefined)
+      // meta 投影写失败不阻断（重启对账）；已在锁内 → 用不加锁版本，避免自锁
+      await this.writeMetaUnlocked({ ...base }).catch(() => undefined)
       return full
     })
   }

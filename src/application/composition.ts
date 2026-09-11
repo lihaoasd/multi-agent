@@ -189,6 +189,10 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     tasks,
     meetings,
     listTeam: (pid) => projectService.listTeam(pid),
+    // 会议内发言：在会议会话里为该实例跑一轮
+    runMeetingTurn: async (pid, mid, instanceId, prompt) => {
+      await sessionService.runAgentTurn(pid, mid, instanceId, { prompt })
+    },
   })
 
   // 当前激活任务（in_progress 且属本会话）：系统提示注入 + workdir_edit 聚合锚点（D15）

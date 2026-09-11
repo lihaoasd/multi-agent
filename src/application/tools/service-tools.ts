@@ -34,8 +34,15 @@ export function registerServiceTools(deps: {
   tasks?: TaskService
   meetings?: MeetingService
   listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
+  /** 在会议会话内为某实例执行一轮（会议发言） */
+  runMeetingTurn?: (
+    projectId: string,
+    meetingId: string,
+    instanceId: string,
+    prompt: string,
+  ) => Promise<void>
 }): void {
-  const { memory, search, codeEdits, questions, tasks, meetings, listTeam } = deps
+  const { memory, search, codeEdits, questions, tasks, meetings, listTeam, runMeetingTurn } = deps
 
   registerTool(
     {
@@ -470,6 +477,32 @@ export function registerServiceTools(deps: {
           for (const m of members) {
             await meetings.respond(env.projectId, rec.id, m, 'accept').catch(() => undefined)
           }
+          // 让会议真正"开起来"：主持人开场 → 依次请成员发言 → 主持人收尾（后台串行，不阻塞本回合）
+          if (runMeetingTurn) {
+            const hostOpen =
+              `【会议开场】你是主持人（${env.instanceId}）。会议主题「${topic}」` +
+              (desc ? `，描述：${desc}` : '') +
+              `，参会：${members.join('、')} 与用户。请先开场：说明议题与期望产出；` +
+              '然后可用 meeting_talk 逐个点名成员发言（他们的发言会写进会议会话）。'
+            const hostWrap =
+              `【会议收尾】会议「${topic}」的成员发言已写入会议会话。请阅读后给出：结论、待办（谁做什么）、` +
+              '仍需用户拍板的事项；如需结束会议可调用 meeting_close。'
+            void (async () => {
+              await runMeetingTurn(env.projectId, rec.id, env.instanceId, hostOpen).catch(
+                () => undefined,
+              )
+              for (const m of members) {
+                const p =
+                  `【会议邀请】${env.instanceId} 邀请你参加「${topic}」` +
+                  (desc ? `（${desc}）` : '') +
+                  '。请在会议中发表意见：结论 + 理由 + 需要谁配合（简明，不要复述别人）。'
+                await runMeetingTurn(env.projectId, rec.id, m, p).catch(() => undefined)
+              }
+              await runMeetingTurn(env.projectId, rec.id, env.instanceId, hostWrap).catch(
+                () => undefined,
+              )
+            })().catch(() => undefined)
+          }
           return {
             ok: true,
             summary:
@@ -513,6 +546,56 @@ export function registerServiceTools(deps: {
           }
           await meetings.close(env.projectId, meetingId, env.instanceId)
           return { ok: true, summary: `已结束会议 ${meetingId}，纪要已生成` }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_CONFLICT',
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      },
+    )
+
+    // 主持人点名某位参会成员在会议中发言（触发其在会议会话里发言）
+    registerTool(
+      {
+        name: 'meeting_talk',
+        description:
+          '主持人点名某位参会成员在会议中发言：会触发该成员在会议会话里发言（发言写入会议记录）',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            meetingId: { type: 'string', description: '会议 id（m_…）' },
+            member: { type: 'string', description: '被点名的参会成员实例 id（不能是自己）' },
+            question: { type: 'string', description: '可选：请他就某个具体问题表态' },
+          },
+          required: ['meetingId', 'member'],
+        },
+      },
+      async (args, env) => {
+        const meetingId = String(args.meetingId ?? '').trim()
+        const member = String(args.member ?? '').trim()
+        if (!meetingId || !member) {
+          return { ok: false, code: 'ERR_VALIDATION', reason: 'meetingId/member 必填' }
+        }
+        try {
+          await meetings.speakTurn(
+            env.projectId,
+            meetingId,
+            env.instanceId,
+            member,
+            args.question === undefined ? undefined : String(args.question),
+          )
+          return {
+            ok: true,
+            summary: `已邀请 ${member} 在会议 ${meetingId} 发言（发言将写入会议会话）`,
+          }
         } catch (e) {
           return {
             ok: false,

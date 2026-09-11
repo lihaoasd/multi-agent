@@ -106,6 +106,12 @@ export class AgentLoopRunner {
       if (occupancy) {
         // 只释放本回合会话的占用：回合中若已入会，会议占用不能被清掉
         await occupancy.release(ctx.projectId, iid, ctx.sessionId)
+        // 会议会话内的发言回合结束后，恢复到「会议中」（成员仍在会）
+        if (ctx.sessionId.startsWith('m_')) {
+          await occupancy
+            .acquire(ctx.projectId, iid, ctx.sessionId, 'meeting')
+            .catch(() => undefined)
+        }
         const left = await occupancy.get(ctx.projectId, iid).catch(() => null)
         this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
           instanceId: iid,

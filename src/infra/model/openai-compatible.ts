@@ -46,8 +46,9 @@ export function createOpenAiCompatibleProvider(id: string): ModelProvider {
           model: opts.model ?? id,
           messages: opts.messages.map(toWireMessage),
           stream: true,
-          // 推理型模型（reasoning_content 先占预算）：缺省给足 completion 预算，避免只出推理不出正文
-          max_tokens: opts.maxTokens ?? 2048,
+          // 推理型模型（reasoning_content 先占预算）：给足 completion 预算，
+          // 否则整轮预算被"思考"吃掉 → 只出推理不出正文/工具调用（角色看起来"没干活"）
+          max_tokens: opts.maxTokens ?? 8192,
           ...(tools ? { tools, tool_choice: 'auto' } : {}),
         }),
         signal: opts.signal,

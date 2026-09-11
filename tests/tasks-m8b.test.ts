@@ -97,7 +97,7 @@ describe('任务系统（乙模式 + D17-①）', () => {
     expect(done.json().task.state).toBe('done')
   })
 
-  it('每 Agent 至多 1 in_progress：第二个任务置位被拒，可先 todo', async () => {
+  it('每 Agent 至多 1 in_progress：第二个任务排队；完成后平台自动接单', async () => {
     const { pid, dev } = await setupProject()
     const mk = (title: string) =>
       ready().inject({
@@ -119,18 +119,17 @@ describe('任务系统（乙模式 + D17-①）', () => {
       payload: { state: 'in_progress' },
     })
     expect(bad.statusCode).toBe(409)
-    // 完成后槽位释放，t2 可置位
+    // 槽位释放（t1 完成）→ 平台自动把排队的 t2 置为 in_progress 并唤醒（不再永久卡 todo）
     await ready().inject({
       method: 'PATCH',
       url: `/api/projects/${pid}/tasks/${t1.id}`,
       payload: { state: 'done' },
     })
-    const ok = await ready().inject({
-      method: 'PATCH',
-      url: `/api/projects/${pid}/tasks/${t2.id}`,
-      payload: { state: 'in_progress' },
-    })
-    expect(ok.json().task.state).toBe('in_progress')
+    const list = await ready().inject({ method: 'GET', url: `/api/projects/${pid}/tasks` })
+    const t2After = (list.json().tasks as Array<{ id: string; state: string }>).find(
+      (x) => x.id === t2.id,
+    )
+    expect(t2After!.state).toBe('in_progress')
   })
 
   it('terminated 仅用户可置、终态不可回退；done 非 user 被拒', async () => {
