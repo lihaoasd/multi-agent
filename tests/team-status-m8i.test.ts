@@ -302,7 +302,7 @@ describe('任意角色可发起会议（meeting_start/meeting_close 工具）', 
     expect((await svc.occupancy.get(pid, pm))?.activity).toBe('meeting')
     expect((await svc.occupancy.get(pid, qa))?.activity).toBe('meeting')
 
-    // 主持人结束会议（生成纪要）
+    // 主持人结束会议（生成纪要）。后台链可能已自动收尾 → 两种结果都可接受，最终必须 closed
     const closed = await executeTool(
       'meeting_close',
       { meetingId: m.id },
@@ -310,7 +310,11 @@ describe('任意角色可发起会议（meeting_start/meeting_close 工具）', 
         sessionId: `u_${dev}`,
       }),
     )
-    expect(closed.ok).toBe(true)
+    if (!closed.ok) expect(String(closed.reason ?? '')).toContain('仅 open/blocked')
+    const deadline = Date.now() + 5000
+    while ((await svc.meetings.list(pid))[0]!.state !== 'closed' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
     expect((await svc.meetings.list(pid))[0]!.state).toBe('closed')
   }, 20000)
 
@@ -370,8 +374,67 @@ describe('任意角色可发起会议（meeting_start/meeting_close 工具）', 
       if (!gotBoth) await new Promise((r) => setTimeout(r, 50))
     }
     expect(gotBoth).toBe(true) // 主持人开场 + 受邀成员发言都已写入会议会话
-    // 会议内发言不应改变会议状态
-    expect((await svc.meetings.list(pid))[0]!.state).toBe('open')
+    // 会议内发言不改状态；后台链收尾后平台会由发起人自动结束会议（生成纪要）
+    const closeDeadline = Date.now() + 8000
+    while ((await svc.meetings.list(pid))[0]!.state !== 'closed' && Date.now() < closeDeadline) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect((await svc.meetings.list(pid))[0]!.state).toBe('closed')
+  }, 30000)
+
+  it('会议上下文：能看到别人的发言；平台注入提示标记为系统消息', async () => {
+    const { pid, id, team } = await setup(['dev', 'pm'])
+    const dev = id('dev')
+    const pm = id('pm')
+    const member = team.find((t) => t.instanceId === dev)!
+
+    // 1) 平台注入的提示必须是系统消息（前端不再显示成"我的发言"）
+    await svc.sessionService.runAgentTurn(pid, `u_${dev}`, dev, {
+      prompt: '【会议邀请】请发表意见',
+    })
+    const devEvts = await svc.sessionStore.readWindow(pid, `u_${dev}`, { limit: 100 })
+    const injected = devEvts.find(
+      (e) => e.kind === 'message' && String(e.content?.text ?? '').includes('【会议邀请】'),
+    )
+    expect(injected?.sender).toBe('system')
+    expect(injected?.payload?.system).toBe(true)
+
+    // 2) 会议会话里别人的发言要进入本成员上下文（否则主持人"读不到成员发言"）
+    const meeting = await svc.meetings.create({
+      projectId: pid,
+      host: pm,
+      topic: '接口对齐',
+      desc: 'x',
+      members: [dev],
+    })
+    const meta = await svc.sessionStore.readMeta(pid, meeting.id)
+    await svc.sessionStore.appendEvent(meta, {
+      kind: 'message',
+      role: 'agent',
+      sender: pm,
+      content: { text: '我的意见是：先定接口再写页面', blocks: [] },
+    })
+    const captured: Array<Array<{ role: string; content: string }>> = []
+    const gateway = {
+      async *streamChat(opts: { messages: Array<{ role: string; content: string }> }) {
+        captured.push(opts.messages)
+        yield { content: '收到项目经理意见，我补充：接口用 REST。' }
+      },
+    } as unknown as ModelGateway
+    const loop = new AgentLoopRunner({ store: svc.sessionStore, gateway, bus: svc.bus })
+    await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: meeting.id,
+      member,
+      scenario: 'ts',
+      assignableMembers: team.map((t) => ({
+        instanceId: t.instanceId,
+        displayName: t.displayName,
+      })),
+    })
+    const seen = JSON.stringify(captured[0] ?? [])
+    expect(seen).toContain('【项目经理（pm_1）发言】')
+    expect(seen).toContain('先定接口再写页面')
   }, 30000)
 
   it('meeting_talk 仅主持人可点名成员发言', async () => {

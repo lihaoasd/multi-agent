@@ -156,10 +156,12 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const tasks = new TaskService(
     projectsRoot,
     config.task.assignByAgent,
-    // 激活即唤醒（D18-③）：向受派者 user 会话注入唤醒消息并触发一轮
+    // 激活即唤醒（D18-③）：向受派者 user 会话注入系统消息并触发一轮
     async (pid, assignee, title, taskId) => {
       await sessionService
-        .sendUserMessage(pid, `u_${assignee}`, `【系统】请开始执行任务 ${taskId}：${title}`)
+        .sendUserMessage(pid, `u_${assignee}`, `【系统】请开始执行任务 ${taskId}：${title}`, {
+          system: true,
+        })
         .catch(() => undefined)
     },
     // D17-① done/terminated 前结算未结算 code 改动 → code artifact

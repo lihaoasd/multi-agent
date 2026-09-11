@@ -532,13 +532,33 @@ export class AgentLoopRunner {
       ctx.sessionId,
       this.opts.windowSize ?? 60,
     )
+    // 会议/多角色场景：**别人的发言也要看到**（否则会议里互相听不见，主持人会说"没能读到成员发言"）
+    const otherSpeakers = new Set(
+      window
+        .filter(
+          (e) => e.kind === 'message' && e.role === 'agent' && e.sender !== ctx.member.instanceId,
+        )
+        .map((e) => String(e.sender)),
+    )
+    const names = new Map<string, string>()
+    for (const m of ctx.assignableMembers ?? []) names.set(m.instanceId, m.displayName)
     const out: ChatMessage[] = []
     for (const e of window) {
       if (e.kind !== 'message') continue
       if (e.role === 'user' && e.content) {
-        out.push({ role: 'user', content: e.content.text })
-      } else if (e.role === 'agent' && e.sender === ctx.member.instanceId && e.content) {
-        out.push({ role: 'assistant', content: e.content.text })
+        // 平台注入的系统消息（会议开场/邀请/唤醒）标注来源，避免被当成用户本人的话
+        const system = e.payload?.system === true || e.sender === 'system'
+        out.push({ role: 'user', content: system ? `【系统】${e.content.text}` : e.content.text })
+      } else if (e.role === 'agent' && e.content) {
+        if (e.sender === ctx.member.instanceId) {
+          out.push({ role: 'assistant', content: e.content.text })
+        } else if (otherSpeakers.has(String(e.sender))) {
+          const who = names.get(String(e.sender)) ?? String(e.sender)
+          out.push({
+            role: 'user',
+            content: `【${who}（${String(e.sender)}）发言】${e.content.text}`,
+          })
+        }
       }
     }
     return out

@@ -501,6 +501,11 @@ export function registerServiceTools(deps: {
               await runMeetingTurn(env.projectId, rec.id, env.instanceId, hostWrap).catch(
                 () => undefined,
               )
+              // 结论产出后由发起人结束会议（平台代收尾 → 生成纪要）
+              const cur = (await meetings.list(env.projectId)).find((m) => m.id === rec.id)
+              if (cur && (cur.state === 'open' || cur.state === 'blocked_waiting_user')) {
+                await meetings.close(env.projectId, rec.id, env.instanceId).catch(() => undefined)
+              }
             })().catch(() => undefined)
           }
           return {

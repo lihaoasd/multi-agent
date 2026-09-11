@@ -248,6 +248,19 @@ li.active {
 .session-sub .sh-row:last-child {
   color: var(--text);
 }
+.session-sub .sh-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.session-sub .sh-actions button {
+  font-size: 12px;
+  padding: 2px 10px;
+}
+.msg.audit.meeting-event {
+  border-left-color: #7f8fa6;
+  background: #f3f5f9;
+}
 .typing {
   color: var(--muted);
   font-weight: 400;

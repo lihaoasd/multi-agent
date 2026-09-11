@@ -770,6 +770,24 @@ function stateZh(s) {
   return STATE_ZH[s] ?? s
 }
 
+/** 会话头部小按钮（会议操作）。 */
+function shButton(label, cls, onClick) {
+  const b = document.createElement('button')
+  if (cls) b.className = cls
+  b.textContent = label
+  b.addEventListener('click', async () => {
+    b.disabled = true
+    try {
+      await onClick()
+    } catch (e) {
+      toast('操作失败：' + e.message)
+    } finally {
+      b.disabled = false
+    }
+  })
+  return b
+}
+
 /** 会话窗口顶部：会议显示主题/描述/参会人；用户会话隐藏副行。 */
 function renderSessionHeader(meta) {
   const sub = $('#session-sub')
@@ -798,7 +816,39 @@ function renderSessionHeader(meta) {
     }</div>`,
     `<div class="sh-row"><span class="sh-label">参会人员</span>${escapeHtml(hostName)}（主持）｜${memberLines.join('｜')}｜我（用户）</div>`,
   ]
+  // 会议操作入口（用户随时可结束/取消，不必等主持人）
+  const actions = document.createElement('div')
+  actions.className = 'sh-actions'
+  if (meta.state === 'open' || meta.state === 'blocked_waiting_user') {
+    actions.appendChild(
+      shButton('结束会议并生成纪要', 'primary', async () => {
+        await api(`/projects/${current.pid}/meetings/${meta.id}/close`, 'POST', { actor: 'user' })
+        toast('会议已结束，纪要已生成')
+        await refreshPanels()
+        await openSession(current.pid, meta.id)
+      }),
+    )
+  }
+  if (meta.state === 'proposed' || meta.state === 'queued') {
+    actions.appendChild(
+      shButton('取消会议', '', async () => {
+        await api(`/projects/${current.pid}/meetings/${meta.id}/cancel`, 'POST', { actor: 'user' })
+        toast('会议已取消')
+        await refreshPanels()
+        await openSession(current.pid, meta.id)
+      }),
+    )
+  }
+  if (meta.state === 'closed') {
+    actions.appendChild(
+      shButton('查看纪要', '', async () => {
+        const d = await api(`/projects/${current.pid}/meetings/${meta.id}/minutes`)
+        $('#memory-panel').innerHTML = `<pre>${escapeHtml(d.minutes.text)}</pre>`
+      }),
+    )
+  }
   sub.innerHTML = rows.join('')
+  sub.appendChild(actions)
   sub.classList.remove('hidden')
 }
 
@@ -819,15 +869,18 @@ async function openSession(pid, sid) {
   toolRowByCallId.clear()
   toolRowPendingByTool.clear()
   const msgs = (d.messages ?? []).filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind))
+  const allEvents = d.messages ?? []
   let lastSeq = meta.lastSeq ?? 0
+  // 翻页用"最早事件 seq"（含不可渲染的 meeting_event 等），否则会议里会出现"点了没反应"
   let oldest = null
+  for (const e of allEvents) {
+    if (!e.seq) continue
+    oldest = oldest === null ? e.seq : Math.min(oldest, e.seq)
+  }
   let renderedAny = false
   for (const m of msgs) {
     renderEvent(m)
     renderedAny = true
-    if (m.seq) {
-      oldest = oldest === null ? m.seq : Math.min(oldest, m.seq)
-    }
   }
   if (!renderedAny) {
     const empty = document.createElement('div')
@@ -994,13 +1047,25 @@ function senderName(sender) {
   return m ? m.displayName : sender
 }
 
-/** 历史可渲染事件 kind（thought=思考/plan=计划/tool=审计/message=消息）。 */
-const RENDER_KINDS = new Set(['message', 'thought', 'plan', 'tool_call', 'tool_result'])
+/** 历史可渲染事件 kind（thought=思考/plan=计划/tool=审计/message=消息/meeting_event=会议过程）。 */
+const RENDER_KINDS = new Set([
+  'message',
+  'thought',
+  'plan',
+  'tool_call',
+  'tool_result',
+  'meeting_event',
+])
 
 /** 把一条 log 事件渲染进消息流（openSession/loadOlder 共用）。 */
 function renderEvent(m) {
   const who = m.sender && m.sender !== 'user' ? senderName(m.sender) : '我'
   if (m.kind === 'message') {
+    // 平台注入的系统消息（会议开场/邀请、任务唤醒）不显示成"我的发言"
+    if (m.payload?.system === true || m.sender === 'system') {
+      appendSystemNote(m.content?.text ?? '')
+      return
+    }
     appendMessage(who, m.content?.text ?? '', m.role === 'user' ? 'user' : 'agent')
   } else if (m.kind === 'thought') {
     appendThinkNode(who, m.content?.text ?? '')
@@ -1009,9 +1074,22 @@ function renderEvent(m) {
       ? m.payload.steps.map((s) => (s && s.title ? s.title : String(s)))
       : []
     appendPlan(who, steps)
+  } else if (m.kind === 'meeting_event') {
+    appendMeetingEvent(m.payload ?? {})
   } else if (m.kind === 'tool_call' || m.kind === 'tool_result') {
     appendToolAudit(who, m)
   }
+}
+
+/** 平台系统提示（居中灰字，不是任何人的发言）。 */
+function appendSystemNote(text) {
+  const box = $('#messages')
+  const div = document.createElement('div')
+  div.className = 'msg system'
+  div.textContent = `系统：${text}`
+  box.appendChild(div)
+  box.scrollTop = box.scrollHeight
+  return div
 }
 
 function appendMessage(who, text, cls) {
@@ -1313,7 +1391,9 @@ function connectWs(pid) {
     ws.onmessage = (evt) => {
       const e = JSON.parse(evt.data)
       if (e.sessionId && e.sessionId !== current.sessionId) {
-        refreshUnread().catch(() => undefined)
+        // 其它会话的事件（别的角色在各自会话里干活）只影响未读徽标——
+        // 必须合并刷新，否则每个流式分片都会打一次 HTTP（请求风暴）
+        scheduleRefreshUnread()
         return
       }
       if (e.type === 'message.chunk') {
@@ -1337,7 +1417,7 @@ function connectWs(pid) {
         current.lastRenderedSeq = Math.max(current.lastRenderedSeq, Number(e.payload?.seq ?? 0))
         setTyping(false)
         setSendBusy(false)
-        refreshPanels()
+        scheduleRefreshPanels()
       } else if (e.type === 'event.appended') {
         // 增量事件（plan/tool/thought 等）：seq 已渲染过则跳过，防重复
         const p = e.payload ?? {}
@@ -1360,14 +1440,16 @@ function connectWs(pid) {
             sender: p.sender,
             payload: p,
           })
+        } else if (p.kind === 'meeting_event') {
+          appendMeetingEvent(p)
         }
-        // message/thought 由流式或历史渲染负责，仅刷新面板
-        refreshPanels()
+        // message/thought 由流式或历史渲染负责，仅刷新面板（合并刷新，避免风暴）
+        scheduleRefreshPanels()
       } else if (e.type === 'agent.state') {
-        // 角色状态变化（开工/入会/空闲）→ 刷新左栏团队状态
-        refreshAgents().catch(() => undefined)
+        // 角色状态变化（开工/入会/空闲）→ 刷新左栏团队状态（合并刷新）
+        scheduleRefreshAgents()
       } else if (e.type === 'session.updated') {
-        refreshPanels().catch(() => undefined)
+        scheduleRefreshPanels()
       }
     }
     ws.onclose = () => {
@@ -1381,6 +1463,79 @@ function connectWs(pid) {
     }
   }
   open()
+}
+
+// ── 刷新合并（防请求风暴）：流式分片等高频事件只触发一次合并刷新 ──
+let refreshPanelsTimer = null
+let refreshUnreadTimer = null
+let refreshAgentsTimer = null
+
+function scheduleRefreshPanels() {
+  if (refreshPanelsTimer) return
+  refreshPanelsTimer = setTimeout(() => {
+    refreshPanelsTimer = null
+    refreshPanels().catch(() => undefined)
+  }, 600)
+}
+
+function scheduleRefreshUnread() {
+  if (refreshUnreadTimer) return
+  refreshUnreadTimer = setTimeout(() => {
+    refreshUnreadTimer = null
+    refreshUnread().catch(() => undefined)
+  }, 1000)
+}
+
+function scheduleRefreshAgents() {
+  if (refreshAgentsTimer) return
+  refreshAgentsTimer = setTimeout(() => {
+    refreshAgentsTimer = null
+    refreshAgents().catch(() => undefined)
+  }, 800)
+}
+
+/** 会议事件中文名（会议会话里作为过程行展示）。 */
+const MEETING_ACTION_ZH = {
+  create: '发起会议',
+  respond: '回应邀请',
+  open: '会议开始',
+  lineup: '阵容确认',
+  round: '点名发言',
+  ask_user: '请求拍板',
+  user_answer: '用户拍板',
+  cancel: '取消会议',
+  close: '结束会议',
+  interject: '用户插话',
+  promote_queued: '排队转征询',
+}
+
+/** 会议事件行（谁 做了什么 + 细节）。 */
+function appendMeetingEvent(p) {
+  const box = $('#messages')
+  const div = document.createElement('div')
+  div.className = 'msg audit meeting-event'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  label.textContent = '📋 会议'
+  const actor = p.member ?? p.actor ?? p.host ?? ''
+  const detail = [
+    MEETING_ACTION_ZH[String(p.action)] ?? String(p.action ?? ''),
+    actor ? `${senderName(actor)}（${actor}）` : '',
+    p.decision ? String(p.decision) : '',
+    p.topic ? `「${String(p.topic).slice(0, 40)}」` : '',
+    Array.isArray(p.members) ? `参会：${p.members.join('、')}` : '',
+    p.question ? `：${String(p.question).slice(0, 60)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const text = document.createElement('span')
+  text.textContent = detail
+  div.title = JSON.stringify(p)
+  div.appendChild(label)
+  div.appendChild(text)
+  box.appendChild(div)
+  scrollBottom()
+  return div
 }
 
 // 刷新未读（团队/会议导航徽标）
@@ -1427,13 +1582,21 @@ async function loadOlder() {
   try {
     const d = await api(`/projects/${pid}/sessions/${sid}?beforeSeq=${before}&limit=50`)
     const box = $('#messages')
-    const older = (d.messages ?? [])
-      .filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind) && e.seq < before)
-      .sort((a, b) => a.seq - b.seq)
+    const fetched = (d.messages ?? []).filter((e) => e.seq && e.seq < before)
+    // 翻页位置用**所有事件**推进（会议里前面多是 meeting_event），渲染只挑可渲染类型
+    const olderAll = fetched.sort((a, b) => a.seq - b.seq)
+    const older = olderAll.filter((e) => e.role !== 'system' && RENDER_KINDS.has(e.kind))
     for (const m of older) {
       const top = box.firstChild
       const beforeEl = top && top.nodeType === 1 ? top : null
       if (m.kind === 'message') {
+        if (m.payload?.system === true || m.sender === 'system') {
+          const note = document.createElement('div')
+          note.className = 'msg system'
+          note.textContent = `系统：${m.content?.text ?? ''}`
+          box.insertBefore(note, beforeEl)
+          continue
+        }
         const div = document.createElement('div')
         div.className = `msg ${m.role === 'user' ? 'user' : 'agent'}`
         const whoEl = document.createElement('div')
@@ -1444,6 +1607,9 @@ async function loadOlder() {
         div.appendChild(whoEl)
         div.appendChild(body)
         box.insertBefore(div, beforeEl)
+      } else if (m.kind === 'meeting_event') {
+        const node = buildMeetingEventNode(m.payload ?? {})
+        box.insertBefore(node, beforeEl)
       } else {
         // thought/plan/tool：独立块
         const who = m.sender && m.sender !== 'user' ? senderName(m.sender) : '我'
@@ -1461,9 +1627,13 @@ async function loadOlder() {
         }
       }
     }
-    if (older.length) {
-      current.oldestSeq = older[0].seq
-      $('#load-old-wrap').classList.toggle('hidden', older[0].seq <= 1)
+    if (olderAll.length) {
+      current.oldestSeq = olderAll[0].seq
+      $('#load-old-wrap').classList.toggle('hidden', olderAll[0].seq <= 1)
+    } else {
+      // 已经到最前面了：给个反馈并收起按钮（此前点"没反应"）
+      toast('已经是最早的消息了')
+      $('#load-old-wrap').classList.add('hidden')
     }
   } catch (e) {
     toast('加载更早消息失败: ' + e.message)
@@ -1471,6 +1641,30 @@ async function loadOlder() {
     btn.disabled = false
     btn.textContent = '加载更早消息'
   }
+}
+
+/** 构造会议事件节点（用于前向翻页插入）。 */
+function buildMeetingEventNode(p) {
+  const div = document.createElement('div')
+  div.className = 'msg audit meeting-event'
+  const label = document.createElement('span')
+  label.className = 'activity-label'
+  label.textContent = '📋 会议'
+  const actor = p.member ?? p.actor ?? p.host ?? ''
+  const text = document.createElement('span')
+  text.textContent = [
+    MEETING_ACTION_ZH[String(p.action)] ?? String(p.action ?? ''),
+    actor ? `${senderName(String(actor))}（${String(actor)}）` : '',
+    p.decision ? String(p.decision) : '',
+    Array.isArray(p.members) ? `参会：${p.members.join('、')}` : '',
+    p.question ? `：${String(p.question).slice(0, 60)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  div.title = JSON.stringify(p)
+  div.appendChild(label)
+  div.appendChild(text)
+  return div
 }
 
 /** 构造独立思考块节点（用于前向翻页插入；默认折叠）。 */
@@ -1503,31 +1697,47 @@ function buildToolNode(who, e) {
 
 async function refreshPanels() {
   if (!current.pid) return
-  try {
-    const [a, m, ar, mem, att, tk, qs, ag] = await Promise.all([
-      api(`/projects/${current.pid}/approvals?status=pending`),
-      api(`/projects/${current.pid}/meetings`),
-      api(`/projects/${current.pid}/artifacts`),
-      api(`/projects/${current.pid}/memories?scope=global`),
-      api(`/projects/${current.pid}/needs-attention`),
-      api(`/projects/${current.pid}/tasks`),
-      api(`/projects/${current.pid}/questions?status=pending`),
-      api(`/projects/${current.pid}/agents`),
-    ])
+  const pid = current.pid
+  // 各面板**互相独立**：任一接口失败（网络/旧版本服务）都不能让其它面板（尤其提问卡片）不刷新
+  const get = (p) => api(p).catch(() => null)
+  const [a, m, ar, mem, att, tk, qs, ag] = await Promise.all([
+    get(`/projects/${pid}/approvals?status=pending`),
+    get(`/projects/${pid}/meetings`),
+    get(`/projects/${pid}/artifacts`),
+    get(`/projects/${pid}/memories?scope=global`),
+    get(`/projects/${pid}/needs-attention`),
+    get(`/projects/${pid}/tasks`),
+    get(`/projects/${pid}/questions?status=pending`),
+    get(`/projects/${pid}/agents`),
+  ])
+  if (current.pid !== pid) return // 期间已切换项目/会话
+  if (a) {
     current.approvals = a.approvals ?? []
-    current.meetings = m.meetings ?? []
-    current.artifacts = ar.artifacts ?? []
-    current.tasks = tk.tasks ?? []
-    current.questions = qs.questions ?? []
-    current.agents = ag.agents ?? []
     renderApprovals()
-    renderQuestions()
-    renderTeamNav()
+  }
+  if (m) {
+    current.meetings = m.meetings ?? []
     renderMeetings()
     renderMeetingsNav()
+  }
+  if (ar) {
+    current.artifacts = ar.artifacts ?? []
     renderArtifacts()
-    renderMemories(mem.entries ?? [])
+  }
+  if (tk) {
+    current.tasks = tk.tasks ?? []
     renderTasks()
+  }
+  if (qs) {
+    current.questions = qs.questions ?? []
+    renderQuestions() // 角色提问卡片（待回答）——独立渲染，不依赖其它面板
+  }
+  if (ag) {
+    current.agents = ag.agents ?? []
+    renderTeamNav()
+  }
+  if (mem) renderMemories(mem.entries ?? [])
+  if (att) {
     const items = att.items ?? []
     const wrap = $('#attention-wrap')
     if (items.length) {
@@ -1536,8 +1746,6 @@ async function refreshPanels() {
     } else {
       wrap.classList.add('hidden')
     }
-  } catch {
-    /* 面板刷新失败不打扰 */
   }
 }
 

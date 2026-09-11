@@ -124,6 +124,7 @@ export class SessionService {
     projectId: string,
     sessionId: string,
     text: string,
+    opts: { system?: boolean } = {},
   ): Promise<SendMessageResult> {
     const trimmed = text?.trim()
     if (!trimmed) throw new AppError(ErrorCodes.VALIDATION, '消息内容不能为空')
@@ -150,8 +151,9 @@ export class SessionService {
     const userEvent = await this.store.appendEvent(meta, {
       kind: 'message',
       role: 'user',
-      sender: 'user',
+      sender: opts.system ? 'system' : 'user',
       content: { text: trimmed, blocks: [] },
+      ...(opts.system ? { payload: { system: true } } : {}),
     })
     this.bus.emitLogEvent(projectId, userEvent)
 
@@ -213,12 +215,14 @@ export class SessionService {
 
     const prompt = opts.prompt
     if (prompt) {
-      // 点名问题落盘为会议可见消息（sender=user 简化；内容为会议日志真相源）
+      // 平台注入的提示（会议开场/邀请/收尾）落盘为**系统消息**：
+      // 仍以 role=user 进入模型历史，但 sender/payload 标记为 system，前端不会显示成"我的发言"
       const evt = await this.store.appendEvent(meta, {
         kind: 'message',
         role: 'user',
-        sender: 'user',
+        sender: 'system',
         content: { text: prompt, blocks: [] },
+        payload: { system: true },
       })
       this.bus.emitLogEvent(projectId, evt)
     }
