@@ -5,7 +5,6 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import fastifyStatic from '@fastify/static'
 
 import { loadConfig, type ConfigFileShape } from '../shared/config.js'
 import { rootLogger } from '../infra/util/log.js'
@@ -36,23 +35,9 @@ async function bootstrap(cwd: string = process.cwd()): Promise<void> {
   const file = await readConfigFile(repoRoot)
   const config = loadConfig(file, repoRoot)
   const svc = composeServices(config)
-  const app = await buildApp(svc)
-
-  // 静态托管 web/（M7 工作台）：no-cache 强制浏览器每次校验，
-  // 避免前端改动后被浏览器缓存住旧 app.js（曾导致旧版请求风暴仍在跑）
+  // 静态托管 web/：统一在 buildApp 内注册（便于测试覆盖），no-cache 强制校验、避免旧前端被缓存
   const webDir = join(repoRoot, 'web')
-  await app.register(fastifyStatic, {
-    root: webDir,
-    prefix: '/',
-    setHeaders: (res) => {
-      // @fastify/static 的类型把 res 标成 FastifyReply，运行时实为原生 ServerResponse
-      ;(res as unknown as { setHeader(k: string, v: string): void }).setHeader(
-        'Cache-Control',
-        'no-cache',
-      )
-    },
-  })
-  app.get('/', async (_req, reply) => reply.sendFile('index.html'))
+  const app = await buildApp(svc, { webDir })
 
   const { host, port: cfgPort } = config.server
   // 允许环境变量覆盖端口（本地部署/测试），其余配置以 config.yaml 为准

@@ -4,6 +4,7 @@
  */
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import websocket from '@fastify/websocket'
+import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
 
 import { ErrorCodes, isAppError } from '../shared/errors.js'
@@ -20,10 +21,27 @@ import { composeToolEnv } from '../application/composition.js'
 import { QuestionService } from '../application/question/question-service.js'
 import type { TeamAddInput, TeamPatchInput } from '../application/team/team-service.js'
 
-/** 组装应用（不监听端口，便于测试注入）。 */
-export async function buildApp(svc: Services): Promise<FastifyInstance> {
+/** 组装应用（不监听端口，便于测试注入）。webDir 提供时一并托管前端静态资源。 */
+export async function buildApp(
+  svc: Services,
+  opts: { webDir?: string } = {},
+): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
   await app.register(websocket)
+
+  if (opts.webDir) {
+    // 前端静态资源：no-cache 强制浏览器每次校验（避免旧 app.js 被缓存住）。
+    // 注意 @fastify/static v10 的 setHeaders 回传 **FastifyReply**（用 reply.header()），
+    // 不是原生 ServerResponse（那才用 res.setHeader()）——用错会在请求时抛 TypeError。
+    await app.register(fastifyStatic, {
+      root: opts.webDir,
+      prefix: '/',
+      setHeaders: (reply) => {
+        reply.header('Cache-Control', 'no-cache')
+      },
+    })
+    app.get('/', async (_req, reply) => reply.sendFile('index.html'))
+  }
 
   app.setErrorHandler((err, _req, reply) => {
     if (isAppError(err)) {
