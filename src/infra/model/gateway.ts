@@ -69,6 +69,7 @@ export class ModelGateway {
       baseUrl: cfg.baseUrl,
       apiKey,
       model: cfg.model ?? targetId,
+      maxTokens: cfg.maxTokens,
       signal: opts.signal,
     })) {
       yield chunk

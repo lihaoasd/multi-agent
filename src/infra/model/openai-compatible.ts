@@ -86,9 +86,11 @@ export function createOpenAiCompatibleProvider(id: string): ModelProvider {
                       function?: { name?: string; arguments?: string }
                     }>
                   }
+                  finish_reason?: string
                 }>
               }
-              const d = j.choices?.[0]?.delta
+              const choice = j.choices?.[0]
+              const d = choice?.delta
               const content = d?.content
               // 推理型模型（DeepSeek reasoning_content / 部分兼容实现 thinking）：
               // 思考过程单独走 thought 通道，不入正文 history。
@@ -104,6 +106,8 @@ export function createOpenAiCompatibleProvider(id: string): ModelProvider {
                   },
                 }
               }
+              // 结束原因（length=预算被截断）：调用方据此决定是否重试"少推理、直接输出"
+              if (choice?.finish_reason) yield { finishReason: choice.finish_reason }
             } catch {
               // 忽略无法解析的中间帧
             }

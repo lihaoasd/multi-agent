@@ -222,12 +222,38 @@ export function registerServiceTools(deps: {
 
       // 逐条应用编辑（整体事务：任一步失败不改文件）
       let current = await readFile(abs, 'utf8').catch(() => '')
-      let changedChars = 0
-      for (const e of edits) {
-        const type = String(e.type ?? 'write')
+      const originalLength = current.length
+      for (const raw of edits) {
+        const e = raw as Record<string, unknown>
+        // 类型推断（2026-09-12 数据安全修复）：模型常漏 type。
+        // 旧实现把缺省 type 当 write、text 缺失即写空串 → **会把整文件清空**（已发生：PRD 被写成 0 字节）。
+        const declared = e.type === undefined ? '' : String(e.type).trim()
+        const hasText = Object.prototype.hasOwnProperty.call(e, 'text')
+        const hasReplacePair =
+          Object.prototype.hasOwnProperty.call(e, 'oldText') ||
+          Object.prototype.hasOwnProperty.call(e, 'newText')
+        const type = declared || (hasReplacePair ? 'replace' : hasText ? 'write' : '')
         if (type === 'write') {
-          current = String(e.text ?? '')
-          changedChars += current.length
+          if (!hasText) {
+            return {
+              ok: false,
+              code: 'ERR_VALIDATION',
+              reason:
+                'write 必须显式提供 text 字段：为避免误清空文件，缺少 text 的 write 一律拒绝' +
+                '（想做替换请用 {type:"replace", oldText, newText}）',
+            }
+          }
+          const text = String(e.text ?? '')
+          if (text === '') {
+            return {
+              ok: false,
+              code: 'ERR_VALIDATION',
+              reason:
+                '拒绝对工作目录文件写入空内容（write 的 text 不能为空）。' +
+                '如确需清空，请先用 replace 删掉正文或改派任务说明意图',
+            }
+          }
+          current = text
         } else if (type === 'replace') {
           const oldText = String(e.oldText ?? '')
           const newText = String(e.newText ?? '')
@@ -240,13 +266,19 @@ export function registerServiceTools(deps: {
               reason: `替换目标不存在（文件已被外部修改?）：${JSON.stringify(oldText.slice(0, 60))}`,
             }
           }
-          changedChars += Math.abs(newText.length - oldText.length)
           current = current.split(oldText).join(newText)
         } else {
-          return { ok: false, code: 'ERR_VALIDATION', reason: `不支持编辑类型: ${type}` }
+          return {
+            ok: false,
+            code: 'ERR_VALIDATION',
+            reason:
+              '每次编辑需要 type（write 全文 / replace 精确替换），或提供 text / oldText+newText 让平台推断',
+          }
         }
       }
-      const changed = changedChars > 0
+      // 回执里的"+N 字符"按真实净变化算（旧实现按写入长度累加，写空文件时会误报"无净变化"）
+      const netChange = current.length - originalLength
+      const changed = netChange !== 0
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, current, 'utf8')
       if (changed) {
@@ -254,7 +286,7 @@ export function registerServiceTools(deps: {
           relPath: r.rel,
           editType:
             edits.length === 1 && String(edits[0]!.type ?? '') === 'write' ? 'write' : 'replace',
-          changedChars,
+          changedChars: Math.abs(netChange),
         })
       }
       // 认领/续写归属（署名）
@@ -275,7 +307,7 @@ export function registerServiceTools(deps: {
       return {
         ok: true,
         summary:
-          `已编辑 ${r.rel}${changed ? `（+${changedChars} 字符` : '（无净变化'}）` +
+          `已编辑 ${r.rel}（${netChange >= 0 ? '+' : ''}${netChange} 字符` +
           `｜署名 ${ownerName}（${env.instanceId}）｜归属 ${taskId}`,
       }
     },

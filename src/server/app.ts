@@ -634,7 +634,7 @@ function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
 
   app.patch<{
     Params: { pid: string; tid: string }
-    Body: { state?: string; actor?: string }
+    Body: { state?: string; actor?: string; note?: string }
   }>('/api/projects/:pid/tasks/:tid', async (req) => {
     const b = req.body ?? {}
     if (!b.state) return { code: 'ERR_VALIDATION', message: 'state 必填' }
@@ -643,6 +643,7 @@ function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
       req.params.tid,
       b.state as never,
       b.actor ?? 'user',
+      b.note,
     )
     return { task }
   })

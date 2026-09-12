@@ -218,10 +218,15 @@ export class AgentLoopRunner {
     const calledTools = new Set<string>()
     let toolCallCount = 0
     let exhausted = false
+    /** 模型"空手停下"（有工具调用但最后一步没有任何正文/工具）→ 也走一次收尾回合 */
+    let silentStop = false
+    let wrappedUp = false
+    /** 只出思考/预算被截断时，允许一次"少推理、直接输出"的重试（每回合至多一次） */
+    let nudged = false
     try {
       for (let step = 0; step < maxSteps; step++) {
         const streamed = await this.streamStep(ctx, convo, turnId, tools)
-        const { stepText, stepReasoning, calls } = streamed
+        const { stepText, stepReasoning, calls, finishReason } = streamed
         // 步骤边界：按时间顺序落盘本步的「思考 → 正文」。
         // 有工具调用的步骤必须立即落盘，否则刷新后（历史按 seq 回放）顺序会与实时不一致。
         if (stepReasoning.trim()) {
@@ -229,7 +234,25 @@ export class AgentLoopRunner {
           thoughtCount++
         }
         if (!calls.size || !this.opts.toolRuntime) {
+          // 推理型模型常见失败：思考吃满输出预算（finish_reason=length）或只思考不输出 →
+          // 本回合没有正文也没有工具调用就结束了。重试一次，明确要求"直接输出/调用工具"。
+          const bareStep = !stepText.trim() && !calls.size
+          const truncated = finishReason === 'length'
+          if (bareStep && (stepReasoning.trim() || truncated) && !nudged && toolCallCount >= 0) {
+            nudged = true
+            convo.push({
+              role: 'system',
+              content:
+                '【平台】上一步只产生了思考，没有正文也没有工具调用' +
+                (truncated ? '（输出预算已被推理占满）' : '') +
+                '。请**直接继续**：需要动手就立刻调用工具；否则给出面向用户的结论/总结。' +
+                '不要再写出长篇推理。',
+            })
+            continue
+          }
           pendingText = stepText.trim() // 最后一步：待分派说明合并后落一条消息
+          // 模型没给正文就结束（常见：拿到工具结果后直接停）→ 交给收尾回合补状态与总结
+          if (!pendingText && !stepReasoning.trim() && toolCallCount > 0) silentStop = true
           break
         }
         if (stepText.trim()) {
@@ -252,8 +275,9 @@ export class AgentLoopRunner {
         if (step === maxSteps - 1) exhausted = true
       }
 
-      // 步数用尽 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不因预算耗尽而丢
-      if (exhausted && this.opts.toolRuntime) {
+      // 步数用尽 / 模型空手停下 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢
+      if ((exhausted || silentStop) && this.opts.toolRuntime && !wrappedUp) {
+        wrappedUp = true
         const wrap = await this.runWrapUp(ctx, meta, turnId, sessionType, convo, tools, calledTools)
         toolCallCount += wrap.toolCalls
         if (wrap.text) pendingText = pendingText ? `${pendingText}\n${wrap.text}` : wrap.text
@@ -327,6 +351,7 @@ export class AgentLoopRunner {
       pendingTasks ?? [],
       calledTools,
       toolCallCount,
+      Boolean(tailText.trim()),
     )
 
     await store.appendEvent(meta, {
@@ -359,15 +384,18 @@ export class AgentLoopRunner {
     stepText: string
     stepReasoning: string
     calls: Map<number, { id?: string; name?: string; args: string }>
+    finishReason?: string
   }> {
     let stepText = ''
     let stepReasoning = ''
+    let finishReason: string | undefined
     const calls = new Map<number, { id?: string; name?: string; args: string }>()
     for await (const item of this.opts.gateway.streamChat({
       providerId: ctx.member.model,
       messages: convo,
       tools: tools.length ? tools : undefined,
     })) {
+      if (item.finishReason) finishReason = item.finishReason
       if (item.content) {
         stepText += item.content
         this.opts.bus.emitChunk(ctx.projectId, ctx.sessionId, {
@@ -392,7 +420,7 @@ export class AgentLoopRunner {
         calls.set(item.toolCall.index, cur)
       }
     }
-    return { stepText, stepReasoning, calls }
+    return { stepText, stepReasoning, calls, finishReason }
   }
 
   /** 执行一步里的工具调用（审计 + 审批桥 + 结果回注），并登记调用过的工具名。 */
@@ -499,8 +527,12 @@ export class AgentLoopRunner {
 
   /**
    * 回合末兜底提示（写入会话的**系统消息**，前端显示为居中系统说明）：
-   * 本回合干了活但没上报任务状态时，提醒"完成后要 task_update(done, note=总结)"，
-   * 避免任务永久卡在「进行中」、用户也拿不到完成总结。
+   * - 本回合干了活却没上报任务状态 → 提醒"完成后要 task_update(done, note=总结)"，
+   *   避免任务永久卡在「进行中」、用户也拿不到完成总结；
+   * - 本回合完全没有正文（模型空手停下）→ 明确告知用户"这轮没有总结"。
+   *
+   * 注意：任务状态用**回合结束时重新读取**的结果，不能用回合开始时的快照——
+   * 角色常在回合中途才 task_claim，快照会漏掉这条进行中的任务（真实踩过的坑）。
    */
   private async remindUnreportedTask(
     ctx: TurnContext,
@@ -510,21 +542,33 @@ export class AgentLoopRunner {
     pendingTasks: PendingTask[],
     calledTools: Set<string>,
     toolCallCount: number,
+    replied: boolean,
   ): Promise<void> {
-    if (toolCallCount === 0 || calledTools.has('task_update')) return
+    if (toolCallCount === 0) return
+    const freshActive =
+      (await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)) ?? activeTask
+    const freshPending =
+      (await this.opts.toolRuntime?.pendingTasks?.(ctx).catch(() => null)) ?? pendingTasks
+    const reported = calledTools.has('task_update')
     const notes: string[] = []
-    if (activeTask) {
+    if (!reported && freshActive) {
       notes.push(
-        `【系统】任务 ${activeTask.id}「${activeTask.title}」仍为进行中。若本轮已完成，` +
+        `【系统】任务 ${freshActive.id}「${freshActive.title}」仍为进行中。若本轮已完成，` +
           '请调用 task_update(state=done, note=一句话完成总结) 上报——平台会更新任务栏并通知委派人；' +
           '若仍在进行，可忽略本提示。',
       )
     }
-    if (!calledTools.has('task_claim') && pendingTasks.length) {
-      const first = pendingTasks[0]!
+    if (!reported && !calledTools.has('task_claim') && freshPending.length) {
+      const first = freshPending[0]!
       notes.push(
         `【系统】任务栏上还有待你领取的任务 ${first.id}「${first.title}」。` +
           '如果你已经做完了这件事，请先 task_claim 领取，再 task_update(state=done, note=完成总结)。',
+      )
+    }
+    if (!replied) {
+      notes.push(
+        '【系统】本轮只执行了工具、没有输出任何正文与总结。请补一条面向用户的完成总结' +
+          '（做了什么、产出文件、验证结果、遗留），并在任务完成时用 task_update(state=done, note=总结) 上报。',
       )
     }
     if (!notes.length) return

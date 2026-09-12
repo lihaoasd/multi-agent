@@ -17,6 +17,11 @@ export interface ModelProviderConfig {
   baseUrl?: string
   apiKeyEnv?: string
   model?: string
+  /**
+   * completion 预算（默认 8192）。推理型模型的"思考"也吃这个预算：
+   * 太小会出现"只出思考、没有正文/工具调用"（角色看起来没干活）→ 按 provider 能力调大。
+   */
+  maxTokens?: number
 }
 
 export interface ModelsConfig {

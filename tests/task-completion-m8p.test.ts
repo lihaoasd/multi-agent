@@ -109,25 +109,31 @@ const defs = (names: string[]): ToolSchema[] =>
       parameters: d.paramsSchema ?? { type: 'object', properties: {} },
     }))
 
-/** 模型：前 maxSteps 步都给同一个工具调用，之后（收尾回合）给收尾动作。 */
-function loom(stepCalls: Array<{ name: string; args: unknown }>, wrap: { name: string; args: unknown } | null, seen: ChatMessage[][]) {
+/** 模型：按脚本给工具调用（null=空响应/模型空手停下）；收尾回合给 wrap 动作。 */
+function loom(
+  stepCalls: Array<{ name: string; args: unknown } | null>,
+  wrap: { name: string; args: unknown } | null,
+  seen: ChatMessage[][],
+) {
   let i = 0
   return {
     async *streamChat(opts: { messages: ChatMessage[] }) {
       seen.push(opts.messages)
-      const call = i < stepCalls.length ? stepCalls[i] : null
-      i++
-      if (call) {
-        yield { toolCall: { index: 0, id: `c${i}`, name: call.name } }
-        yield { toolCall: { index: 0, argumentsDelta: JSON.stringify(call.args) } }
+      const idx = i++
+      const isWrap = String(opts.messages.at(-1)?.content ?? '').includes('进入**收尾**')
+      if (isWrap) {
+        if (wrap) {
+          yield { content: '已完成，下面是总结。' }
+          yield { toolCall: { index: 0, id: 'cw', name: wrap.name } }
+          yield { toolCall: { index: 0, argumentsDelta: JSON.stringify(wrap.args) } }
+        }
         return
       }
-      // 收尾回合：模型看到收尾提示后调用 wrap 工具并给总结
-      const isWrap = String(opts.messages.at(-1)?.content ?? '').includes('进入**收尾**')
-      if (isWrap && wrap) {
-        yield { content: '已完成，下面是总结。' }
-        yield { toolCall: { index: 0, id: 'cw', name: wrap.name } }
-        yield { toolCall: { index: 0, argumentsDelta: JSON.stringify(wrap.args) } }
+      if (idx < stepCalls.length) {
+        const call = stepCalls[idx]
+        if (!call) return // 空响应：无正文、无工具、无思考（真实事故里的"空手停下"）
+        yield { toolCall: { index: 0, id: `c${idx}`, name: call.name } }
+        yield { toolCall: { index: 0, argumentsDelta: JSON.stringify(call.args) } }
         return
       }
       yield { content: '本轮结束。' }
@@ -304,4 +310,90 @@ describe('任务收尾：状态上报 + 完成总结', () => {
     expect(res.ok).toBe(true)
     expect(res.ok ? res.summary : '').toContain('未提供完成总结')
   }, 20000)
+
+  it('模型空手停下（有工具调用后返回空响应）→ 仍走收尾回合：上报完成 + 给出总结', async () => {
+    const { pid, dev, product } = await setup()
+    await executeTool(
+      'task_assign',
+      { assignee: dev.instanceId, title: '写方案' },
+      await toolEnv(pid, product.instanceId),
+    )
+    const t = (await svc.tasks.list(pid))[0]!
+    await executeTool('task_claim', { taskId: t.id }, await toolEnv(pid, dev.instanceId))
+
+    const seen: ChatMessage[][] = []
+    const gateway = loom(
+      [
+        // 第 1 步：写文件
+        { name: 'workdir_edit', args: { path: 'workdir://docs/x.md', edits: [{ type: 'write', text: '# x\n' }] } },
+        // 第 2 步：模型空手停下（无正文、无工具）——真实事故里的形态
+        null,
+      ],
+      { name: 'task_update', args: { state: 'done', note: '方案已写完，产出 docs/x.md' } },
+      seen,
+    )
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      toolRuntime: runtime(pid, defs(['workdir_edit', 'task_update', 'task_claim'])),
+    })
+    await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: `u_${dev.instanceId}`,
+      member: dev,
+      scenario: 'silent-stop',
+    })
+
+    expect(String(seen.at(-1)?.at(-1)?.content ?? '')).toContain('进入**收尾**')
+    const after = (await svc.tasks.list(pid)).find((x) => x.id === t.id)!
+    expect(after.state).toBe('done')
+    expect(after.resultNote).toContain('docs/x.md')
+    // 收尾回合产出的总结进了会话正文
+    const evts = await sessionMessages(pid, `u_${dev.instanceId}`)
+    expect(evts.some((e) => e.role === 'agent' && String(e.content?.text ?? '').includes('总结'))).toBe(
+      true,
+    )
+  }, 30000)
+
+  it('回合中途才领取（快照为空）→ 兜底提示仍会按最新状态触发', async () => {
+    const { pid, dev, product } = await setup()
+    await executeTool(
+      'task_assign',
+      { assignee: dev.instanceId, title: '中途领取场景' },
+      await toolEnv(pid, product.instanceId),
+    )
+    const t = (await svc.tasks.list(pid))[0]!
+
+    const seen: ChatMessage[][] = []
+    const gateway = loom(
+      [
+        // 第 1 步才领取（回合开始时的快照里 activeTask 为空）
+        { name: 'task_claim', args: { taskId: t.id } },
+        { name: 'workdir_edit', args: { path: 'workdir://docs/y.md', edits: [{ type: 'write', text: '# y\n' }] } },
+        null, // 空手停下
+      ],
+      null, // 收尾回合也不上报
+      seen,
+    )
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      toolRuntime: runtime(pid, defs(['workdir_edit', 'task_update', 'task_claim'])),
+    })
+    await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: `u_${dev.instanceId}`,
+      member: dev,
+      scenario: 'mid-claim',
+    })
+
+    const evts = await sessionMessages(pid, `u_${dev.instanceId}`)
+    const remind = evts.find(
+      (e) => e.payload?.system === true && String(e.content?.text ?? '').includes('仍为进行中'),
+    )
+    expect(remind).toBeTruthy()
+    expect((await svc.tasks.list(pid)).find((x) => x.id === t.id)!.state).toBe('in_progress')
+  }, 30000)
 })

@@ -49,6 +49,11 @@ export interface ChatStreamItem {
   content?: string
   reasoning?: string
   toolCall?: { index: number; id?: string; name?: string; argumentsDelta?: string }
+  /**
+   * 结束原因（部分 provider 提供）：'length' = 输出预算被截断。
+   * 推理型模型常见"思考吃满预算 → 没有正文/工具调用"，调用方据此重试。
+   */
+  finishReason?: string
 }
 
 export interface ModelProvider {
