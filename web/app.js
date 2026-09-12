@@ -922,6 +922,7 @@ function buildQuestionCard(q, opts = {}) {
   card.appendChild(head)
 
   const answers = new Map() // itemId → {choice, choices, text}
+  const blocks = []
   items.forEach((it, i) => {
     const slot = { choice: null, choices: [], text: null }
     answers.set(it.id, slot)
@@ -950,6 +951,7 @@ function buildQuestionCard(q, opts = {}) {
         radio.value = o
         radio.addEventListener('change', () => {
           slot.choice = o
+          paint()
         })
         lab.appendChild(radio)
         lab.appendChild(document.createTextNode(o))
@@ -967,6 +969,7 @@ function buildQuestionCard(q, opts = {}) {
         cb.value = o
         cb.addEventListener('change', () => {
           slot.choices = [...box.querySelectorAll('input:checked')].map((c) => c.value)
+          paint()
         })
         lab.appendChild(cb)
         lab.appendChild(document.createTextNode(o))
@@ -980,6 +983,7 @@ function buildQuestionCard(q, opts = {}) {
       ta.placeholder = '请输入你的回答'
       ta.addEventListener('input', () => {
         slot.text = ta.value
+        paint()
       })
       block.appendChild(ta)
     }
@@ -992,8 +996,42 @@ function buildQuestionCard(q, opts = {}) {
       })
       block.appendChild(note)
     }
+    blocks.push(block)
     card.appendChild(block)
   })
+
+  /** 一题是否已答（用于进度点/跳题校验）。 */
+  const filled = (it) => {
+    const s = answers.get(it.id) ?? {}
+    if (it.kind === 'multi') return Boolean(s.choices?.length)
+    if (it.kind === 'text') return Boolean(String(s.text ?? '').trim())
+    return Boolean(s.choice)
+  }
+
+  // 多题：**一题一题显示 + 左右滑块**（单题时退化为普通卡片）
+  let idx = 0
+  const nav = document.createElement('div')
+  nav.className = 'q-nav'
+  const prev = document.createElement('button')
+  prev.type = 'button'
+  prev.className = 'q-nav-btn'
+  prev.textContent = '← 上一题'
+  const step = document.createElement('span')
+  step.className = 'q-step'
+  const next = document.createElement('button')
+  next.type = 'button'
+  next.className = 'q-nav-btn'
+  next.textContent = '下一题 →'
+  const go = (i) => {
+    idx = Math.max(0, Math.min(items.length - 1, i))
+    paint()
+  }
+  prev.addEventListener('click', () => go(idx - 1))
+  next.addEventListener('click', () => go(idx + 1))
+  nav.appendChild(prev)
+  nav.appendChild(step)
+  nav.appendChild(next)
+  if (items.length > 1) card.appendChild(nav)
 
   const row = document.createElement('div')
   row.className = 'q-actions'
@@ -1001,6 +1039,13 @@ function buildQuestionCard(q, opts = {}) {
   submit.className = 'primary'
   submit.textContent = items.length > 1 ? `提交全部回答（${items.length} 题）` : '提交回答'
   submit.addEventListener('click', async () => {
+    // 未答完 → 跳到第一道没答的题并提示（不浪费一次请求）
+    const missing = items.findIndex((it) => !filled(it))
+    if (missing >= 0) {
+      go(missing)
+      toast(`第 ${missing + 1} 题还没${items[missing].kind === 'text' ? '填' : '选'}`)
+      return
+    }
     submit.disabled = true
     const ok = await submitQuestionAnswer(q, items, answers, opts)
     submit.disabled = false
@@ -1008,6 +1053,24 @@ function buildQuestionCard(q, opts = {}) {
   })
   row.appendChild(submit)
   card.appendChild(row)
+
+  /** 刷新可见题、进度点与按钮可用态。 */
+  function paint() {
+    blocks.forEach((b, i) => b.classList.toggle('hidden', i !== idx))
+    const total = items.length
+    const doneCount = items.filter(filled).length
+    step.textContent =
+      total > 1
+        ? `第 ${idx + 1}/${total} 题 · ${'●'.repeat(doneCount)}${'○'.repeat(total - doneCount)}`
+        : ''
+    prev.disabled = idx === 0
+    next.disabled = idx === total - 1
+    if (total > 1) {
+      submit.textContent =
+        doneCount === total ? `提交全部回答（${total} 题）` : `提交全部回答（已答 ${doneCount}/${total}）`
+    }
+  }
+  paint()
   return card
 }
 
