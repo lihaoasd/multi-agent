@@ -292,7 +292,7 @@ function registerSessionRoutes(app: FastifyInstance, svc: Services): void {
 }
 
 function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {
-  const { approvals, tools } = svc
+  const { approvals, tools, sessionService, sessionStore } = svc
 
   app.get<{ Params: { pid: string }; Querystring: { status?: string } }>(
     '/api/projects/:pid/approvals',
@@ -317,7 +317,33 @@ function registerApprovalRoutes(app: FastifyInstance, svc: Services): void {
     if (rec.status === 'approved' && rec.kind === 'submit') {
       resumed = await svc.artifacts.finalizeApproved(req.params.pid, rec.id).catch(() => null)
     }
-    return { approval: rec, resumed }
+    // 审批是**阻塞式**的：角色提交审批后就停在「等待你处理」；这里把结果回注会话并唤醒它继续，
+    // 否则角色会一直等（或误以为要自己想办法绕过）。
+    let wakeError: string | null = null
+    if (rec.sessionId) {
+      const meta = await sessionStore.tryReadMeta(req.params.pid, rec.sessionId).catch(() => null)
+      if (!meta) wakeError = `会话不存在: ${rec.sessionId}`
+      else if (meta.type !== 'user') wakeError = '非 user 会话，审批结果未回注角色'
+      else {
+        const r = resumed as { ok?: boolean; summary?: string; code?: string; reason?: string } | null
+        const outcome = r
+          ? r.ok
+            ? `执行成功：${String(r.summary ?? '').slice(0, 600)}`
+            : `执行失败（${r.code ?? 'ERR'}）：${String(r.reason ?? '').slice(0, 300)}`
+          : '（无可执行动作）'
+        const text =
+          rec.status === 'approved'
+            ? `【系统】你申请的审批 ${rec.id} 已获批准，平台已执行：${rec.summary}\n${outcome}\n请继续你的任务。`
+            : `【系统】你申请的审批 ${rec.id} 已被用户拒绝：${rec.summary}` +
+              `（原因：${req.body?.reason ?? '未说明'}）。不要重复申请该动作；请改用其他方式或向用户说明。`
+        try {
+          await sessionService.sendUserMessage(req.params.pid, rec.sessionId, text, { system: true })
+        } catch (e) {
+          wakeError = `审批结果未唤醒角色：${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+    }
+    return { approval: rec, resumed, wakeError }
   })
 }
 

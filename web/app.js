@@ -1398,6 +1398,8 @@ function toolCallDetail(p) {
 /** 工具结果文案（合并进同一行）。 */
 function toolResultDetail(p) {
   const tool = String(p.tool ?? '工具')
+  // 审批待批：不是失败，而是"等你在审批面板决定"（阻塞式审批，2026-09-12）
+  if (p.code === 'APPROVAL_PENDING') return `${tool} ⏸ 已提交审批，等你批准后继续`
   const mark = p.ok === false ? '✗' : '✓'
   if (p.taskId)
     return `${tool} → ${mark} ${String(p.taskId)}${p.assignee ? ' → ' + p.assignee : ''}`

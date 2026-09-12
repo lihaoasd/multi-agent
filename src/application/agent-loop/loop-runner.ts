@@ -542,10 +542,14 @@ export class AgentLoopRunner {
           .requestApproval(ctx, name, args ?? {}, result)
           .catch(() => null)
         if (approvalId) {
+          // **审批是阻塞式的**（2026-09-12）：提交审批后本回合立即结束，角色进入「等待你处理」；
+          // 用户批准/拒绝后由 API 层把结果回注会话并唤醒角色继续（不再"边等边干"）。
           result = {
             ok: false,
             code: 'APPROVAL_PENDING',
-            reason: `已提交审批 ${approvalId}，等待用户批准后由平台执行；请向用户说明并继续其余工作`,
+            reason:
+              `已提交审批 ${approvalId}，**本轮到此结束**：你现在在等用户批准这个动作。` +
+              '不要重复申请、也不要改用其他方式绕过；用户批准后平台会执行并把结果回给你，然后你继续。',
             approvalId,
           }
         }
@@ -555,7 +559,12 @@ export class AgentLoopRunner {
         tool: name,
         ...(result.ok
           ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
-          : { ok: false, code: result.code, reason: cut(result.reason, 300) }),
+          : {
+              ok: false,
+              code: result.code,
+              reason: cut(result.reason, 300),
+              ...(result.approvalId ? { approvalId: result.approvalId } : {}),
+            }),
       })
       // 无进展检测：同工具 + 同入参 + 同结果 → 计数；出现新签名则清空旧计数（要求"连续"重复）
       if (repeatCounts) {
@@ -570,8 +579,13 @@ export class AgentLoopRunner {
         toolCallId: id,
         content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
       })
-      // 挂起类工具（ask_user）：本步执行完后 loop 会立即结束回合
-      if (result.ok && result.suspend === true) suspended = true
+      // 挂起类：ask_user（等待用户决策）与审批待批（等待用户批准）都结束本回合
+      if (
+        (result.ok && result.suspend === true) ||
+        (!result.ok && result.code === 'APPROVAL_PENDING')
+      ) {
+        suspended = true
+      }
     }
     return { toolCalls, toolMessages, stalled, suspended }
   }
@@ -778,8 +792,12 @@ export class AgentLoopRunner {
           (hasAsk
             ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
               '**一次要问多件事就用一次调用传 questions 数组（问题列表，1~6 题）**——用户在**同一张卡片里逐题作答、一次提交**；' +
-              '不要并发多次调用 ask_user，也不要分多轮追问；调用后请结束本轮并等待用户回答。'
+              '不要并发多次调用 ask_user，也不要分多轮追问。' +
+              '**需要用户拍板/批准的事要先问再做**：ask_user 与需要审批的命令都会**立即挂起本回合**（你进入「等待你处理」），' +
+              '所以不要先把活干完再来问——先拿到答复再动手，避免方向错了白做。'
             : '') +
+          '\n需要审批的命令（高危/未放行的命令）提交后会**立即挂起本回合**，等用户批准；' +
+          '批准后平台会把执行结果回给你，你再继续，不要重复申请、也不要试图绕过。' +
           '\n步数不设上限：请高效推进并把事情做完（不要为了凑步数而反复调用同一工具——' +
           '同一工具+同一入参+同一结果连续 3 次会被平台判定为原地空转并停止本回合）。',
       )
