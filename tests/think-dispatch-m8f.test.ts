@@ -121,14 +121,20 @@ describe('think 展示：reasoning → thought 事件 + thought.chunk 推送', (
   })
 })
 
-describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 → 自动开工', () => {
+describe('任务分派（甲模式）：pm/product 发布任务到任务栏 → 通知领取', () => {
   it('parseTaskIntents 解析围栏/无围栏 JSON 数组并校验', () => {
     const fenced = parseTaskIntents(
-      '我安排如下：\n```json\n[{"assignee":"dev_1","title":"A","start":false},{"assignee":"dev_2","title":"B"}]\n```\n完毕',
+      '我安排如下：\n```json\n[{"assignee":"dev_1","title":"A","desc":"甲"},{"assignee":"dev_2","title":"B"}]\n```\n完毕',
     )
     expect(fenced.intents).toHaveLength(2)
-    expect(fenced.intents[0]).toMatchObject({ assignee: 'dev_1', title: 'A', start: false })
-    expect(fenced.intents[1]).toMatchObject({ assignee: 'dev_2', title: 'B', start: true })
+    expect(fenced.intents[0]).toMatchObject({ assignee: 'dev_1', title: 'A', desc: '甲' })
+    expect(fenced.intents[1]).toMatchObject({ assignee: 'dev_2', title: 'B' })
+    // 兼容旧协议字段 start：解析时忽略（不再有"立即开工"语义）
+    expect(parseTaskIntents('[{"assignee":"dev_1","title":"A","start":false}]').intents[0]).toEqual({
+      assignee: 'dev_1',
+      title: 'A',
+      desc: undefined,
+    })
 
     const plain = parseTaskIntents('方案通过，派活 [{"assignee":"dev_1","title":"C"}]')
     expect(plain.intents).toHaveLength(1)
@@ -141,10 +147,10 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
   it('解析容错：围栏内多余引号/无围栏/多数组去重/无关数组不误判', () => {
     // 真实失败样例：```json 围栏内 JSON 末尾多了一个引号（PM 派单没生效的原因）
     const strayQuote =
-      '现在派单 👇\n\n```json\n[{"assignee":"product_1","title":"范围清单","start":true}]\n"\n```\n\n我在等产出。'
+      '现在派单 👇\n\n```json\n[{"assignee":"product_1","title":"范围清单","desc":"含边界"}]\n"\n```\n\n我在等产出。'
     const r1 = parseTaskIntents(strayQuote)
     expect(r1.intents).toHaveLength(1)
-    expect(r1.intents[0]).toMatchObject({ assignee: 'product_1', title: '范围清单', start: true })
+    expect(r1.intents[0]).toMatchObject({ assignee: 'product_1', title: '范围清单' })
 
     // 同一数组既在围栏里、又被复述一遍 → 去重
     const dup =
@@ -180,7 +186,7 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     expect(await svc.tasks.list(pid)).toHaveLength(0)
   })
 
-  it('推荐路径：task_assign 工具派单 → 建任务并自动开工', async () => {
+  it('推荐路径：task_assign 工具发布 → 任务栏 todo（待领取）+ 回执说明', async () => {
     const { pid, product, dev } = await setupProject()
     const sid = `u_${product.instanceId}`
     let call = 0
@@ -197,13 +203,12 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
                 assignee: dev.instanceId,
                 title: '实现贪吃蛇核心玩法',
                 desc: '移动/吃食/碰撞/计分/重开',
-                start: true,
               }),
             },
           }
           return
         }
-        yield { content: '已通过工具派单。' }
+        yield { content: '已发布到任务栏。' }
       },
     } as unknown as ModelGateway
     const loop = new AgentLoopRunner({
@@ -248,10 +253,11 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     expect(tasks).toHaveLength(1)
     expect(tasks[0]!.assignee).toBe(dev.instanceId)
     expect(tasks[0]!.title).toBe('实现贪吃蛇核心玩法')
-    expect(tasks[0]!.state).toBe('in_progress')
+    expect(tasks[0]!.state).toBe('todo') // 发布到任务栏：待领取（等 dev 自己 claim）
+    expect(tasks[0]!.creator).toBe(product.instanceId)
   })
 
-  it('回合内分派：任务落盘 in_progress + 系统说明追加 + 受派者自动开工', async () => {
+  it('回合内发布：任务落盘 todo（待领取）+ 系统说明追加 + 通知受派人领取', async () => {
     const { pid, product, dev } = await setupProject()
     const sid = `u_${product.instanceId}`
     const team = await svc.teamService.list(pid)
@@ -259,7 +265,7 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     const loop = new AgentLoopRunner({
       store: svc.sessionStore,
       gateway: fakeGatewayWith(
-        '明白，登录功能我安排给开发：\n```json\n[{"assignee":"dev_1","title":"实现登录接口","desc":"含边界处理","start":true}]\n```',
+        '明白，登录功能我发布到任务栏：\n```json\n[{"assignee":"dev_1","title":"实现登录接口","desc":"含边界处理"}]\n```',
       ),
       bus: svc.bus,
       occupancy: svc.occupancy,
@@ -298,11 +304,11 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     }
     await loop.runDirectTurn(ctx)
 
-    // 1) 任务已创建并自动开工（in_progress）
+    // 1) 任务已发布到任务栏（todo 待领取）
     const tasks = await svc.tasks.list(pid)
     const mine = tasks.find((t) => t.assignee === dev.instanceId && t.title.includes('登录接口'))
     expect(mine).toBeTruthy()
-    expect(mine!.state).toBe('in_progress')
+    expect(mine!.state).toBe('todo')
 
     // 2) 回复末尾带平台说明（诚实反馈）
     const evts = (
@@ -314,7 +320,7 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
       content?: { text?: string }
     }>
     const agentMsg = evts.find((e) => e.kind === 'message' && e.role === 'agent')!
-    expect(agentMsg.content?.text).toContain('【系统 · 任务分派】')
+    expect(agentMsg.content?.text).toContain('【系统 · 任务栏】')
     expect(agentMsg.content?.text).toContain(mine!.id)
     // 审计事件
     expect(evts.filter((e) => e.kind === 'tool_call').length).toBeGreaterThan(0)
@@ -324,7 +330,7 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
     expect(new Set(seqs).size).toBe(seqs.length)
     expect([...seqs].sort((a, b) => a - b)).toEqual(seqs)
 
-    // 3) 受派者自动开工：dev_1 的 user 会话收到唤醒消息并完成回合
+    // 3) 受派人收到"待领取"通知：dev_1 的 user 会话出现系统消息并完成回合
     const devSid = `u_${dev.instanceId}`
     const deadline = Date.now() + 8000
     for (;;) {
@@ -335,18 +341,18 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
         (e) =>
           e.kind === 'message' &&
           e.role === 'user' &&
-          String(e.content?.text ?? '').includes('请开始执行任务'),
+          String(e.content?.text ?? '').includes('任务栏有任务待你领取'),
       )
       if (hasWake && log.some((e) => e.kind === 'turn_end')) break
-      if (Date.now() > deadline) throw new Error('等待受派者开工回合超时')
+      if (Date.now() > deadline) throw new Error('等待受派人领取通知超时')
       await new Promise((r) => setTimeout(r, 30))
     }
   }, 20000)
 
-  it('start=false 或受派者忙 → 排队 todo 不自动开工', async () => {
+  it('发布后保持待领取；受派人槽位被占时领取被拒（claim）', async () => {
     const { pid, product, dev } = await setupProject()
     const team = await svc.teamService.list(pid)
-    // 先让 dev 忙：直接建任务并置 in_progress（user 驱动）
+    // 先让 dev 忙：建任务并置 in_progress（user 驱动）
     const first = await ready().inject({
       method: 'POST',
       url: `/api/projects/${pid}/tasks`,
@@ -363,16 +369,20 @@ describe('任务分派（甲模式）：pm/product 回复指令 → 建任务 �
       sessionId: `u_${product.instanceId}`,
       actorId: product.instanceId,
       actorName: product.displayName,
-      text: '第二项排队：\n```json\n[{"assignee":"dev_1","title":"排队任务","start":true}]\n```',
+      text: '第二项发布：\n```json\n[{"assignee":"dev_1","title":"排队任务"}]\n```',
       team,
       tasks: svc.tasks,
       emitTool: async () => undefined,
     })
-    expect(note).toContain('排队')
+    expect(note).toContain('已发布到任务栏')
     const tasks = await svc.tasks.list(pid)
     const queued = tasks.find((t) => t.title === '排队任务')
     expect(queued).toBeTruthy()
-    expect(queued!.state).toBe('todo') // 槽位占用，自动保持排队
+    expect(queued!.state).toBe('todo') // 待领取
+    // dev 手上有进行中任务 → 领取被拒（不静默开工）
+    await expect(svc.tasks.claim(pid, dev.instanceId, queued!.id)).rejects.toThrow(/已有进行中任务/)
+    // 非受派人不能领取
+    await expect(svc.tasks.claim(pid, product.instanceId, queued!.id)).rejects.toThrow(/不能领取/)
   })
 })
 

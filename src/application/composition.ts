@@ -153,19 +153,38 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     if (!meta) throw new Error(`会话不存在: ${sid}`)
     return sessionStore.appendEvent(meta, evt)
   })
-  const tasks = new TaskService(
-    projectsRoot,
-    config.task.assignByAgent,
-    // 激活即唤醒（D18-③）：向受派者 user 会话注入系统消息并触发一轮
-    async (pid, assignee, title, taskId) => {
+  // 任务栏（2026-09-12：发布 → 通知领取 → 完成回通知委派人）
+  const tasks = new TaskService(projectsRoot, config.task.assignByAgent, {
+    // 发布/排队 → 通知受派人领取（写系统消息 + 唤醒一轮；会话不存在时静默跳过）
+    notifyClaim: async (pid, assignee, task) => {
       await sessionService
-        .sendUserMessage(pid, `u_${assignee}`, `【系统】请开始执行任务 ${taskId}：${title}`, {
-          system: true,
-        })
+        .sendUserMessage(
+          pid,
+          `u_${assignee}`,
+          `【系统】任务栏有任务待你领取 ${task.id}「${task.title}」` +
+            (task.desc ? `：${task.desc.slice(0, 300)}` : '') +
+            `（委派人：${task.creator}）。请调用 task_claim 领取并开工；` +
+            '若暂时不能接，请用 task_update 置 blocked 并说明原因。',
+          { system: true },
+        )
+        .catch(() => undefined)
+    },
+    // 完成/受阻/终止 → 通知委派人安排后续（creator=user 时由任务栏/前端提示，不唤醒 Agent）
+    notifyDelegator: async (pid, task, event, by) => {
+      if (task.creator === 'user' || task.creator === task.assignee) return
+      const zh = event === 'done' ? '已完成' : event === 'blocked' ? '受阻' : '已终止'
+      await sessionService
+        .sendUserMessage(
+          pid,
+          `u_${task.creator}`,
+          `【系统】你委派的任务 ${task.id}「${task.title}」${zh}（受派人 ${by}）。` +
+            '请据此安排后续：验收产出、派发下一步任务，或发起会议对齐。',
+          { system: true },
+        )
         .catch(() => undefined)
     },
     // D17-① done/terminated 前结算未结算 code 改动 → code artifact
-    async (pid, task) => {
+    settle: async (pid, task) => {
       await artifacts
         .settleCodeAggregation({
           projectId: pid,
@@ -178,7 +197,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
           if (rec) await tasks.linkArtifact(pid, task.id, rec.id)
         })
     },
-  )
+    // 任务栏实时刷新
+    bus,
+  })
   const attention = new AttentionService(approvals, meetings, questions)
 
   // 应用级工具注册（记忆/检索/受控编辑/用户交互/派单）：组合时执行一次（模块级 registry，重复调用幂等覆盖）。
@@ -209,9 +230,15 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   }
 
   // 工具循环（function-calling）：角色白名单 ∩ 注册表 ∩ 会话可用性。
-  // ask_user / task_assign / task_update 为平台交互能力：user 会话始终可用
+  // ask_user / task_assign / task_claim / task_update / artifact_submit 为平台交互能力：user 会话始终可用
   // （老项目快照的 tools 里没有也能用）；task_assign 的角色权限在工具内部校验（仅 pm/product）。
-  const PLATFORM_USER_TOOLS = new Set(['ask_user', 'task_assign', 'task_update', 'artifact_submit'])
+  const PLATFORM_USER_TOOLS = new Set([
+    'ask_user',
+    'task_assign',
+    'task_claim',
+    'task_update',
+    'artifact_submit',
+  ])
   loopOpts.toolRuntime = {
     listTools: (ctx, sessionType) => {
       const allowed = new Set(ctx.member.tools ?? [])
@@ -258,6 +285,12 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
       return rec.id
     },
     activeTask: activeTaskOf,
+    // 待领取任务（任务栏上派给我、尚未领取的）：注入 [待领取任务] 提示块，引导 task_claim 领取
+    pendingTasks: async (ctx: TurnContext) =>
+      (await tasks.list(ctx.projectId, { assignee: ctx.member.instanceId, state: 'todo' }))
+        .sort((a, b) => (a.ts < b.ts ? -1 : 1))
+        .slice(0, 5)
+        .map((t) => ({ id: t.id, title: t.title, desc: t.desc, creator: t.creator })),
     maxSteps: 6,
   }
 

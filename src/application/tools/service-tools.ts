@@ -301,24 +301,24 @@ export function registerServiceTools(deps: {
     )
   }
 
-  // 派单（甲模式）：产品/项目经理给团队成员创建任务并默认立即开工（受派者空闲时自动唤醒）
+  // 任务栏（2026-09-12）：pm/product 发布任务 → 平台通知受派人领取；受派人用 task_claim 领取
   if (tasks && listTeam) {
     registerTool(
       {
         name: 'task_assign',
         description:
-          '给团队成员派发任务（仅产品/项目经理可调用）：创建任务并默认让对方立即开工；' +
-          '受派者已有进行中任务时自动排队为 todo。一次调用派一个任务，可连续调用多个',
+          '把任务**发布到任务栏**并通知受派人领取（仅产品/项目经理可调用）：创建任务(state=待领取) + ' +
+          '向受派人会话推送「待你领取」通知；受派人调用 task_claim 领取后才开工。' +
+          '一次调用发布一个任务，可连续调用多个',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,
         paramsSchema: {
           type: 'object',
           properties: {
-            assignee: { type: 'string', description: '受派者实例 id（如 dev_1 / architect_1）' },
+            assignee: { type: 'string', description: '受派人实例 id（如 dev_1 / architect_1）' },
             title: { type: 'string', description: '任务标题（一句话说明要交付什么）' },
             desc: { type: 'string', description: '任务说明：产出、边界、验收要点' },
-            start: { type: 'boolean', description: '是否立即开工，缺省 true' },
           },
           required: ['assignee', 'title'],
         },
@@ -330,7 +330,7 @@ export function registerServiceTools(deps: {
           return {
             ok: false,
             code: 'ERR_TOOL_REJECTED',
-            reason: `只有产品/项目经理可以派单（当前角色 ${me?.roleTemplateId ?? env.instanceId}）`,
+            reason: `只有产品/项目经理可以发布任务（当前角色 ${me?.roleTemplateId ?? env.instanceId}）`,
           }
         }
         const assignee = String(args.assignee ?? '').trim()
@@ -350,18 +350,56 @@ export function registerServiceTools(deps: {
             assignee,
             title,
             desc: args.desc === undefined ? undefined : String(args.desc),
-            start: args.start !== false,
           },
         )
         if (!r.ok) {
-          return { ok: false, code: 'ERR_CONFLICT', reason: r.reason ?? '派发失败' }
+          return { ok: false, code: 'ERR_CONFLICT', reason: r.reason ?? '发布失败' }
         }
         return {
           ok: true,
           summary:
-            r.state === 'in_progress'
-              ? `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已开始执行）`
-              : `已创建任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已排队 todo：${r.reason ?? '等待开工'}）`,
+            `已发布任务 ${r.taskId}「${r.title}」到任务栏 → ${r.assignee}` +
+            `（待领取；已通知 ${r.assignee} 领取）`,
+        }
+      },
+    )
+
+    // 领取任务：todo → in_progress，只能领自己名下的
+    registerTool(
+      {
+        name: 'task_claim',
+        description:
+          '领取任务栏上派给你的任务（state: 待领取 → 进行中）：缺省领取最早的一条。' +
+          '领取后你才开始执行；手上有进行中任务时会被拒绝。完成后用 task_update(state=done) 上报',
+        scope: 'platform',
+        availableIn: ['user'],
+        idempotent: false,
+        paramsSchema: {
+          type: 'object',
+          properties: {
+            taskId: { type: 'string', description: '任务 id；缺省=领取我最早的一条待领取任务' },
+          },
+        },
+      },
+      async (args, env) => {
+        const taskId = args.taskId === undefined ? '' : String(args.taskId).trim()
+        try {
+          const rec = await tasks.claim(env.projectId, env.instanceId, taskId || undefined)
+          return {
+            ok: true,
+            summary:
+              `已领取任务 ${rec.id}「${rec.title}」→ 进行中（in_progress）` +
+              (rec.desc ? `；任务说明：${rec.desc.slice(0, 200)}` : ''),
+          }
+        } catch (e) {
+          return {
+            ok: false,
+            code:
+              e instanceof Error && 'code' in e
+                ? String((e as { code: string }).code)
+                : 'ERR_CONFLICT',
+            reason: e instanceof Error ? e.message : String(e),
+          }
         }
       },
     )
@@ -374,7 +412,7 @@ export function registerServiceTools(deps: {
         name: 'task_update',
         description:
           '更新任务状态（默认作用于你当前的进行中任务）：in_progress 开工 / done 完成 / blocked 受阻 / todo 回队 / terminated 终止。' +
-          '完成后请调用本工具把状态改为 done 再汇报',
+          '完成后请调用本工具把状态改为 done 再汇报——平台会更新任务栏并通知委派人安排后续',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,

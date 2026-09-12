@@ -49,8 +49,8 @@
 | GET | /api/projects/:pid/artifacts | manifest 列表 |
 | GET | /api/projects/:pid/artifacts/:aid | 详情（文件清单/diff 摘要）|
 | POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 |
-| GET/POST | /api/projects/:pid/tasks | 任务列表/新建 |
-| PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）|
+| GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）|
+| PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
 | GET | /api/projects/:pid/approvals?status=pending | 审批列表 |
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 {decision, reason?} |
 | GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
@@ -80,7 +80,7 @@
 { type:"message.commit", payload:{sessionId, seq} }                 // 该消息落盘完成
 { type:"agent.state", payload:{instanceId, state, sessionId} }
 { type:"team.updated", payload:{instanceId, enabled, …} }            // 实例停用/启用（D14-9）
-{ type:"task.updated", payload:{taskId, state, assignee} }           // 任务变更（用户 UI / 甲模式工具）
+{ type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
 { type:"event.appended", payload:{sessionId, seq, kind}}            // tool/artifact/approval 等事件
 { type:"approval.requested", payload:{approval:…}}
 { type:"meeting.event", payload:{meetingId, kind, …}}              // 轮次/决策点/结束

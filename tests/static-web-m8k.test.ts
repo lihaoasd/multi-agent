@@ -77,6 +77,18 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(body).toContain('question.answered')
   })
 
+  it('任务栏面板：右栏入口 + 弹窗 + WS task.updated 刷新', async () => {
+    const index = await ready().inject({ method: 'GET', url: '/' })
+    expect(String(index.body)).toContain('task-board')
+    expect(String(index.body)).toContain('btn-task-board')
+    const js = await ready().inject({ method: 'GET', url: '/app.js' })
+    const body = String(js.body)
+    expect(body).toContain('renderTaskBoard')
+    expect(body).toContain('handleTaskPush')
+    expect(body).toContain('task.updated')
+    expect(body).toContain('待领取')
+  })
+
   it('未提供 webDir 时不注册静态托管（测试注入用），API 仍可用', async () => {
     const config = loadConfig({ dataDir: join(base, 'data2') }, base)
     config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]

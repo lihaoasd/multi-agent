@@ -165,10 +165,13 @@ agent_haness/                    # 平台仓库
   "creator": "user | pm_1", "assignee": "dev_1",
   "state": "todo|in_progress|done|blocked|terminated", "sessionId": "u_dev_1",
   "artifactIds": [], "ts": "…" }
-// 状态流转：MVP 默认由用户经 UI 驱动（乙）；甲模式由 task_update 工具驱动（D15）。
-// terminated（D17-①）= 用户显式终止：存在未结算改动时先结算为一条 code artifact 快照再置本状态（可回退）。
-// 激活规则（D17-①，修订 D16-④）：每 Agent 至多 1 个 in_progress；已有 in_progress 时新任务不可置位（无自动回退），
-//   槽位仅由「任务完成（用户确认 done）」或「用户终止（terminated，先结算未结算改动）」释放。
+// 状态流转（2026-09-12 任务栏）：todo=已发布·待领取 → 受派人 task_claim 领取 → in_progress
+//   → 受派人 task_update 汇报 done/blocked/terminated；用户与委派人(creator)、甲模式协调者可干预。
+// 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/blocked/terminated = 通知委派人安排后续。
+// 状态变化广播 WS task.updated，任务栏面板实时刷新。
+// terminated（D17-①）= 显式终止：存在未结算改动时先结算为一条 code artifact 快照再置本状态（可回退）。
+// 激活规则（D17-①，修订 D16-④）：每 Agent 至多 1 个 in_progress；已有 in_progress 时**领取/置位被拒**（ERR_CONFLICT，
+//   不静默排队开工）；槽位由 done/terminated 释放，释放后平台**只通知**下一条待领取任务，由受派人自行 claim。
 
 // approval（跨进程重启保持 pending；用户决定落盘但不自动回放执行原动作，见 agent-runtime §7）
 { "id": "ap_…", "kind": "command|submit|rollback",  // B2：回退审批也入此表

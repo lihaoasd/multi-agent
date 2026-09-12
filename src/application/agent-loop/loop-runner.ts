@@ -33,6 +33,14 @@ export interface ActiveTask {
   desc: string
 }
 
+/** 待领取任务（任务栏上派给我、尚未领取）。 */
+export interface PendingTask {
+  id: string
+  title: string
+  desc: string
+  creator: string
+}
+
 /** 工具运行时钩子（由组合根注入；缺省则回合不启用工具）。 */
 export interface ToolRuntimeHook {
   /** 该会话可用工具（角色白名单 ∩ 注册表 ∩ availableIn） */
@@ -53,6 +61,8 @@ export interface ToolRuntimeHook {
   ) => Promise<string | null>
   /** 当前激活任务（in_progress 且属本会话） */
   activeTask?: (ctx: TurnContext) => Promise<ActiveTask | null>
+  /** 待领取任务（任务栏上派给我、尚未领取的；用于 [待领取任务] 提示块） */
+  pendingTasks?: (ctx: TurnContext) => Promise<PendingTask[]>
   /** 单回合最多工具步数（缺省 6） */
   maxSteps?: number
 }
@@ -130,8 +140,15 @@ export class AgentLoopRunner {
     const turnId = `${ctx.sessionId}:${turn}`
 
     const activeTask = await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)
+    const pendingTasks = await this.opts.toolRuntime?.pendingTasks?.(ctx).catch(() => null)
     const tools = this.opts.toolRuntime?.listTools(ctx, sessionType) ?? []
-    const system = this.buildSystemPrompt(ctx, sessionType, activeTask ?? null, tools)
+    const system = this.buildSystemPrompt(
+      ctx,
+      sessionType,
+      activeTask ?? null,
+      pendingTasks ?? [],
+      tools,
+    )
     const history = await this.buildHistory(ctx)
     await store.appendEvent(meta, {
       kind: 'turn_start',
@@ -429,6 +446,7 @@ export class AgentLoopRunner {
     ctx: TurnContext,
     sessionType: string,
     activeTask: ActiveTask | null,
+    pendingTasks: PendingTask[],
     tools: ToolSchema[],
   ): string {
     const m = ctx.member
@@ -465,9 +483,26 @@ export class AgentLoopRunner {
       parts.push(
         `[当前任务] ${activeTask.id}「${activeTask.title}」（in_progress）` +
           (activeTask.desc ? `：${activeTask.desc}` : '') +
-          '\n纪律：任务做完后**必须**调用 task_update（state=done）上报状态，平台据此结算并在任务面板显示；' +
+          '\n纪律：任务做完后**必须**调用 task_update（state=done）上报状态，平台据此结算并**通知委派人安排后续**；' +
           '受阻时置 blocked 并说明原因；不要只在聊天里口头说完成。',
       )
+    }
+    if (pendingTasks.length) {
+      const hasClaim = tools.some((t) => t.name === 'task_claim')
+      const lines = [
+        `[待领取任务] 任务栏上有 ${pendingTasks.length} 条派给你的任务（待领取）：`,
+        ...pendingTasks.map(
+          (t) =>
+            `- ${t.id}「${t.title}」（委派人 ${t.creator}）${t.desc ? `：${t.desc.slice(0, 200)}` : ''}`,
+        ),
+      ]
+      lines.push(
+        hasClaim
+          ? '领取方式：调用 task_claim（可带 taskId；缺省领取最早的一条）——领取后状态变为进行中，你才开始执行。' +
+              '若手上还有进行中的任务或暂时接不了，请用 task_update 置 blocked 并说明原因，不要默默忽略。'
+          : '如需领取请告知用户，由用户协调。',
+      )
+      parts.push(lines.join('\n'))
     }
     const roster = this.buildTeamRoster(ctx, tools)
     if (roster) parts.push(roster)
@@ -507,25 +542,26 @@ export class AgentLoopRunner {
     const list = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
     const hasTool = tools.some((t) => t.name === 'task_assign')
     const lines = [
-      '[任务分派（甲模式已开启）] 当用户要求你拆解/安排/指派开发任务时：',
+      '[任务栏（甲模式已开启）] 当用户要求你拆解/安排/指派开发任务时：',
       '1. 先用自然语言说明你的安排（做什么、交给谁、为什么）；',
     ]
     if (hasTool) {
       lines.push(
-        '2. 然后调用 task_assign 工具逐个派单（assignee/title/desc/start），一次一个任务，可连续调用多个。',
+        '2. 然后调用 task_assign 工具逐个**发布任务到任务栏**（assignee/title/desc），一次一个任务，可连续调用多个。',
       )
     } else {
       lines.push(
         '2. 然后在回复末尾输出 JSON 数组（仅当无法调用工具时）：',
         '```json',
-        '[{"assignee":"dev_1","title":"实现登录接口","desc":"补充边界与验收说明","start":true}]',
+        '[{"assignee":"dev_1","title":"实现登录接口","desc":"补充边界与验收说明"}]',
         '```',
       )
     }
     lines.push(
       `3. 约束：assignee 必须来自可指派对象——${list}；不可捏造实例 id，也不要派给自己。`,
-      '4. start=true 表示创建后立即开工（受派者空闲时平台自动触发）；对方已有进行中任务时平台自动排队并说明。',
-      '5. 平台会给出真实登记结果，你无需虚构“已创建成功”。',
+      '4. 发布后平台会**通知受派人来领取**，对方 task_claim 领取后才开工——你不要承诺"已经开工"；',
+      '   对方完成/受阻时平台会通知你，届时你再安排后续（验收、派新任务、发起会议）。',
+      '5. 平台会给出真实登记结果，你无需虚构"已发布成功"。',
     )
     return lines.join('\n')
   }

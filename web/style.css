@@ -511,6 +511,83 @@ li.active {
   border-bottom: 1px dashed var(--line);
   padding: 6px 0;
 }
+/* 任务栏面板（发布 → 待领取 → 进行中 → 完成） */
+button.mini {
+  font-size: 12px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  border-radius: 6px;
+}
+.board-box {
+  width: min(1000px, 94vw);
+  max-height: 86vh;
+  overflow: auto;
+}
+.board-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.board-head h3 {
+  margin: 0;
+}
+.board-head .who {
+  flex: 1;
+}
+.board-body {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+.board-col {
+  flex: 1 1 180px;
+  min-width: 170px;
+  background: #f7f8fa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.board-col h5 {
+  margin: 2px 0 6px;
+  font-size: 13px;
+}
+.board-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 3px solid #999;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.board-card.state-todo {
+  border-left-color: #e0a800;
+}
+.board-card.state-in_progress {
+  border-left-color: #2f80ed;
+}
+.board-card.state-done {
+  border-left-color: #27ae60;
+}
+.board-card.state-blocked {
+  border-left-color: #e74c3c;
+}
+.board-card.state-terminated {
+  border-left-color: #7f8c8d;
+}
+.board-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.board-desc {
+  font-size: 12px;
+  color: #555;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  max-height: 60px;
+  overflow: hidden;
+}
 #toast {
   position: fixed;
   bottom: 20px;

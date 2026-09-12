@@ -279,6 +279,14 @@ function bindGlobal() {
   )
   $('#btn-meeting-create').addEventListener('click', createMeetingFromModal)
   $('#mt-host').addEventListener('change', renderMeetingMemberPicker)
+  // 任务栏面板（发布 → 待领取 → 进行中 → 已完成）
+  $('#btn-task-board').addEventListener('click', () => {
+    renderTaskBoard()
+    $('#task-board').classList.remove('hidden')
+  })
+  $('#btn-task-board-close').addEventListener('click', () =>
+    $('#task-board').classList.add('hidden'),
+  )
   // Esc 关闭弹窗；点击遮罩关闭
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -1043,6 +1051,19 @@ function handleQuestionPush(e) {
   scheduleRefreshAgents()
 }
 
+/**
+ * 任务栏推送（WS `task.updated`）：发布/领取/完成/受阻即时刷新任务栏；
+ * 完成/受阻/终止时 toast（用户作为委派人时的"通知"；Agent 委派人由平台唤醒安排后续）。
+ */
+function handleTaskPush(e) {
+  const p = e.payload ?? {}
+  const state = String(p.state ?? '')
+  if (state === 'done') toast(`任务「${p.title}」已完成（${p.assignee}）`)
+  else if (state === 'blocked') toast(`任务「${p.title}」受阻（${p.assignee}），可在任务栏查看`)
+  else if (state === 'terminated') toast(`任务「${p.title}」已终止（${p.assignee}）`)
+  scheduleRefreshPanels()
+}
+
 function senderName(sender) {
   if (!sender || sender === 'user') return '我'
   const iid = String(sender).replace(/^u_/, '')
@@ -1398,6 +1419,11 @@ function connectWs(pid) {
         handleQuestionPush(e)
         return
       }
+      // 任务栏推送：状态变化（发布/领取/完成/受阻）→ 刷新任务栏 + 完成/受阻给委派人提示
+      if (e.type === 'task.updated') {
+        handleTaskPush(e)
+        return
+      }
       if (e.sessionId && e.sessionId !== current.sessionId) {
         // 其它会话的事件（别的角色在各自会话里干活）当前不需要在界面上反映，直接忽略
         return
@@ -1741,24 +1767,41 @@ async function refreshPanels() {
   }
 }
 
-/** 任务状态中文名（任务面板用；状态由角色自己汇报）。 */
+/** 任务状态中文名（任务栏用；状态由角色自己汇报——todo=已发布待领取）。 */
 const TASK_STATE_ZH = {
-  todo: '排队',
+  todo: '待领取',
   in_progress: '进行中',
   done: '已完成',
   blocked: '受阻',
   terminated: '已终止',
 }
 
+/** 任务栏分组顺序（发布 → 领取 → 完成；受阻/终止单列）。 */
+const TASK_GROUPS = [
+  { state: 'todo', title: '待领取（已发布）' },
+  { state: 'in_progress', title: '进行中' },
+  { state: 'blocked', title: '受阻' },
+  { state: 'done', title: '已完成' },
+  { state: 'terminated', title: '已终止' },
+]
+
+/** 右栏任务栏摘要：状态计数 + 最近任务（完整视图在任务栏面板）。 */
 function renderTasks() {
   const ul = $('#task-list')
-  ul.innerHTML = ''
   const tasks = current.tasks ?? []
+  const count = $('#task-count')
+  if (count) {
+    const pending = tasks.filter((t) => t.state === 'todo').length
+    const active = tasks.filter((t) => t.state === 'in_progress').length
+    count.textContent = tasks.length ? `${pending} 待领取 / ${active} 进行中` : ''
+  }
+  ul.innerHTML = ''
   if (!tasks.length) {
     const li = document.createElement('div')
     li.className = 'empty-tip'
-    li.textContent = '（暂无任务）'
+    li.textContent = '（任务栏暂无任务；产品/项目经理在会话中发布后显示于此）'
     ul.appendChild(li)
+    renderTaskBoard()
     return
   }
   for (const t of tasks.slice(0, 12)) {
@@ -1769,16 +1812,79 @@ function renderTasks() {
     state.textContent = TASK_STATE_ZH[t.state] ?? t.state
     const title = document.createElement('span')
     title.textContent = `${t.title} → ${t.assignee}`
-    title.title = `${t.id}\n${t.desc ?? ''}`
+    title.title = `${t.id}\n委派人：${t.creator}\n${t.desc ?? ''}`
     li.appendChild(state)
     li.appendChild(title)
     ul.appendChild(li)
   }
-  // 状态由角色自己汇报（task_update / 会话里报告），用户只查看
+  // 状态由角色自己领取/汇报，用户只查看
   const tip = document.createElement('div')
   tip.className = 'empty-tip'
-  tip.textContent = '状态由角色自行汇报（开工/完成/受阻），你无需手动点击'
+  tip.textContent = '状态由角色自行领取/汇报（发布→领取→完成），你无需手动点击'
   ul.appendChild(tip)
+  renderTaskBoard()
+}
+
+/** 任务栏面板：按状态分组展示全部任务（只读）。 */
+function renderTaskBoard() {
+  const body = $('#task-board-body')
+  if (!body) return
+  const tasks = current.tasks ?? []
+  const stat = $('#task-board-stat')
+  if (stat) {
+    stat.textContent = tasks.length
+      ? `共 ${tasks.length} 条 · ` +
+        TASK_GROUPS.map(
+          (g) => `${TASK_STATE_ZH[g.state]} ${tasks.filter((t) => t.state === g.state).length}`,
+        ).join(' · ')
+      : '（暂无任务）'
+  }
+  body.innerHTML = ''
+  if (!tasks.length) {
+    body.innerHTML = '<div class="empty-tip">（暂无任务）</div>'
+    return
+  }
+  for (const g of TASK_GROUPS) {
+    const list = tasks.filter((t) => t.state === g.state)
+    if (!list.length) continue
+    const col = document.createElement('section')
+    col.className = 'board-col'
+    const h = document.createElement('h5')
+    h.textContent = `${g.title}（${list.length}）`
+    col.appendChild(h)
+    for (const t of list) {
+      const card = document.createElement('div')
+      card.className = `board-card state-${t.state}`
+      card.title = `${t.id}\n${t.desc ?? ''}`
+      const title = document.createElement('div')
+      title.className = 'board-title'
+      title.textContent = t.title
+      const meta = document.createElement('div')
+      meta.className = 'who'
+      meta.textContent = `${t.assignee} ← ${t.creator === 'user' ? '你' : t.creator} · ${fmtTime(t.updatedAt)}`
+      card.appendChild(title)
+      card.appendChild(meta)
+      if (t.desc) {
+        const desc = document.createElement('div')
+        desc.className = 'board-desc'
+        desc.textContent = t.desc
+        card.appendChild(desc)
+      }
+      col.appendChild(card)
+    }
+    body.appendChild(col)
+  }
+}
+
+/** 时间戳 → HH:MM（今天）或 MM-DD HH:MM。 */
+function fmtTime(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  const sameDay = new Date().toDateString() === d.toDateString()
+  return sameDay
+    ? `${p(d.getHours())}:${p(d.getMinutes())}`
+    : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 async function openAttentionModal() {

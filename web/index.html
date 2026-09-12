@@ -63,7 +63,10 @@
         </form>
       </section>
       <aside id="right">
-        <h4>任务</h4>
+        <h4>
+          任务栏 <span id="task-count" class="badge"></span>
+          <button type="button" id="btn-task-board" class="mini">打开面板</button>
+        </h4>
         <ul id="task-list"></ul>
         <h4>审批 <span id="approval-count" class="badge"></span></h4>
         <ul id="approval-list"></ul>
@@ -168,6 +171,22 @@
         <div class="row">
           <button id="btn-meeting-create" class="primary">发起并进入</button>
           <button id="btn-meeting-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 任务栏面板（发布 → 待领取 → 进行中 → 已完成；只读，状态由角色维护） -->
+    <div id="task-board" class="modal hidden">
+      <div class="modal-box card board-box">
+        <div class="board-head">
+          <h3>任务栏</h3>
+          <span id="task-board-stat" class="who"></span>
+          <button type="button" id="btn-task-board-close">关闭</button>
+        </div>
+        <div id="task-board-body" class="board-body"></div>
+        <div class="empty-tip">
+          任务由产品/项目经理在会话中发布（task_assign）→ 平台通知受派人 task_claim 领取 →
+          完成后受派人 task_update(done)，平台据此更新任务栏并通知委派人安排后续。
         </div>
       </div>
     </div>

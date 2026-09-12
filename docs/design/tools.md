@@ -60,15 +60,16 @@
 | `meeting_close` | 主持人总结并结束 | platform / none | ✅ | **meeting（仅主持人，H4 定稿）** |
 | `meeting_ask_user` | 请求用户拍板（question/options；会议转 blocked_waiting_user） | platform / none | — | **meeting（仅主持人，D18-①）** |
 | `task_view`/`task_list` | 查看任务（本人/项目） | platform / none | ✅ | user+meeting（**D15 默认关闭**） |
-| `task_assign` | 创建/指派任务（甲模式，PM） | platform / none | ✅ | user only（**D15 默认关闭**） |
-| `task_update` | 更新任务状态/汇报（甲模式） | platform / none | 分动作 | user only（**D15 默认关闭**） |
+| `task_assign` | **发布任务到任务栏**（甲模式，pm/product；平台随即通知受派人） | platform / none | ✅ | user only |
+| `task_claim` | **领取**任务栏上派给自己的任务（缺省领最早一条；todo→in_progress） | platform / none | ❌ | user only |
+| `task_update` | 更新任务状态/汇报（开工/完成/受阻/终止；done 后平台通知委派人） | platform / none | 分动作 | user only |
 
 说明：
 - `approval_request` 不列为模型工具：审批由执行器在工具命中 high/策略时自动产生（见 sandbox.md §5），Agent 无需也不能"替用户批准"。
 - **会议内（D14-⑩）**：产出与执行类一律不可用（ws_write/workdir_edit/cmd_run/artifact_*/approval_query/meeting_start）；可读：fs 读 workdir+ro://、ws_read 本人私有区、session_search、memory_search、memory_append(own)。
 - **可用根（B4 定稿）**：`fs_*` 的 allowedRoots=[workdir, ro://]（**不含私有区**，读本人私有区一律走 ws_read）；`ws_read`/`ws_write` allowedRoots=[ws-self]。loop runner 的工具可用性校验 = 角色白名单 × 会话类型 × allowedRoots × 主持人身份（H4），与 sandbox §3.2 的工具级可用根一致。
 - **主持人例外（H4 定稿 + D18-①）**：`meeting_advance/meeting_close/meeting_ask_user` 的 availableIn 语义 = `session.type=="meeting"` **且调用者是主持人**；loop runner 的可用性校验 = 白名单 × 会话类型 × 身份（主持人），不能只按会话类型过滤；`meeting_ask_user` 另受"同一时刻至多 1 个 pending 决策点"约束（meetings.md §5）。
-- **任务工具（D15）**：`task_*` 四工具已注册但**默认不出现在任何角色矩阵**（乙模式：任务由用户 UI 创建/流转）；config `task.assignByAgent: true` 开启甲模式后按模板授权（PM 可 assign、受派者可 update），用于 A/B 对比。
+- **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign/task_claim/task_update` 为**平台工具**，user 会话始终可用（不依赖角色模板快照）：`task_assign` 内部校验角色（仅 pm/product）→ 发布任务到任务栏（state=todo 待领取）+ 通知受派人；受派人 `task_claim` 领取（只能领自己的，槽位检查）→ in_progress；`task_update` 由受派人汇报，done/blocked/terminated 会通知委派人安排后续。状态变化同步推 WS `task.updated`。
 - 用户直接操作（右栏回退按钮、任务状态、停用实例等）不经工具注册表。
 
 ## 4. 角色模板 ↔ 工具默认矩阵（内置模板，可覆盖）

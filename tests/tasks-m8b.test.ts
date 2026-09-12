@@ -69,7 +69,7 @@ describe('任务系统（乙模式 + D17-①）', () => {
     expect(act.statusCode).toBe(200)
     expect(act.json().task.state).toBe('in_progress')
 
-    // 置 in_progress = 唤醒：受派者 user 会话出现系统唤醒消息且 Agent 完成一轮（turn_end）
+    // 置 in_progress = 唤醒：受派者 user 会话出现系统提示且 Agent 完成一轮（turn_end）
     const sid = `u_${dev}`
     const deadline = Date.now() + 8000
     for (;;) {
@@ -82,7 +82,7 @@ describe('任务系统（乙模式 + D17-①）', () => {
         (e: { kind: string; role?: string; content?: { text?: string } }) =>
           e.kind === 'message' &&
           e.role === 'user' &&
-          String(e.content?.text ?? '').includes('请开始执行任务'),
+          String(e.content?.text ?? '').includes('任务栏有任务待你领取'),
       )
       if (hasWake && evts.some((e: { kind: string }) => e.kind === 'turn_end')) break
       if (Date.now() > deadline) throw new Error('等待唤醒回合超时')
@@ -97,7 +97,7 @@ describe('任务系统（乙模式 + D17-①）', () => {
     expect(done.json().task.state).toBe('done')
   })
 
-  it('每 Agent 至多 1 in_progress：第二个任务排队；完成后平台自动接单', async () => {
+  it('每 Agent 至多 1 in_progress：第二个任务保持待领取；完成后平台通知领取下一条', async () => {
     const { pid, dev } = await setupProject()
     const mk = (title: string) =>
       ready().inject({
@@ -112,14 +112,9 @@ describe('任务系统（乙模式 + D17-①）', () => {
       url: `/api/projects/${pid}/tasks/${t1.id}`,
       payload: { state: 'in_progress' },
     })
-    // t2 置 in_progress 被拒（ERR_CONFLICT）
-    const bad = await ready().inject({
-      method: 'PATCH',
-      url: `/api/projects/${pid}/tasks/${t2.id}`,
-      payload: { state: 'in_progress' },
-    })
-    expect(bad.statusCode).toBe(409)
-    // 槽位释放（t1 完成）→ 平台自动把排队的 t2 置为 in_progress 并唤醒（不再永久卡 todo）
+    // 槽位被占：领取 t2 被拒（ERR_CONFLICT），且 status 字段走服务层校验
+    await expect(svc.tasks.claim(pid, dev, t2.id)).rejects.toThrow(/已有进行中任务/)
+    // t1 完成 → 平台**只通知**，不再自动开工（发布-领取制）
     await ready().inject({
       method: 'PATCH',
       url: `/api/projects/${pid}/tasks/${t1.id}`,
@@ -129,7 +124,11 @@ describe('任务系统（乙模式 + D17-①）', () => {
     const t2After = (list.json().tasks as Array<{ id: string; state: string }>).find(
       (x) => x.id === t2.id,
     )
-    expect(t2After!.state).toBe('in_progress')
+    expect(t2After!.state).toBe('todo') // 仍待领取，等受派人 claim
+    // 受派人自己领取 → in_progress
+    const claimed = await svc.tasks.claim(pid, dev)
+    expect(claimed.id).toBe(t2.id)
+    expect(claimed.state).toBe('in_progress')
   })
 
   it('terminated 仅用户可置、终态不可回退；done 非 user 被拒', async () => {

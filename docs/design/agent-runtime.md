@@ -128,7 +128,7 @@ loop 通用参数：`maxIterations`、`stepModelOverride`、`toolBudget`、`inte
 | meeting_advance / meeting_close | platform | none | 主持人**在其主持的会议会话内**推进议程/结束会议（tools.md §3 可用性规则） |
 | meeting_ask_user | platform | none | 主持人请求用户拍板（question/options，会议转 blocked_waiting_user；meeting 会话内**仅主持人**可调，D18-①） |
 
-> **任务工具（D15，甲能力默认关闭）**：`task_view`/`task_list`/`task_assign`/`task_update` 已在工具注册表实现，但默认**不启用**（乙模式：任务由用户 UI 创建/指派，Agent 经上下文注入获知任务；config `task.assignByAgent=false`）。开启后即甲模式（PM 可拆解直接指派，受派者正在执行用户指派任务时需用户确认），用于 A/B 对比。
+> **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign`/`task_claim`/`task_update` 作为**平台工具在 user 会话始终可用**（`PLATFORM_USER_TOOLS`）：`task_assign` 仅 pm/product 可调用（工具内校验角色），把任务**发布到任务栏**（`todo`=已发布·待领取）并通知受派人；受派人用 `task_claim` **领取**（只能领自己的、受单工槽位约束）后转 `in_progress`；`task_update` 汇报完成/受阻/终止，平台据此**通知委派人安排后续**。系统提示相应注入 `[待领取任务]`（引导 claim）、`[当前任务]`（要求 done 上报）与 `[任务栏（甲模式已开启）]`（pm/product 发布指引）。乙模式（`task.assignByAgent=false`）下 Agent 不能创建任务，任务由用户经 API/UI 发布。
 
 **审批默认（D13②）**：doc 提交需审批；code 提交（workdir_edit 聚合）无需审批留痕即可；高危命令需审批。`cmd_run` 风险判定、cwd 锁定、危险清单与审批桥规则见 [sandbox.md](sandbox.md) §5（本节不再重复）。
 **路径边界**：任何文件工具目标解析后必须落在「该 Agent 私有工作区 ∪ 项目工作目录」内（虚拟路径机制见 sandbox.md §3），否则拒绝并记 audit 事件（错误回注 agent 调整）；平台内置只读资源经 ro:// 显式开放。

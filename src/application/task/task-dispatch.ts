@@ -1,13 +1,12 @@
 /**
- * 任务分派（甲模式，2026-09-09）：产品/项目经理把任务派给团队成员。
+ * 任务分派（甲模式，2026-09-09；2026-09-12 改为"发布到任务栏 → 通知领取"）：
+ * 产品/项目经理把任务发布给团队成员，任务落 `todo`（任务栏·待领取）并通知受派人领取，
+ * 受派人用 `task_claim` 领取后才开工（不再由平台直接置 in_progress）。
  *
  * 两条入口，共用同一套校验与落库逻辑：
  *  1) **`task_assign` 工具**（推荐，function-calling）——模型直接调用，参数结构化，无解析风险；
  *  2) **回复里的 JSON 数组**（兼容文本协议）——历史模型习惯；解析容错（围栏内多余引号/说明、无围栏、
  *     多个数组、重复项去重），并且**解析失败时必然回执**（绝不再静默失败）。
- *
- * 派发语义：创建任务(todo) → start 未显式 false 且受派者槽位空闲时置 in_progress
- * → 触发既有"激活即唤醒"(D18-③)，受派者自动开工。
  */
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 import type { TaskService } from './task-service.js'
@@ -17,8 +16,6 @@ export interface TaskDispatchIntent {
   assignee: string
   title: string
   desc?: string
-  /** 缺省 true：创建后立即开工（受派者空闲时） */
-  start?: boolean
 }
 
 export interface ParseResult {
@@ -35,7 +32,6 @@ export interface DispatchItemResult {
   state?: 'todo' | 'in_progress'
   reason?: string
 }
-
 /** 单条派发的依赖（工具入口与文本入口共用）。 */
 export interface TaskAssignDeps {
   projectId: string
@@ -125,7 +121,6 @@ export function parseTaskIntents(text: string): ParseResult {
         assignee,
         title,
         desc: typeof e.desc === 'string' ? e.desc : undefined,
-        start: typeof e.start === 'boolean' ? e.start : true,
       })
     }
   }
@@ -138,7 +133,7 @@ export function looksLikeDispatchAttempt(text: string): boolean {
 }
 
 /**
- * 派发单条任务：校验受派者 → 创建(todo) → 按需激活(in_progress → 自动唤醒)。
+ * 发布单条任务到任务栏：校验受派人 → 创建(todo) + 通知领取（create() 内部完成）。
  * 返回逐项结果（失败也返回，由调用方汇总）。
  */
 export async function assignTaskFromIntent(
@@ -166,7 +161,6 @@ export async function assignTaskFromIntent(
       assignee: intent.assignee,
       title: intent.title.slice(0, 200),
       desc: (intent.desc ?? '').slice(0, 300),
-      start: intent.start,
     },
   })
 
@@ -179,30 +173,19 @@ export async function assignTaskFromIntent(
       assignee: intent.assignee,
       sessionId: `u_${intent.assignee}`,
     })
-    let state: 'todo' | 'in_progress' = 'todo'
-    let reason: string | undefined
-    if (intent.start !== false) {
-      try {
-        await deps.tasks.setState(deps.projectId, rec.id, 'in_progress', deps.actorId)
-        state = 'in_progress'
-      } catch (e) {
-        reason = e instanceof Error ? e.message : String(e)
-      }
-    }
     await deps.emitTool('tool_result', {
       tool: 'task_assign',
       taskId: rec.id,
       assignee: intent.assignee,
-      state,
-      reason: reason?.slice(0, 300),
+      state: rec.state,
     })
     return {
       taskId: rec.id,
       assignee: intent.assignee,
       title: intent.title,
       ok: true,
-      state,
-      reason,
+      state: 'todo',
+      reason: '已发布待领取',
     }
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
@@ -219,12 +202,10 @@ export async function assignTaskFromIntent(
 /** 逐项结果 → 面向用户的说明行。 */
 export function dispatchNoteFromResults(results: DispatchItemResult[]): string {
   const lines = results.map((r) => {
-    if (!r.ok) return `- ⚠️ 未创建「${r.title}」→ ${r.assignee}：${r.reason ?? '未知原因'}`
-    if (r.state === 'in_progress')
-      return `- ✅ 任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已开始执行）`
-    return `- ⏳ 任务 ${r.taskId}「${r.title}」→ ${r.assignee}（已排队 todo：${r.reason ?? '等待开工'}，可在任务面板点开工）`
+    if (!r.ok) return `- ⚠️ 未发布「${r.title}」→ ${r.assignee}：${r.reason ?? '未知原因'}`
+    return `- 📤 任务 ${r.taskId}「${r.title}」已发布到任务栏 → ${r.assignee}（待领取，已通知对方）`
   })
-  return `\n\n【系统 · 任务分派】\n${lines.join('\n')}`
+  return `\n\n【系统 · 任务栏】\n${lines.join('\n')}`
 }
 
 /**
