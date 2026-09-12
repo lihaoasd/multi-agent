@@ -12,7 +12,6 @@ let current = {
   pid: null,
   sessionId: null,
   team: [],
-  sessions: [],
   approvals: [],
   meetings: [],
   artifacts: [],
@@ -470,17 +469,14 @@ async function openProject(pid) {
   agentStatusTimer = setInterval(() => {
     scheduleRefreshAgents()
   }, 5000)
-  const [team, sessions] = await Promise.all([
-    api(`/projects/${pid}/team`),
-    api(`/projects/${pid}/sessions`),
-  ])
+  const team = await api(`/projects/${pid}/team`)
   current.team = team.team ?? []
-  current.sessions = sessions.sessions ?? []
   renderTeamNav()
   renderMeetingsNav()
   await refreshPanels()
-  const userSid = current.sessions.find((s) => s.type === 'user')?.id
-  if (userSid) await openSession(pid, userSid)
+  // 默认打开第一个角色的会话（不再依赖会话列表接口）
+  const first = current.team[0]
+  if (first) await openSession(pid, `u_${first.instanceId}`)
   else renderEmptyCenter('该项目暂无角色实例。请在左侧“团队”处点击 ＋添加 加入角色。')
 }
 
@@ -521,7 +517,6 @@ function renderTeamNav() {
   ul.innerHTML = ''
   for (const m of current.team) {
     const sid = `u_${m.instanceId}`
-    const s = current.sessions.find((x) => x.id === sid)
     const a = (current.agents ?? []).find((x) => x.instanceId === m.instanceId)
     const state = !m.enabled ? 'disabled' : (a?.state ?? 'idle')
     const li = document.createElement('li')
@@ -542,13 +537,6 @@ function renderTeamNav() {
     if (state === 'waiting') st.title = '有需要你处理的提问或审批：点击进入该角色会话'
     else if (a?.currentTask) st.title = `当前任务：${a.currentTask.title}`
     li.appendChild(st)
-
-    if (Number(s?.unread ?? 0) > 0) {
-      const b = document.createElement('span')
-      b.className = 'badge'
-      b.textContent = s.unread
-      li.appendChild(b)
-    }
 
     const toggle = document.createElement('button')
     toggle.className = 'ghost nav-action'
@@ -576,16 +564,6 @@ function renderTeamNav() {
     li.appendChild(toggle)
 
     li.addEventListener('click', async () => {
-      let target = current.sessions.find((x) => x.id === sid)
-      if (!target) {
-        const d = await api(`/projects/${current.pid}/sessions`).catch(() => null)
-        current.sessions = d?.sessions ?? current.sessions
-        target = current.sessions.find((x) => x.id === sid)
-      }
-      if (!target) {
-        toast('该角色还没有会话')
-        return
-      }
       await openSession(current.pid, sid)
     })
     ul.appendChild(li)
@@ -615,13 +593,6 @@ function renderMeetingsNav() {
     st.className = `badge state-${mt.state}`
     st.textContent = stateZh(mt.state)
     li.appendChild(st)
-    const s = current.sessions.find((x) => x.id === mt.id)
-    if (Number(s?.unread ?? 0) > 0) {
-      const b = document.createElement('span')
-      b.className = 'badge'
-      b.textContent = s.unread
-      li.appendChild(b)
-    }
     li.addEventListener('click', () => openSession(current.pid, mt.id))
     ul.appendChild(li)
   }
@@ -753,19 +724,14 @@ async function createMeetingFromModal() {
  * opts.keepSession=true 时保持当前打开的会话（停用/启用角色后不跳走）。
  */
 async function reloadProjectView(opts = {}) {
-  const [team, sessions] = await Promise.all([
-    api(`/projects/${current.pid}/team`),
-    api(`/projects/${current.pid}/sessions`),
-  ])
+  const team = await api(`/projects/${current.pid}/team`)
   current.team = team.team ?? []
-  current.sessions = sessions.sessions ?? []
   renderTeamNav()
   renderMeetingsNav()
   await refreshPanels()
   const keep = opts.keepSession ? current.sessionId : null
-  const target =
-    (keep && current.sessions.some((s) => s.id === keep) ? keep : null) ??
-    current.sessions.find((s) => s.type === 'user')?.id
+  const fallback = current.team[0] ? `u_${current.team[0].instanceId}` : null
+  const target = keep ?? fallback
   if (target) await openSession(current.pid, target)
   else renderEmptyCenter('该项目暂无会话。请在左侧“团队”处点击 ＋添加 加入角色。')
 }
@@ -904,11 +870,6 @@ async function openSession(pid, sid) {
   }
   // 已渲染到的最新 seq：用于过滤事件广播中的重复（已从历史渲染过的事件）
   current.lastRenderedSeq = lastSeq
-  // 打开即已读（读回执 → 未读清零）
-  await api(`/projects/${pid}/sessions/${sid}/read`, 'POST', { seq: lastSeq }).catch(
-    () => undefined,
-  )
-  current.seenSeq = lastSeq
   current.oldestSeq = oldest
   $('#load-old-wrap').classList.toggle('hidden', !oldest || oldest <= 1)
   const composer = $('#composer')
@@ -1405,9 +1366,7 @@ function connectWs(pid) {
     ws.onmessage = (evt) => {
       const e = JSON.parse(evt.data)
       if (e.sessionId && e.sessionId !== current.sessionId) {
-        // 其它会话：只有"落盘事件"才可能改变未读（流式分片不改变 lastSeq），
-        // 并且统一走合并刷新，避免每个分片打一次 HTTP（请求风暴）
-        if (e.type === 'event.appended' || e.type === 'message.commit') scheduleRefreshUnread()
+        // 其它会话的事件（别的角色在各自会话里干活）当前不需要在界面上反映，直接忽略
         return
       }
       if (e.type === 'message.chunk') {
@@ -1427,7 +1386,6 @@ function connectWs(pid) {
           streaming.answerBody.innerHTML = renderMarkdown(streaming.raw ?? '')
         }
         streaming = null
-        current.seenSeq = e.payload?.seq ?? current.seenSeq
         current.lastRenderedSeq = Math.max(current.lastRenderedSeq, Number(e.payload?.seq ?? 0))
         setTyping(false)
         setSendBusy(false)
@@ -1508,7 +1466,6 @@ function createCoalesced(delayMs, run) {
 }
 
 const scheduleRefreshPanels = createCoalesced(1200, () => refreshPanels())
-const scheduleRefreshUnread = createCoalesced(3000, () => refreshUnread())
 const scheduleRefreshAgents = createCoalesced(5000, () => refreshAgents())
 
 /** 会议事件中文名（会议会话里作为过程行展示）。 */
@@ -1553,16 +1510,6 @@ function appendMeetingEvent(p) {
   box.appendChild(div)
   scrollBottom()
   return div
-}
-
-// 刷新未读（团队/会议导航徽标）
-async function refreshUnread() {
-  if (!current.pid) return
-  const s = await api(`/projects/${current.pid}/sessions`).catch(() => null)
-  if (!s) return
-  current.sessions = s.sessions ?? []
-  renderTeamNav()
-  renderMeetingsNav()
 }
 
 async function sendMessage() {
