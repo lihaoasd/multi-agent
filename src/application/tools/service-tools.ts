@@ -446,7 +446,9 @@ export function registerServiceTools(deps: {
             ok: true,
             summary:
               `已领取任务 ${rec.id}「${rec.title}」→ 进行中（in_progress）` +
-              (rec.desc ? `；任务说明：${rec.desc.slice(0, 200)}` : ''),
+              (rec.desc ? `；任务说明：${rec.desc.slice(0, 200)}` : '') +
+              '。完成后必须调用 task_update(state=done, note=一句话完成总结)，' +
+              '并在回复里给用户一段完成总结（做了什么/产出文件/验证结果/遗留）',
           }
         } catch (e) {
           return {
@@ -469,7 +471,8 @@ export function registerServiceTools(deps: {
         name: 'task_update',
         description:
           '更新任务状态（默认作用于你当前的进行中任务）：in_progress 开工 / done 完成 / blocked 受阻 / todo 回队 / terminated 终止。' +
-          '完成后请调用本工具把状态改为 done 再汇报——平台会更新任务栏并通知委派人安排后续',
+          '**完成时务必带 note=一句话完成总结**（做了什么/产出文件/验证结果/遗留），平台会更新任务栏、' +
+          '把总结通知委派人，并在会话里作为完成总结展示给用户',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,
@@ -482,19 +485,31 @@ export function registerServiceTools(deps: {
               enum: ['todo', 'in_progress', 'done', 'blocked', 'terminated'],
               description: '目标状态',
             },
-            note: { type: 'string', description: '可选说明（写入会话汇报用）' },
+            note: { type: 'string', description: '说明：done 时为完成总结；blocked 时为受阻原因' },
           },
           required: ['state'],
         },
       },
       async (args, env) => {
-        const taskId =
-          (args.taskId === undefined ? '' : String(args.taskId).trim()) || env.taskId || ''
+        const wanted = args.taskId === undefined ? '' : String(args.taskId).trim()
+        const note = args.note === undefined ? undefined : String(args.note)
+        const myTasks = await tasks.list(env.projectId, { assignee: env.instanceId })
+        // 默认任务：显式 taskId > 当前进行中（dispatcher 注入）委托 > 我的最旧待领取（补领取后完成）
+        let taskId = wanted || env.taskId || ''
+        let autoClaimed = false
+        if (!taskId) {
+          const active = myTasks.find((t) => t.state === 'in_progress')
+          const queued = myTasks
+            .filter((t) => t.state === 'todo')
+            .sort((a, b) => (a.ts < b.ts ? -1 : 1))[0]
+          if (active) taskId = active.id
+          else if (queued) taskId = queued.id
+        }
         if (!taskId) {
           return {
             ok: false,
             code: 'ERR_VALIDATION',
-            reason: '未指定 taskId，且当前没有进行中的任务（请先由协调者派单）',
+            reason: '未指定 taskId，且当前没有进行中/待领取的任务（请先由协调者派单）',
           }
         }
         const state = String(args.state ?? '').trim() as TaskState
@@ -506,8 +521,31 @@ export function registerServiceTools(deps: {
           }
         }
         try {
-          const rec = await tasks.setState(env.projectId, taskId, state, env.instanceId)
-          return { ok: true, summary: `任务 ${rec.id}「${rec.title}」状态 → ${rec.state}` }
+          // 角色没先 claim 就直接上报（常见：做完才想起来）→ 先补领取再流转
+          const before = myTasks.find((t) => t.id === taskId)
+          if (before && before.state === 'todo' && before.assignee === env.instanceId) {
+            await tasks.claim(env.projectId, env.instanceId, taskId)
+            autoClaimed = true
+          }
+          const rec = await tasks.setState(env.projectId, taskId, state, env.instanceId, note)
+          const zh: Record<string, string> = {
+            todo: '待领取',
+            in_progress: '进行中',
+            done: '已完成',
+            blocked: '受阻',
+            terminated: '已终止',
+          }
+          return {
+            ok: true,
+            summary:
+              `任务 ${rec.id}「${rec.title}」状态 → ${zh[rec.state] ?? rec.state}` +
+              (autoClaimed ? '（此前未领取，已自动补领取）' : '') +
+              (rec.state === 'done'
+                ? note?.trim()
+                  ? `；完成总结已记录并通知委派人：${note.trim().slice(0, 120)}`
+                  : '；**未提供完成总结**：请在回复里给用户一段总结（做了什么/产出文件/验证结果）'
+                : ''),
+          }
         } catch (e) {
           return {
             ok: false,

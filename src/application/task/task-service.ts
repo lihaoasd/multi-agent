@@ -40,6 +40,8 @@ export interface TaskRecord {
   /** 执行会话（受派者 user 会话 u_<iid>）；sourceRef=来源（会议/产出物）见 data-storage §7 */
   sessionId: string
   artifactIds: string[]
+  /** 最近一次状态变更时受派人给的说明（完成总结/受阻原因），2026-09-12 */
+  resultNote?: string
   ts: string
   updatedAt: string
 }
@@ -247,6 +249,8 @@ export class TaskService {
     taskId: string,
     to: TaskState,
     actor: 'user' | string = 'user',
+    /** 受派人/用户的说明：done=完成总结，blocked=受阻原因（落库并随通知带给委派人） */
+    note?: string,
   ): Promise<TaskRecord> {
     const next = await this.withLock(projectId, async () => {
       const all = await this.readAll(projectId)
@@ -266,7 +270,13 @@ export class TaskService {
           )
         }
       }
-      const updated: TaskRecord = { ...cur, state: to, updatedAt: nowIso() }
+      const trimmed = note?.trim()
+      const updated: TaskRecord = {
+        ...cur,
+        state: to,
+        updatedAt: nowIso(),
+        ...(trimmed ? { resultNote: trimmed } : {}),
+      }
       await this.rewrite(projectId, updated)
       return { cur, next: updated }
     })
@@ -355,6 +365,7 @@ export class TaskService {
       assignee: rec.assignee,
       creator: rec.creator,
       title: rec.title,
+      resultNote: rec.resultNote ?? '',
     })
   }
 

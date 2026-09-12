@@ -113,6 +113,13 @@ const MAX_REASONING_CHARS = 20000
 const MAX_TOOL_RESULT_CHARS = 8000
 /** 允许直接派发任务的角色（项目经理/产品经理） */
 const DISPATCH_ROLES = new Set(['pm', 'product'])
+/** 步数用尽后的收尾回合只允许这些"结项/沟通"工具（不再开新工作） */
+const CLOSURE_TOOLS = new Set(['task_update', 'task_claim', 'artifact_submit', 'ask_user'])
+/** 收尾回合的提示（步数用尽时注入，确保任务状态与用户总结不会因为预算耗尽而丢掉） */
+const WRAPUP_PROMPT =
+  '【平台】本回合工具步数已达上限，现在进入**收尾**：不要开始新工作。请立刻完成两件事：' +
+  '① 若你有进行中的任务且本轮已完成，调用 task_update（taskId 可省略，state=done，note=一句话完成总结）；' +
+  '② 用一段话给出**面向用户的完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。'
 
 export class AgentLoopRunner {
   constructor(private readonly opts: AgentLoopRunnerOptions) {}
@@ -206,41 +213,15 @@ export class AgentLoopRunner {
     let thoughtCount = 0
     let failureText = ''
     let lastSeq = 0
-    const maxSteps = Math.max(1, this.opts.toolRuntime?.maxSteps ?? 6)
+    const maxSteps = Math.max(1, this.opts.toolRuntime?.maxSteps ?? 10)
+    /** 本回合调用过的工具名（用于回合末兜底提示：任务状态是否上报） */
+    const calledTools = new Set<string>()
+    let toolCallCount = 0
+    let exhausted = false
     try {
       for (let step = 0; step < maxSteps; step++) {
-        let stepText = ''
-        let stepReasoning = ''
-        const calls = new Map<number, { id?: string; name?: string; args: string }>()
-        for await (const item of this.opts.gateway.streamChat({
-          providerId: ctx.member.model,
-          messages: convo,
-          tools: tools.length ? tools : undefined,
-        })) {
-          if (item.content) {
-            stepText += item.content
-            this.opts.bus.emitChunk(ctx.projectId, ctx.sessionId, {
-              turnId,
-              delta: item.content,
-              sender: ctx.member.instanceId,
-            })
-          }
-          if (item.reasoning) {
-            stepReasoning += item.reasoning
-            this.opts.bus.emitThoughtChunk(ctx.projectId, ctx.sessionId, {
-              turnId,
-              delta: item.reasoning,
-              sender: ctx.member.instanceId,
-            })
-          }
-          if (item.toolCall) {
-            const cur = calls.get(item.toolCall.index) ?? { args: '' }
-            if (item.toolCall.id) cur.id = item.toolCall.id
-            if (item.toolCall.name) cur.name = item.toolCall.name
-            if (item.toolCall.argumentsDelta) cur.args += item.toolCall.argumentsDelta
-            calls.set(item.toolCall.index, cur)
-          }
-        }
+        const streamed = await this.streamStep(ctx, convo, turnId, tools)
+        const { stepText, stepReasoning, calls } = streamed
         // 步骤边界：按时间顺序落盘本步的「思考 → 正文」。
         // 有工具调用的步骤必须立即落盘，否则刷新后（历史按 seq 回放）顺序会与实时不一致。
         if (stepReasoning.trim()) {
@@ -256,65 +237,26 @@ export class AgentLoopRunner {
           flushedTexts.push(stepText.trim())
         }
 
-        const toolCalls: ChatToolCall[] = []
-        const toolMessages: ChatMessage[] = []
         const ordered = [...calls.entries()].sort((a, b) => a[0] - b[0])
-        for (const [index, cur] of ordered) {
-          const name = cur.name ?? ''
-          const id = cur.id ?? `call_${turn}_${index}`
-          toolCalls.push({ id, name, arguments: cur.args || '{}' })
-          const args = parseToolArgs(cur.args)
-          await this.appendAudit(ctx, meta, 'tool_call', {
-            callId: id,
-            tool: name,
-            input: summarizeValue(args),
-          })
-          let result: ToolResult
-          if (!args) {
-            result = { ok: false, code: ErrorCodes.VALIDATION, reason: '工具参数不是合法 JSON' }
-          } else {
-            try {
-              result = await this.opts.toolRuntime.exec(ctx, sessionType, name, args)
-            } catch (e) {
-              result = {
-                ok: false,
-                code: e instanceof AppError ? e.code : ErrorCodes.INTERNAL,
-                reason: String(e instanceof Error ? e.message : e),
-              }
-            }
-          }
-          if (
-            !result.ok &&
-            result.code === 'CMD_APPROVAL_REQUIRED' &&
-            this.opts.toolRuntime.requestApproval
-          ) {
-            const approvalId = await this.opts.toolRuntime
-              .requestApproval(ctx, name, args ?? {}, result)
-              .catch(() => null)
-            if (approvalId) {
-              result = {
-                ok: false,
-                code: 'APPROVAL_PENDING',
-                reason: `已提交审批 ${approvalId}，等待用户批准后由平台执行；请向用户说明并继续其余工作`,
-                approvalId,
-              }
-            }
-          }
-          await this.appendAudit(ctx, meta, 'tool_result', {
-            callId: id,
-            tool: name,
-            ...(result.ok
-              ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
-              : { ok: false, code: result.code, reason: cut(result.reason, 300) }),
-          })
-          toolMessages.push({
-            role: 'tool',
-            toolCallId: id,
-            content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
-          })
-        }
+        const { toolCalls, toolMessages } = await this.execToolCalls(
+          ctx,
+          meta,
+          turnId,
+          ordered,
+          sessionType,
+          calledTools,
+        )
+        toolCallCount += toolCalls.length
         convo.push({ role: 'assistant', content: stepText, toolCalls })
         convo.push(...toolMessages)
+        if (step === maxSteps - 1) exhausted = true
+      }
+
+      // 步数用尽 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不因预算耗尽而丢
+      if (exhausted && this.opts.toolRuntime) {
+        const wrap = await this.runWrapUp(ctx, meta, turnId, sessionType, convo, tools, calledTools)
+        toolCallCount += wrap.toolCalls
+        if (wrap.text) pendingText = pendingText ? `${pendingText}\n${wrap.text}` : wrap.text
       }
     } catch (err) {
       // 模型失败：记录 error 事件并回退降级文本（agent-runtime §7）
@@ -376,6 +318,17 @@ export class AgentLoopRunner {
       turnId,
     })
 
+    // 回合末兜底：干了活但没上报任务状态 → 追一条系统提示（用户看得见，下一回合模型也看得到）
+    await this.remindUnreportedTask(
+      ctx,
+      meta,
+      turnId,
+      activeTask ?? null,
+      pendingTasks ?? [],
+      calledTools,
+      toolCallCount,
+    )
+
     await store.appendEvent(meta, {
       kind: 'turn_end',
       sender: ctx.member.instanceId,
@@ -396,11 +349,199 @@ export class AgentLoopRunner {
     )
   }
 
+  /** 单步模型流：累积正文/思考/工具调用，并实时推 chunk（返回后由调用方落盘）。 */
+  private async streamStep(
+    ctx: TurnContext,
+    convo: ChatMessage[],
+    turnId: string,
+    tools: ToolSchema[],
+  ): Promise<{
+    stepText: string
+    stepReasoning: string
+    calls: Map<number, { id?: string; name?: string; args: string }>
+  }> {
+    let stepText = ''
+    let stepReasoning = ''
+    const calls = new Map<number, { id?: string; name?: string; args: string }>()
+    for await (const item of this.opts.gateway.streamChat({
+      providerId: ctx.member.model,
+      messages: convo,
+      tools: tools.length ? tools : undefined,
+    })) {
+      if (item.content) {
+        stepText += item.content
+        this.opts.bus.emitChunk(ctx.projectId, ctx.sessionId, {
+          turnId,
+          delta: item.content,
+          sender: ctx.member.instanceId,
+        })
+      }
+      if (item.reasoning) {
+        stepReasoning += item.reasoning
+        this.opts.bus.emitThoughtChunk(ctx.projectId, ctx.sessionId, {
+          turnId,
+          delta: item.reasoning,
+          sender: ctx.member.instanceId,
+        })
+      }
+      if (item.toolCall) {
+        const cur = calls.get(item.toolCall.index) ?? { args: '' }
+        if (item.toolCall.id) cur.id = item.toolCall.id
+        if (item.toolCall.name) cur.name = item.toolCall.name
+        if (item.toolCall.argumentsDelta) cur.args += item.toolCall.argumentsDelta
+        calls.set(item.toolCall.index, cur)
+      }
+    }
+    return { stepText, stepReasoning, calls }
+  }
+
+  /** 执行一步里的工具调用（审计 + 审批桥 + 结果回注），并登记调用过的工具名。 */
+  private async execToolCalls(
+    ctx: TurnContext,
+    meta: SessionMeta,
+    turn: string | number,
+    ordered: Array<[number, { id?: string; name?: string; args: string }]>,
+    sessionType: string,
+    calledTools: Set<string>,
+  ): Promise<{ toolCalls: ChatToolCall[]; toolMessages: ChatMessage[] }> {
+    const toolCalls: ChatToolCall[] = []
+    const toolMessages: ChatMessage[] = []
+    for (const [index, cur] of ordered) {
+      const name = cur.name ?? ''
+      const id = cur.id ?? `call_${String(turn)}_${index}`
+      toolCalls.push({ id, name, arguments: cur.args || '{}' })
+      calledTools.add(name)
+      const args = parseToolArgs(cur.args)
+      await this.appendAudit(ctx, meta, 'tool_call', {
+        callId: id,
+        tool: name,
+        input: summarizeValue(args),
+      })
+      let result: ToolResult
+      if (!args) {
+        result = { ok: false, code: ErrorCodes.VALIDATION, reason: '工具参数不是合法 JSON' }
+      } else {
+        try {
+          result = await this.opts.toolRuntime!.exec(ctx, sessionType, name, args)
+        } catch (e) {
+          result = {
+            ok: false,
+            code: e instanceof AppError ? e.code : ErrorCodes.INTERNAL,
+            reason: String(e instanceof Error ? e.message : e),
+          }
+        }
+      }
+      if (
+        !result.ok &&
+        result.code === 'CMD_APPROVAL_REQUIRED' &&
+        this.opts.toolRuntime?.requestApproval
+      ) {
+        const approvalId = await this.opts.toolRuntime
+          .requestApproval(ctx, name, args ?? {}, result)
+          .catch(() => null)
+        if (approvalId) {
+          result = {
+            ok: false,
+            code: 'APPROVAL_PENDING',
+            reason: `已提交审批 ${approvalId}，等待用户批准后由平台执行；请向用户说明并继续其余工作`,
+            approvalId,
+          }
+        }
+      }
+      await this.appendAudit(ctx, meta, 'tool_result', {
+        callId: id,
+        tool: name,
+        ...(result.ok
+          ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
+          : { ok: false, code: result.code, reason: cut(result.reason, 300) }),
+      })
+      toolMessages.push({
+        role: 'tool',
+        toolCallId: id,
+        content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
+      })
+    }
+    return { toolCalls, toolMessages }
+  }
+
+  /**
+   * 收尾回合（步数用尽时）：只暴露"结项/沟通"工具 + 明确指令，
+   * 保证任务状态上报与面向用户的完成总结不因工具预算耗尽而丢失。
+   */
+  private async runWrapUp(
+    ctx: TurnContext,
+    meta: SessionMeta,
+    turnId: string,
+    sessionType: string,
+    convo: ChatMessage[],
+    tools: ToolSchema[],
+    calledTools: Set<string>,
+  ): Promise<{ text: string; toolCalls: number }> {
+    const closure = tools.filter((t) => CLOSURE_TOOLS.has(t.name))
+    convo.push({ role: 'system', content: WRAPUP_PROMPT })
+    const { stepText, stepReasoning, calls } = await this.streamStep(ctx, convo, turnId, closure)
+    if (stepReasoning.trim()) await this.appendThought(ctx, meta, stepReasoning, turnId)
+    let count = 0
+    if (calls.size && this.opts.toolRuntime) {
+      const ordered = [...calls.entries()].sort((a, b) => a[0] - b[0])
+      const r = await this.execToolCalls(
+        ctx,
+        meta,
+        `${String(turnId)}-wrap`,
+        ordered,
+        sessionType,
+        calledTools,
+      )
+      count = r.toolCalls.length
+    }
+    return { text: stepText.trim(), toolCalls: count }
+  }
+
+  /**
+   * 回合末兜底提示（写入会话的**系统消息**，前端显示为居中系统说明）：
+   * 本回合干了活但没上报任务状态时，提醒"完成后要 task_update(done, note=总结)"，
+   * 避免任务永久卡在「进行中」、用户也拿不到完成总结。
+   */
+  private async remindUnreportedTask(
+    ctx: TurnContext,
+    meta: SessionMeta,
+    turnId: string,
+    activeTask: ActiveTask | null,
+    pendingTasks: PendingTask[],
+    calledTools: Set<string>,
+    toolCallCount: number,
+  ): Promise<void> {
+    if (toolCallCount === 0 || calledTools.has('task_update')) return
+    const notes: string[] = []
+    if (activeTask) {
+      notes.push(
+        `【系统】任务 ${activeTask.id}「${activeTask.title}」仍为进行中。若本轮已完成，` +
+          '请调用 task_update(state=done, note=一句话完成总结) 上报——平台会更新任务栏并通知委派人；' +
+          '若仍在进行，可忽略本提示。',
+      )
+    }
+    if (!calledTools.has('task_claim') && pendingTasks.length) {
+      const first = pendingTasks[0]!
+      notes.push(
+        `【系统】任务栏上还有待你领取的任务 ${first.id}「${first.title}」。` +
+          '如果你已经做完了这件事，请先 task_claim 领取，再 task_update(state=done, note=完成总结)。',
+      )
+    }
+    if (!notes.length) return
+    const evt = await this.opts.store.appendEvent(meta, {
+      kind: 'message',
+      role: 'user',
+      sender: 'system',
+      content: { text: notes.join('\n'), blocks: [] },
+      payload: { turnId, system: true },
+    })
+    this.opts.bus.emitLogEvent(ctx.projectId, evt)
+  }
+
   /** 思考事件落盘（先盘后推）；返回事件 seq。 */
   private async appendThought(
     ctx: TurnContext,
-    meta: SessionMeta,
-    text: string,
+    meta: SessionMeta,    text: string,
     turnId: string,
   ): Promise<number> {
     const evt = await this.opts.store.appendEvent(meta, {
@@ -532,8 +673,11 @@ export class AgentLoopRunner {
       parts.push(
         `[当前任务] ${activeTask.id}「${activeTask.title}」（in_progress）` +
           (activeTask.desc ? `：${activeTask.desc}` : '') +
-          '\n纪律：任务做完后**必须**调用 task_update（state=done）上报状态，平台据此结算并**通知委派人安排后续**；' +
-          '受阻时置 blocked 并说明原因；不要只在聊天里口头说完成。',
+          '\n纪律（收尾三件套，务必在任务做完时一次做完）：' +
+          '① 需要交付文件时用 artifact_submit 登记；' +
+          '② 调用 task_update（state=done，**note=一句话完成总结**）上报状态——平台据此更新任务栏并**通知委派人**；' +
+          '③ 在回复里给用户一段**完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。' +
+          '\n受阻时置 blocked 并说明原因；不要只在聊天里口头说完成，也不要做到一半就结束回合。',
       )
     }
     if (pendingTasks.length) {
@@ -548,6 +692,7 @@ export class AgentLoopRunner {
       lines.push(
         hasClaim
           ? '领取方式：调用 task_claim（可带 taskId；缺省领取最早的一条）——领取后状态变为进行中，你才开始执行。' +
+              '完成后必须 task_update（state=done，note=完成总结）并在回复里给用户一段完成总结。' +
               '若手上还有进行中的任务或暂时接不了，请用 task_update 置 blocked 并说明原因，不要默默忽略。'
           : '如需领取请告知用户，由用户协调。',
       )

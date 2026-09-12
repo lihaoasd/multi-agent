@@ -1059,8 +1059,10 @@ function handleQuestionPush(e) {
 function handleTaskPush(e) {
   const p = e.payload ?? {}
   const state = String(p.state ?? '')
-  if (state === 'done') toast(`任务「${p.title}」已完成（${p.assignee}）`)
-  else if (state === 'blocked') toast(`任务「${p.title}」受阻（${p.assignee}），可在任务栏查看`)
+  const note = String(p.resultNote ?? '').trim()
+  const tail = note ? `：${note.slice(0, 60)}${note.length > 60 ? '…' : ''}` : ''
+  if (state === 'done') toast(`任务「${p.title}」已完成（${p.assignee}）${tail}`)
+  else if (state === 'blocked') toast(`任务「${p.title}」受阻（${p.assignee}）${tail ? tail : '，可在任务栏查看'}`)
   else if (state === 'terminated') toast(`任务「${p.title}」已终止（${p.assignee}）`)
   scheduleRefreshPanels()
 }
@@ -1878,6 +1880,13 @@ function renderTaskBoard() {
         card.appendChild(badge)
       }
       card.appendChild(meta)
+      // 完成总结 / 受阻原因（任务完成时角色给的说明）——用户由此知道"做完了什么"
+      if (t.resultNote) {
+        const summ = document.createElement('div')
+        summ.className = 'board-summary'
+        summ.textContent = t.resultNote
+        card.appendChild(summ)
+      }
       if (t.desc) {
         const desc = document.createElement('div')
         desc.className = 'board-desc'

@@ -169,7 +169,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
           `【系统】任务栏有任务待你领取 ${task.id}「${task.title}」` +
             (task.desc ? `：${task.desc.slice(0, 300)}` : '') +
             `（委派人：${task.creator}）。请调用 task_claim 领取并开工；` +
-            '若暂时不能接，请用 task_update 置 blocked 并说明原因。',
+            '完成后必须调用 task_update(state=done, note=一句话完成总结)，并在回复里给用户一段完成总结' +
+            '（做了什么/产出文件/验证结果/遗留）。若暂时不能接，请用 task_update 置 blocked 并说明原因。',
           { system: true },
         )
         .catch(() => undefined)
@@ -178,12 +179,14 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     notifyDelegator: async (pid, task, event, by) => {
       if (task.creator === 'user' || task.creator === task.assignee) return
       const zh = event === 'done' ? '已完成' : event === 'blocked' ? '受阻' : '已终止'
+      const note = task.resultNote?.trim()
       await sessionService
         .sendUserMessage(
           pid,
           `u_${task.creator}`,
           `【系统】你委派的任务 ${task.id}「${task.title}」${zh}（受派人 ${by}）。` +
-            '请据此安排后续：验收产出、派发下一步任务，或发起会议对齐。',
+            (note ? `\n受派人总结：${note.slice(0, 500)}` : '') +
+            '\n请据此安排后续：验收产出、派发下一步任务，或发起会议对齐。',
           { system: true },
         )
         .catch(() => undefined)
@@ -331,7 +334,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
           })),
       }
     },
-    maxSteps: 6,
+    maxSteps: 10,
   }
 
   // 甲模式任务分派钩子（2026-09-09）：config.task.assignByAgent 时由 pm/product 的

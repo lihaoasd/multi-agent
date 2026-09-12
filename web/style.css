@@ -595,6 +595,22 @@ button.mini {
   max-height: 60px;
   overflow: hidden;
 }
+/* 完成总结 / 受阻原因（角色上报时给的说明） */
+.board-summary {
+  font-size: 12px;
+  color: #1f6f43;
+  background: #eefaf1;
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  max-height: 72px;
+  overflow: hidden;
+}
+.board-card.state-blocked .board-summary {
+  color: #a03325;
+  background: #fdeeec;
+}
 #toast {
   position: fixed;
   bottom: 20px;
