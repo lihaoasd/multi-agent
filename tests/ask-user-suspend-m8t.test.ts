@@ -270,7 +270,7 @@ describe('ask_user：挂起等待用户决策 + 推送时序', () => {
     expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1)
   }, 30000)
 
-  it('已有待答提问时再次提问 → 软挂起（ok+suspend），不报错、不再执行任务', async () => {
+  it('已有待答提问时再次提问 → 进排队队列（ok+suspend），不报错、不再执行任务', async () => {
     const { pid, dev } = await setup()
     // 先造一个待答提问（模拟上一轮问过、用户还没回答）
     await svc.questions.ask({
@@ -332,8 +332,10 @@ describe('ask_user：挂起等待用户决策 + 推送时序', () => {
     }>
     const result = evts.find((e) => e.kind === 'tool_result' && e.payload?.tool === 'ask_user')
     expect(result!.payload?.ok).toBe(true) // 关键：不再是 ERR_CONFLICT
-    expect(String(result!.payload?.summary ?? '')).toContain('已有待回答的提问')
-    expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1) // 没多建
+    // 新问题进队列（不新建待答），并告知模型"排队中"
+    expect(String(result!.payload?.summary ?? '')).toContain('排队中')
+    expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1) // 待答仍只有 1 条
+    expect(await svc.questions.list(pid, { status: 'queued' })).toHaveLength(1) // 排队 1 条
   }, 30000)
 
   it('挂起时不催任务状态（任务是暂停，不是完成）', async () => {

@@ -142,61 +142,128 @@ describe('问题服务：单选/多选/确认/文本 校验', () => {
       }),
     ).rejects.toThrow(/kind/)
 
-    // 正常发起 single → 同一会话再提问被拒
-    const q1 = await qs.ask({
-      projectId: pid,
-      sessionId: sid,
-      asker: dev.instanceId,
-      question: '先做 A 还是 B？',
-      kind: 'single',
-      options: ['A', 'B'],
-    })
-    await expect(
-      qs.ask({ projectId: pid, sessionId: sid, asker: dev.instanceId, question: '再来一个？' }),
-    ).rejects.toThrow(/已有待回答的问题/)
+    // 正常发起 single → 答完（后续问题才能成为"待答"）
+    const q1 = (
+      await qs.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '先做 A 还是 B？',
+        kind: 'single',
+        options: ['A', 'B'],
+      })
+    ).record
     // 选项不在候选内
     await expect(qs.answer(pid, q1.id, { choice: 'C' })).rejects.toThrow(/不在候选/)
-    const a1 = await qs.answer(pid, q1.id, { choice: 'A' })
+    const a1 = (await qs.answer(pid, q1.id, { choice: 'A' })).question
     expect(a1.status).toBe('answered')
     // 重复回答
     await expect(qs.answer(pid, q1.id, { choice: 'B' })).rejects.toThrow(/已处理/)
 
     // multi：空选与越界被拒，正常通过
-    const q2 = await qs.ask({
-      projectId: pid,
-      sessionId: sid,
-      asker: dev.instanceId,
-      question: '要包含哪些？',
-      kind: 'multi',
-      options: ['日志', '监控', '备份'],
-    })
+    const q2 = (
+      await qs.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '要包含哪些？',
+        kind: 'multi',
+        options: ['日志', '监控', '备份'],
+      })
+    ).record
     await expect(qs.answer(pid, q2.id, { choices: [] })).rejects.toThrow(/至少选择 1 项/)
     await expect(qs.answer(pid, q2.id, { choices: ['日志', '告警'] })).rejects.toThrow(/不在候选/)
-    const a2 = await qs.answer(pid, q2.id, { choices: ['日志', '备份'], text: '先做这两个' })
+    const a2 = (await qs.answer(pid, q2.id, { choices: ['日志', '备份'], text: '先做这两个' }))
+      .question
     expect(a2.answer?.choices).toEqual(['日志', '备份'])
     expect(a2.answer?.text).toBe('先做这两个')
 
     // text：必须填内容
-    const q3 = await qs.ask({
-      projectId: pid,
-      sessionId: sid,
-      asker: dev.instanceId,
-      question: '项目代号叫什么？',
-      kind: 'text',
-    })
+    const q3 = (
+      await qs.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '项目代号叫什么？',
+        kind: 'text',
+      })
+    ).record
     await expect(qs.answer(pid, q3.id, { text: '  ' })).rejects.toThrow(/请输入回答内容/)
-    const a3 = await qs.answer(pid, q3.id, { text: '贪吃蛇-v1' })
+    const a3 = (await qs.answer(pid, q3.id, { text: '贪吃蛇-v1' })).question
     expect(a3.answer?.text).toBe('贪吃蛇-v1')
 
     // confirm 缺省选项
-    const q4 = await qs.ask({
+    const q4 = (
+      await qs.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '按基线开工？',
+      })
+    ).record
+    expect(q4.kind).toBe('confirm')
+    expect(q4.options).toEqual(['确认', '取消'])
+
+    // 排队与"同一问题不重复问"（放在最后，避免影响上面的"立即待答"断言）
+    const queued = await qs.ask({
+      projectId: pid,
+      sessionId: sid,
+      asker: dev.instanceId,
+      question: '再来一个？',
+    })
+    expect(queued.record.status).toBe('queued') // 已有待答 → 排队而非报错
+    const dupQueued = await qs.ask({
+      projectId: pid,
+      sessionId: sid,
+      asker: dev.instanceId,
+      question: '  再来一个？ ',
+    })
+    expect(dupQueued.duplicate).toBe(true)
+    expect(dupQueued.record.id).toBe(queued.record.id)
+    const dupPending = await qs.ask({
       projectId: pid,
       sessionId: sid,
       asker: dev.instanceId,
       question: '按基线开工？',
+      kind: 'confirm',
     })
-    expect(q4.kind).toBe('confirm')
-    expect(q4.options).toEqual(['确认', '取消'])
+    expect(dupPending.duplicate).toBe(true)
+    expect(dupPending.record.id).toBe(q4.id)
+    expect(await qs.list(pid, { status: 'pending' })).toHaveLength(1)
+    expect(await qs.list(pid, { status: 'queued' })).toHaveLength(1)
+  })
+
+  it('回答后自动推进队列：下一个排队问题变成待答并推送', async () => {
+    const { pid, dev } = await setupProject()
+    const sid = `u_${dev.instanceId}`
+    const qs = svc.questions
+    const asked: string[] = []
+    const off = svc.bus.subscribe({
+      projectId: pid,
+      sessionId: sid,
+      onEvent: (e) => {
+        if (e.type === 'question.asked') asked.push(String(e.payload?.questionId ?? ''))
+      },
+    })
+    const q1 = (
+      await qs.ask({ projectId: pid, sessionId: sid, asker: dev.instanceId, question: '第 1 问？' })
+    ).record
+    const q2 = (
+      await qs.ask({ projectId: pid, sessionId: sid, asker: dev.instanceId, question: '第 2 问？' })
+    ).record
+    expect(q1.status).toBe('pending')
+    expect(q2.status).toBe('queued')
+    expect(asked).toEqual([q1.id]) // 排队中的不推送
+
+    const r1 = await qs.answer(pid, q1.id, { choice: '确认' })
+    expect(r1.question.status).toBe('answered')
+    expect(r1.next?.id).toBe(q2.id) // 队首被提升
+    expect((await qs.get(pid, q2.id)).status).toBe('pending')
+    expect(asked).toEqual([q1.id, q2.id]) // 下一张卡片立即推送
+
+    const r2 = await qs.answer(pid, q2.id, { choice: '确认' })
+    expect(r2.next).toBeNull() // 队列空了 → 调用方可以唤醒角色
+    off()
   })
 })
 
@@ -300,14 +367,16 @@ describe('Agent 提问 → 用户回答 → Agent 继续（全链路）', () => 
   it('多选与文本答复写回会话的用户消息格式正确', async () => {
     const { pid, dev } = await setupProject()
     const sid = `u_${dev.instanceId}`
-    const q = await svc.questions.ask({
-      projectId: pid,
-      sessionId: sid,
-      asker: dev.instanceId,
-      question: '要包含哪些模块？',
-      kind: 'multi',
-      options: ['需求', '设计', '开发'],
-    })
+    const q = (
+      await svc.questions.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '要包含哪些模块？',
+        kind: 'multi',
+        options: ['需求', '设计', '开发'],
+      })
+    ).record
     await ready().inject({
       method: 'POST',
       url: `/api/projects/${pid}/questions/${q.id}/answer`,

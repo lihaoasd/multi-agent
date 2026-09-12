@@ -346,20 +346,7 @@ export function registerServiceTools(deps: {
       async (args, env) => {
         const sid = env.sessionId ?? `u_${env.instanceId}`
         try {
-          // 软挂起：该会话已有待回答提问（常见于模型一轮里想连问几个）→ 不新建、不报错，
-          // 直接结束本回合等用户回答；用户回答后模型可从历史里看到提示并继续问剩下的。
-          const existing = await questions.pendingOf(env.projectId, sid).catch(() => null)
-          if (existing) {
-            return {
-              ok: true,
-              suspend: true,
-              summary:
-                `本轮不再新建提问：已有待回答的提问 ${existing.id}「${existing.question}」正在等用户回答` +
-                '（同一会话同时只保留 1 个待答问题）。本轮到此结束：你现在处于「等待用户决策」状态，' +
-                '不要继续执行任务；用户回答后你可以继续问剩下的问题（一次一个）。',
-            }
-          }
-          const rec = await questions.ask({
+          const { record: rec, duplicate } = await questions.ask({
             projectId: env.projectId,
             sessionId: sid,
             asker: env.instanceId,
@@ -370,15 +357,22 @@ export function registerServiceTools(deps: {
             // 回合内发起：等回合结束（占用释放后）再广播，避免"角色还在执行/思考，卡片已弹出"
             defer: true,
           })
+          const queued = rec.status === 'queued'
+          const queuedCount = await questions.queuedCount(env.projectId, sid).catch(() => 0)
           return {
             ok: true,
             // suspend：loop 见到这个标记立即结束本回合 → 角色进入「等待你处理」，不再继续执行任务
             suspend: true,
-            summary:
-              `已向用户提问（${rec.id}，${rec.kind}）：${rec.question}` +
-              (rec.options.length ? `\n选项：${rec.options.join(' / ')}` : '') +
-              '\n本轮到此结束：你现在处于「等待用户决策」状态，不要继续执行任务、也不要臆测用户答复；' +
-              '用户回答后平台会唤醒你继续（还有别的要问，等这轮问答结束后再一个一个问）。',
+            summary: duplicate
+              ? `同一个问题已经在等你回答（${rec.id}「${rec.question.slice(0, 40)}」），本轮不再重复提问。` +
+                '本轮到此结束：不要继续执行任务，等用户回答后平台会唤醒你。'
+              : `已向用户提问（${rec.id}，${rec.kind}）：${rec.question}` +
+                (rec.options.length ? `\n选项：${rec.options.join(' / ')}` : '') +
+                (queued
+                  ? `\n（用户手上还有 1 个待答问题，本条**排队中**，等他答完会自动弹给他）`
+                  : '') +
+                '\n本轮到此结束：你现在处于「等待用户决策」状态，不要继续执行任务、也不要臆测用户答复；' +
+                `用户回答后平台会唤醒你继续${queuedCount > 0 ? '（你还有排队中的问题会自动继续问）' : ''}。`,
           }
         } catch (e) {
           return {

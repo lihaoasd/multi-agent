@@ -80,14 +80,16 @@ describe('提问推送（WS question.asked / question.answered）', () => {
       frames.push(JSON.parse(String(raw)) as Frame)
     })
     try {
-      const rec = await svc.questions.ask({
-        projectId: pid,
-        sessionId: sid,
-        asker: dev.instanceId,
-        question: '要 A 还是 B？',
-        kind: 'single',
-        options: ['A', 'B'],
-      })
+      const rec = (
+        await svc.questions.ask({
+          projectId: pid,
+          sessionId: sid,
+          asker: dev.instanceId,
+          question: '要 A 还是 B？',
+          kind: 'single',
+          options: ['A', 'B'],
+        })
+      ).record
 
       const asked = await waitForType(frames, 'question.asked')
       // 事件归属 = 提问所在角色会话 → 前端可立即在该会话渲染卡片
@@ -123,7 +125,7 @@ describe('提问推送（WS question.asked / question.answered）', () => {
     expect(got).not.toContain('question.asked')
   }, 20000)
 
-  it('同一会话已有待答问题时再次提问被拒（不发重复推送）', async () => {
+  it('同一会话已有待答问题时再次提问 → 进排队队列；同一问题重复提问 → 去重（都不推送）', async () => {
     const { pid, dev } = await setupProject()
     const sid = `u_${dev.instanceId}`
     const frames: Frame[] = []
@@ -140,15 +142,26 @@ describe('提问推送（WS question.asked / question.answered）', () => {
         kind: 'confirm',
       })
       await waitForType(frames, 'question.asked')
-      await expect(
-        svc.questions.ask({
-          projectId: pid,
-          sessionId: sid,
-          asker: dev.instanceId,
-          question: '第二次问？',
-          kind: 'confirm',
-        }),
-      ).rejects.toThrow(/已有待回答/)
+      // 不同问题 → 排队（不推送，等用户答完上一个再弹）
+      const second = await svc.questions.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: '第二次问？',
+        kind: 'confirm',
+      })
+      expect(second.record.status).toBe('queued')
+      // 同一问题（文本归一化相同）→ 去重，返回既有记录，不新建、不推送
+      const dup = await svc.questions.ask({
+        projectId: pid,
+        sessionId: sid,
+        asker: dev.instanceId,
+        question: ' 第一次问？ ',
+        kind: 'confirm',
+      })
+      expect(dup.duplicate).toBe(true)
+      expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1)
+      await new Promise((r) => setTimeout(r, 120))
       expect(frames.filter((f) => f.type === 'question.asked')).toHaveLength(1)
     } finally {
       socket.terminate()

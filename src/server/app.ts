@@ -539,7 +539,7 @@ function registerQuestionRoutes(app: FastifyInstance, svc: Services): void {
     Body: { choice?: string; choices?: string[]; text?: string }
   }>('/api/projects/:pid/questions/:qid/answer', async (req) => {
     const pid = req.params.pid
-    const rec = await questions.answer(pid, req.params.qid, {
+    const { question: rec, next } = await questions.answer(pid, req.params.qid, {
       choice: req.body?.choice,
       choices: req.body?.choices,
       text: req.body?.text,
@@ -550,12 +550,16 @@ function registerQuestionRoutes(app: FastifyInstance, svc: Services): void {
     else if (meta.type !== 'user') wakeError = '非 user 会话，答复未回注 Agent'
     else {
       try {
-        await sessionService.sendUserMessage(pid, rec.sessionId, QuestionService.answerText(rec))
+        // 答复始终写回会话；**但还有排队问题时先不唤醒角色**（下一张卡片立即弹出，
+        // 等全部问完再让角色继续，避免它在问题没答完时又跑起来）
+        await sessionService.sendUserMessage(pid, rec.sessionId, QuestionService.answerText(rec), {
+          wake: next === null,
+        })
       } catch (e) {
         wakeError = `答复未触发 Agent 回合：${e instanceof Error ? e.message : String(e)}`
       }
     }
-    return { question: rec, wakeError }
+    return { question: rec, nextQuestion: next, wakeError }
   })
 }
 

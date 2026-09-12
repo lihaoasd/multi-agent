@@ -119,12 +119,13 @@ export class SessionService {
   /**
    * 用户发送消息：user 会话 → 校验实例存在/启用 → 落盘 message 事件 →
    * 若实例空闲则立即执行 direct 回合，否则串行排队（单会话 FIFO）。
+   * `wake:false` = 只落盘不跑回合（用于"问题还没问完，先别让角色继续"的场景）。
    */
   async sendUserMessage(
     projectId: string,
     sessionId: string,
     text: string,
-    opts: { system?: boolean } = {},
+    opts: { system?: boolean; wake?: boolean } = {},
   ): Promise<SendMessageResult> {
     const trimmed = text?.trim()
     if (!trimmed) throw new AppError(ErrorCodes.VALIDATION, '消息内容不能为空')
@@ -156,6 +157,9 @@ export class SessionService {
       ...(opts.system ? { payload: { system: true } } : {}),
     })
     this.bus.emitLogEvent(projectId, userEvent)
+
+    // wake=false：只把消息落盘（例如"还有排队提问没问完"），等条件满足再唤醒
+    if (opts.wake === false) return { sessionId, seq: userEvent.seq, queued: true }
 
     const baseCtx: TurnContext = {
       projectId,

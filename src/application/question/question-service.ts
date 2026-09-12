@@ -34,7 +34,11 @@ export interface QuestionRecord {
   kind: QuestionKind
   options: string[]
   allowText: boolean
-  status: 'pending' | 'answered' | 'cancelled'
+  /**
+   * pending = 正在等用户回答（一次只放行 1 个）
+   * queued  = 同一会话里排队的后续问题（角色一轮里问了多件事时按序排队，用户答完上一个自动弹出）
+   */
+  status: 'pending' | 'queued' | 'answered' | 'cancelled'
   answer: QuestionAnswer | null
   createdAt: string
   answeredAt: string | null
@@ -122,8 +126,13 @@ export class QuestionService {
     return all.find((q) => q.sessionId === sessionId && q.status === 'pending') ?? null
   }
 
-  /** 发起提问：同一会话同时只允许 1 个待回答（防刷屏）。 */
-  async ask(input: AskInput): Promise<QuestionRecord> {
+  /**
+   * 发起提问。
+   * - 同一会话**同时只放行 1 个 pending**（防刷屏）：已有 pending 时，新问题进 `queued` 队列，
+   *   用户答完上一个后自动把队首提升为 pending（因此"一轮里问多件事"不会丢问题、也不会报错）；
+   * - **同一问题不重复建**：文本归一化后与 pending/queued 中任一相同 → 直接返回既有记录。
+   */
+  async ask(input: AskInput): Promise<{ record: QuestionRecord; duplicate: boolean }> {
     const question = input.question?.trim()
     if (!question) throw new AppError(ErrorCodes.VALIDATION, 'question 必填')
     const kind = (input.kind ?? 'confirm') as QuestionKind
@@ -140,16 +149,17 @@ export class QuestionService {
     }
     if (kind === 'text') options = []
 
-    const pending = (await this.readAll(input.projectId)).find(
-      (q) => q.sessionId === input.sessionId && q.status === 'pending',
+    const all = await this.readAll(input.projectId)
+    // 同一问题（归一化后相同）不重复问，也不重复排队
+    const dup = all.find(
+      (q) =>
+        q.sessionId === input.sessionId &&
+        (q.status === 'pending' || q.status === 'queued') &&
+        normalizeQuestion(q.question) === normalizeQuestion(question),
     )
-    if (pending) {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `已有待回答的问题 ${pending.id}：「${pending.question.slice(0, 40)}」，请等待用户回答后再提问`,
-      )
-    }
+    if (dup) return { record: dup, duplicate: true }
 
+    const hasPending = all.some((q) => q.sessionId === input.sessionId && q.status === 'pending')
     const rec: QuestionRecord = {
       id: genId('q_'),
       projectId: input.projectId,
@@ -159,22 +169,24 @@ export class QuestionService {
       kind,
       options,
       allowText: input.allowText === true,
-      status: 'pending',
+      // 已有待答 → 排队；否则立即待答
+      status: hasPending ? 'queued' : 'pending',
       answer: null,
       createdAt: nowIso(),
       answeredAt: null,
     }
-    const all = await this.readAll(input.projectId)
     all.push(rec)
     await this.writeAll(input.projectId, all)
     // 先盘后推：默认立即广播；回合内发起（defer）则等回合结束由 flushPending 统一广播，
     // 避免"角色还在思考/执行 → 提问卡片已经弹出"的时间错位。
-    if (input.defer) {
+    if (rec.status !== 'pending') {
+      // 排队中的问题等被提升为 pending 时再推送
+    } else if (input.defer) {
       this.deferred.push({ projectId: rec.projectId, sessionId: rec.sessionId, rec })
     } else {
       this.emitAsked(rec)
     }
-    return rec
+    return { record: rec, duplicate: false }
   }
 
   /**
@@ -204,8 +216,16 @@ export class QuestionService {
     })
   }
 
-  /** 用户回答：校验后落盘（answered 不可重复回答）。 */
-  async answer(projectId: string, id: string, answer: QuestionAnswer): Promise<QuestionRecord> {
+  /**
+   * 用户回答：校验后落盘（answered 不可重复回答）。
+   * 回答后**自动推进队列**：把该会话最早的 `queued` 提升为 `pending` 并推送（下一张卡片立即出现）；
+   * 返回值 `next` 非空表示"还有问题要问"，调用方据此**暂不唤醒角色**（等队列清空再唤醒）。
+   */
+  async answer(
+    projectId: string,
+    id: string,
+    answer: QuestionAnswer,
+  ): Promise<{ question: QuestionRecord; next: QuestionRecord | null }> {
     const all = await this.readAll(projectId)
     const idx = all.findIndex((q) => q.id === id)
     if (idx < 0) throw new AppError(ErrorCodes.NOT_FOUND, `提问不存在: ${id}`)
@@ -247,16 +267,31 @@ export class QuestionService {
       answeredAt: nowIso(),
     }
     all[idx] = next
+    // 队列推进：同一会话里最早的 queued 提升为 pending（先盘后推）
+    const qIdx = all.findIndex((q) => q.sessionId === next.sessionId && q.status === 'queued')
+    let promoted: QuestionRecord | null = null
+    if (qIdx >= 0) {
+      promoted = { ...all[qIdx]!, status: 'pending' }
+      all[qIdx] = promoted
+    }
     await this.writeAll(projectId, all)
     // 先盘后推：多标签页/其它窗口同步移除待答卡片
     this.bus?.emit('question.answered', next.projectId, next.sessionId, {
       questionId: next.id,
       asker: next.asker,
       answer: normalized,
+      nextQuestionId: promoted?.id ?? null,
     })
-    return next
+    // 下一张卡片立即出现（同一时刻角色的状态仍是「等待你处理」）
+    if (promoted) this.emitAsked(promoted)
+    return { question: next, next: promoted }
   }
 
+  /** 该会话还在排队的问题数（唤醒判断用）。 */
+  async queuedCount(projectId: string, sessionId: string): Promise<number> {
+    const all = await this.readAll(projectId)
+    return all.filter((q) => q.sessionId === sessionId && q.status === 'queued').length
+  }
   /** 答复的可读文本（写回会话的用户消息）。 */
   static answerText(rec: QuestionRecord): string {
     const a = rec.answer ?? {}
@@ -266,4 +301,9 @@ export class QuestionService {
     if (a.text) picked = picked ? `${picked}（补充：${a.text}）` : a.text
     return `【回答提问 ${rec.id}】${rec.question}\n→ ${picked || '（空）'}`
   }
+}
+
+/** 问题文本归一化（去空白/标点 + 小写）：用于"同一问题不要问两次"的去重。 */
+function normalizeQuestion(text: string): string {
+  return text.replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
 }
