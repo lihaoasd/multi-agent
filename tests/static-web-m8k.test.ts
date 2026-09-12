@@ -75,11 +75,12 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(body).toContain('handleQuestionPush')
     expect(body).toContain('question.asked')
     expect(body).toContain('question.answered')
-    // 问题列表：逐题显示 + 左右滑块 + 一次提交
+    // 问题列表：逐题显示 + 左右滑块 + 一次提交 + 答完自动跳下一题
     expect(body).toContain('q-nav')
     expect(body).toContain('上一题')
     expect(body).toContain('下一题')
     expect(body).toContain('提交全部回答')
+    expect(body).toContain('scheduleNext')
     const css = String((await ready().inject({ method: 'GET', url: '/style.css' })).body)
     expect(css).toContain('.q-nav')
     expect(css).toContain('.q-item')

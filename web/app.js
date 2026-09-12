@@ -952,6 +952,8 @@ function buildQuestionCard(q, opts = {}) {
         radio.addEventListener('change', () => {
           slot.choice = o
           paint()
+          // 单选/确认：选完**自动跳到下一题**（留 260ms 让用户看到选中效果）
+          scheduleNext()
         })
         lab.appendChild(radio)
         lab.appendChild(document.createTextNode(o))
@@ -970,6 +972,7 @@ function buildQuestionCard(q, opts = {}) {
         cb.addEventListener('change', () => {
           slot.choices = [...box.querySelectorAll('input:checked')].map((c) => c.value)
           paint()
+          // 多选不自动跳（可能还要勾别的）；底部「下一题」会变成主按钮
         })
         lab.appendChild(cb)
         lab.appendChild(document.createTextNode(o))
@@ -980,19 +983,32 @@ function buildQuestionCard(q, opts = {}) {
       const ta = document.createElement('textarea')
       ta.className = 'q-input'
       ta.rows = 2
-      ta.placeholder = '请输入你的回答'
+      ta.placeholder = '请输入你的回答（Enter 进入下一题，Shift+Enter 换行）'
       ta.addEventListener('input', () => {
         slot.text = ta.value
         paint()
+      })
+      // 文本题：Enter（不带 Shift）即"答完这题" → 跳到下一题
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          scheduleNext(0)
+        }
       })
       block.appendChild(ta)
     }
     if (it.allowText && it.kind !== 'text') {
       const note = document.createElement('input')
       note.className = 'q-input'
-      note.placeholder = '补充说明（可选）'
+      note.placeholder = '补充说明（可选，Enter 进入下一题）'
       note.addEventListener('input', () => {
         slot.text = note.value
+      })
+      note.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          scheduleNext(0)
+        }
       })
       block.appendChild(note)
     }
@@ -1026,8 +1042,36 @@ function buildQuestionCard(q, opts = {}) {
     idx = Math.max(0, Math.min(items.length - 1, i))
     paint()
   }
-  prev.addEventListener('click', () => go(idx - 1))
-  next.addEventListener('click', () => go(idx + 1))
+  /**
+   * 答完当前题 → 自动跳到下一题（最后一题不跳；期间用户手动翻页则取消）。
+   * 单选/确认：选完即跳（默认 260ms 延迟，让用户看到选中效果）；
+   * 文本/补充说明：回车即跳（delay=0）。
+   */
+  let autoTimer = null
+  function scheduleNext(delay = 260) {
+    if (items.length < 2) return
+    const at = idx
+    if (at >= items.length - 1) return
+    if (autoTimer) clearTimeout(autoTimer)
+    autoTimer = window.setTimeout(() => {
+      autoTimer = null
+      if (idx === at && at < items.length - 1) go(at + 1)
+    }, delay)
+  }
+  const cancelAuto = () => {
+    if (autoTimer) {
+      clearTimeout(autoTimer)
+      autoTimer = null
+    }
+  }
+  prev.addEventListener('click', () => {
+    cancelAuto()
+    go(idx - 1)
+  })
+  next.addEventListener('click', () => {
+    cancelAuto()
+    go(idx + 1)
+  })
   nav.appendChild(prev)
   nav.appendChild(step)
   nav.appendChild(next)
@@ -1039,6 +1083,7 @@ function buildQuestionCard(q, opts = {}) {
   submit.className = 'primary'
   submit.textContent = items.length > 1 ? `提交全部回答（${items.length} 题）` : '提交回答'
   submit.addEventListener('click', async () => {
+    cancelAuto()
     // 未答完 → 跳到第一道没答的题并提示（不浪费一次请求）
     const missing = items.findIndex((it) => !filled(it))
     if (missing >= 0) {
@@ -1066,8 +1111,12 @@ function buildQuestionCard(q, opts = {}) {
     prev.disabled = idx === 0
     next.disabled = idx === total - 1
     if (total > 1) {
+      // 当前题已答 → 「下一题」变成主按钮（多选/回看时的明确出口）
+      next.classList.toggle('primary', filled(items[idx]))
       submit.textContent =
-        doneCount === total ? `提交全部回答（${total} 题）` : `提交全部回答（已答 ${doneCount}/${total}）`
+        doneCount === total
+          ? `提交全部回答（${total} 题）`
+          : `提交全部回答（已答 ${doneCount}/${total}）`
     }
   }
   paint()
