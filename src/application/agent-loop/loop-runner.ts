@@ -41,6 +41,15 @@ export interface PendingTask {
   creator: string
 }
 
+/** 任务栏活跃任务（给 pm/product 的共享视野）。 */
+export interface BoardTask {
+  id: string
+  title: string
+  assignee: string
+  creator: string
+  state: string
+}
+
 /** 工具运行时钩子（由组合根注入；缺省则回合不启用工具）。 */
 export interface ToolRuntimeHook {
   /** 该会话可用工具（角色白名单 ∩ 注册表 ∩ availableIn） */
@@ -63,6 +72,8 @@ export interface ToolRuntimeHook {
   activeTask?: (ctx: TurnContext) => Promise<ActiveTask | null>
   /** 待领取任务（任务栏上派给我、尚未领取的；用于 [待领取任务] 提示块） */
   pendingTasks?: (ctx: TurnContext) => Promise<PendingTask[]>
+  /** 任务栏活跃任务（todo/in_progress）：给 pm/product 注入 [任务栏现状]，避免两人重复派同一件事 */
+  boardTasks?: (ctx: TurnContext) => Promise<BoardTask[]>
   /** 单回合最多工具步数（缺省 6） */
   maxSteps?: number
 }
@@ -141,12 +152,14 @@ export class AgentLoopRunner {
 
     const activeTask = await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)
     const pendingTasks = await this.opts.toolRuntime?.pendingTasks?.(ctx).catch(() => null)
+    const boardTasks = await this.opts.toolRuntime?.boardTasks?.(ctx).catch(() => null)
     const tools = this.opts.toolRuntime?.listTools(ctx, sessionType) ?? []
     const system = this.buildSystemPrompt(
       ctx,
       sessionType,
       activeTask ?? null,
       pendingTasks ?? [],
+      boardTasks ?? [],
       tools,
     )
     const history = await this.buildHistory(ctx)
@@ -447,6 +460,7 @@ export class AgentLoopRunner {
     sessionType: string,
     activeTask: ActiveTask | null,
     pendingTasks: PendingTask[],
+    boardTasks: BoardTask[],
     tools: ToolSchema[],
   ): string {
     const m = ctx.member
@@ -504,6 +518,18 @@ export class AgentLoopRunner {
       )
       parts.push(lines.join('\n'))
     }
+    // 共享视野（pm/product）：两人都能看到任务栏上已有的活跃任务，避免重复派同一件事
+    if (boardTasks.length && this.dispatchEligible(ctx, sessionType)) {
+      const lines = [
+        `[任务栏现状] 当前活跃任务（待领取/进行中）共 ${boardTasks.length} 条：`,
+        ...boardTasks.map(
+          (t) => `- ${t.id}「${t.title}」→ ${t.assignee}（发布者 ${t.creator}，${t.state}）`,
+        ),
+        '发布前请先对照本清单：同一受派人的同一件事**不要重复发布**（平台会自动去重并回执提示）；',
+        '需要补充说明时，在已有任务上对齐或在会议里沟通，不要另发一条同名任务。',
+      ]
+      parts.push(lines.join('\n'))
+    }
     const roster = this.buildTeamRoster(ctx, tools)
     if (roster) parts.push(roster)
     const hint = this.buildDispatchHint(ctx, sessionType, tools)
@@ -559,9 +585,10 @@ export class AgentLoopRunner {
     }
     lines.push(
       `3. 约束：assignee 必须来自可指派对象——${list}；不可捏造实例 id，也不要派给自己。`,
-      '4. 发布后平台会**通知受派人来领取**，对方 task_claim 领取后才开工——你不要承诺"已经开工"；',
+      '4. 发布前先看上面的 [任务栏现状]：同一受派人的同一件事不要重复发布（平台自动去重并回执）；',
+      '5. 发布后平台会**通知受派人来领取**，对方 task_claim 领取后才开工——你不要承诺"已经开工"；',
       '   对方完成/受阻时平台会通知你，届时你再安排后续（验收、派新任务、发起会议）。',
-      '5. 平台会给出真实登记结果，你无需虚构"已发布成功"。',
+      '6. 平台会给出真实登记结果，你无需虚构"已发布成功"。',
     )
     return lines.join('\n')
   }

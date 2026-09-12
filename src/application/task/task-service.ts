@@ -26,6 +26,9 @@ export type TaskState = (typeof TASK_STATES)[number]
 /** 协调者角色前缀（甲模式下可干预任务；与 loop-runner DISPATCH_ROLES 一致），实例 id 形如 pm_1。 */
 const COORDINATOR_PREFIXES = ['pm', 'product']
 
+/** 参与同题去重的活跃状态（终态任务不拦：做完可再派）。 */
+const ACTIVE_STATES: TaskState[] = ['todo', 'in_progress']
+
 export interface TaskRecord {
   id: string
   title: string
@@ -49,6 +52,17 @@ export interface CreateTaskInput {
   sessionId?: string
 }
 
+/** 发布结果：duplicate=true 表示命中同题活跃任务（未新建），task 即既有任务。 */
+export interface CreateTaskResult {
+  task: TaskRecord
+  duplicate: boolean
+}
+
+/** 发布选项：force=true 时跳过同题去重，强制新建（逃生阀）。 */
+export interface PublishOptions {
+  force?: boolean
+}
+
 /** 通知类事件：受派人需要领取 / 委派人需要安排后续。 */
 export type DelegatorEvent = 'done' | 'blocked' | 'terminated'
 
@@ -69,6 +83,9 @@ export interface TaskServiceHooks {
 }
 
 export class TaskService {
+  /** 单项目串行锁（异步 promise 链）：保护 tasks.jsonl 的读-改-写。 */
+  private readonly locks = new Map<string, Promise<void>>()
+
   constructor(
     private readonly projectsRoot: string,
     /** assignByAgent=false（乙模式）：非 user 创建一律拒绝 */
@@ -118,8 +135,13 @@ export class TaskService {
   /**
    * 发布任务到任务栏（state=todo 待领取）→ 广播 → 通知受派人领取。
    * 四个入口（task_assign / 回复 JSON / POST /tasks / 纪要转任务）都走这里，语义统一。
+   *
+   * **跨管理者去重（2026-09-12）**：同一受派人 + 归一化标题相同 + 状态仍在 todo/in_progress
+   * 视为同一件事（pm 与 product 同时派同一任务时只留一条）；命中则**不新建**，返回既有任务
+   * （`duplicate: true`），由调用方给提出者明确回执。终态任务不参与去重（做完可再派）。
+   * `opts.force=true` 跳过去重（确需重复发布时）。
    */
-  async create(input: CreateTaskInput): Promise<TaskRecord> {
+  async create(input: CreateTaskInput, opts: PublishOptions = {}): Promise<CreateTaskResult> {
     const title = input.title.trim()
     if (!title) throw new AppError(ErrorCodes.VALIDATION, '任务标题不能为空')
     if (!this.assignByAgent && input.creator !== 'user') {
@@ -128,77 +150,96 @@ export class TaskService {
         '甲模式未开启(task.assignByAgent=false)：任务仅可由 user 创建（乙模式，D15）',
       )
     }
-    const ts = nowIso()
-    const rec: TaskRecord = {
-      id: genId('t_'),
-      title,
-      desc: input.desc?.trim() ?? '',
-      creator: input.creator,
-      assignee: input.assignee,
-      state: 'todo',
-      sessionId: input.sessionId ?? `u_${input.assignee}`,
-      artifactIds: [],
-      ts,
-      updatedAt: ts,
-    }
-    await this.rewrite(input.projectId, rec)
+    // 去重检查 + 写入必须在同一把锁内，否则两位管理者并发发布会各写一次（其中一条会被覆盖丢失）
+    const result = await this.withLock(input.projectId, async () => {
+      if (!opts.force) {
+        const dup = (await this.readAll(input.projectId)).find(
+          (t) =>
+            t.assignee === input.assignee &&
+            ACTIVE_STATES.includes(t.state) &&
+            normalizeTitle(t.title) === normalizeTitle(title),
+        )
+        if (dup) return { task: dup, duplicate: true } satisfies CreateTaskResult
+      }
+      const ts = nowIso()
+      const rec: TaskRecord = {
+        id: genId('t_'),
+        title,
+        desc: input.desc?.trim() ?? '',
+        creator: input.creator,
+        assignee: input.assignee,
+        state: 'todo',
+        sessionId: input.sessionId ?? `u_${input.assignee}`,
+        artifactIds: [],
+        ts,
+        updatedAt: ts,
+      }
+      await this.rewrite(input.projectId, rec)
+      return { task: rec, duplicate: false } satisfies CreateTaskResult
+    })
+    if (result.duplicate) return result
+    // 锁外：广播 + 通知受派人领取
+    const rec = result.task
     this.emitUpdated(input.projectId, rec, 'published')
     await this.hooks.notifyClaim?.(input.projectId, rec.assignee, rec).catch(() => undefined)
-    return rec
+    return result
   }
 
   /**
    * 领取任务：todo(/blocked) → in_progress，**只能由受派人本人发起**。
    * taskId 缺省 = 领取该受派人最旧的一条待领取任务。
+   * 检查与写入在同一把锁内（防并发重复领取/丢写）。
    */
   async claim(projectId: string, actor: string, taskId?: string): Promise<TaskRecord> {
-    let rec: TaskRecord
-    if (taskId) {
-      rec = await this.get(projectId, taskId)
-    } else {
-      const mine = (await this.list(projectId, { assignee: actor, state: 'todo' })).sort((a, b) =>
-        a.ts < b.ts ? -1 : 1,
-      )
-      const next = mine[0]
-      if (!next) {
+    const result = await this.withLock(projectId, async () => {
+      const all = await this.readAll(projectId)
+      let rec: TaskRecord | undefined
+      if (taskId) {
+        rec = all.find((x) => x.id === taskId)
+        if (!rec) throw new AppError(ErrorCodes.NOT_FOUND, `任务不存在: ${taskId}`)
+      } else {
+        rec = all
+          .filter((t) => t.assignee === actor && t.state === 'todo')
+          .sort((a, b) => (a.ts < b.ts ? -1 : 1))[0]
+        if (!rec) {
+          throw new AppError(
+            ErrorCodes.NOT_FOUND,
+            `任务栏上没有待你领取的任务（${actor}）；如已全部领取，请用 task_update 汇报当前任务进度`,
+          )
+        }
+      }
+      if (rec.assignee !== actor) {
         throw new AppError(
-          ErrorCodes.NOT_FOUND,
-          `任务栏上没有待你领取的任务（${actor}）；如已全部领取，请用 task_update 汇报当前任务进度`,
+          ErrorCodes.CONFLICT,
+          `任务 ${rec.id} 指派给 ${rec.assignee}，你（${actor}）不能领取；如需调整请让委派人（${rec.creator}）重新安排`,
         )
       }
-      rec = next
-    }
-    if (rec.assignee !== actor) {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `任务 ${rec.id} 指派给 ${rec.assignee}，你（${actor}）不能领取；如需调整请让委派人（${rec.creator}）重新安排`,
-      )
-    }
-    if (rec.state === 'in_progress') return rec // 幂等：已领取
-    if (rec.state !== 'todo' && rec.state !== 'blocked') {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `任务 ${rec.id} 当前状态 ${rec.state}，无法领取（已终态或未发布）`,
-      )
-    }
-    const occupied = (await this.list(projectId, { assignee: actor })).find(
-      (t) => t.id !== rec.id && t.state === 'in_progress',
-    )
-    if (occupied) {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `你已有进行中任务 ${occupied.id}「${occupied.title}」；请先完成/终止它，或让委派人调整优先级`,
-      )
-    }
-    const next: TaskRecord = { ...rec, state: 'in_progress', updatedAt: nowIso() }
-    await this.rewrite(projectId, next)
-    this.emitUpdated(projectId, next, 'claimed')
-    return next
+      if (rec.state === 'in_progress') return { next: rec, changed: false } // 幂等：已领取
+      if (rec.state !== 'todo' && rec.state !== 'blocked') {
+        throw new AppError(
+          ErrorCodes.CONFLICT,
+          `任务 ${rec.id} 当前状态 ${rec.state}，无法领取（已终态或未发布）`,
+        )
+      }
+      const occupied = all.find((t) => t.id !== rec.id && t.assignee === actor && t.state === 'in_progress')
+      if (occupied) {
+        throw new AppError(
+          ErrorCodes.CONFLICT,
+          `你已有进行中任务 ${occupied.id}「${occupied.title}」；请先完成/终止它，或让委派人调整优先级`,
+        )
+      }
+      const next: TaskRecord = { ...rec, state: 'in_progress', updatedAt: nowIso() }
+      await this.rewrite(projectId, next)
+      return { next, changed: true }
+    })
+    if (result.changed) this.emitUpdated(projectId, result.next, 'claimed')
+    return result.next
   }
 
   /**
    * 状态流转：**默认由受派者自己汇报**（开工/完成/受阻/终止）；
    * 用户、委派人（creator）、甲模式下的协调者（pm/product）也可干预。
+   * 锁内只做「读-校验-写」，通知/结算/广播一律放在锁外（避免通知里的 Agent 回合反过来卡住锁）。
    */
   async setState(
     projectId: string,
@@ -206,44 +247,49 @@ export class TaskService {
     to: TaskState,
     actor: 'user' | string = 'user',
   ): Promise<TaskRecord> {
-    const cur = await this.get(projectId, taskId)
-    this.assertActor(cur, actor)
-    this.assertTransition(cur, to)
-    const next: TaskRecord = { ...cur, state: to, updatedAt: nowIso() }
-
-    // 置 in_progress 前检查单工槽位（每 Agent 至多 1）
-    if (to === 'in_progress') {
-      const occupied = (await this.list(projectId, { assignee: cur.assignee })).find(
-        (t) => t.id !== taskId && t.state === 'in_progress',
-      )
-      if (occupied) {
-        throw new AppError(
-          ErrorCodes.CONFLICT,
-          `实例 ${cur.assignee} 已有进行中任务 ${occupied.id}（每 Agent 至多 1 in_progress；可先置 todo 排队）`,
+    const next = await this.withLock(projectId, async () => {
+      const all = await this.readAll(projectId)
+      const cur = all.find((x) => x.id === taskId)
+      if (!cur) throw new AppError(ErrorCodes.NOT_FOUND, `任务不存在: ${taskId}`)
+      this.assertActor(cur, actor)
+      this.assertTransition(cur, to)
+      // 置 in_progress 前检查单工槽位（每 Agent 至多 1）
+      if (to === 'in_progress') {
+        const occupied = all.find(
+          (t) => t.id !== taskId && t.assignee === cur.assignee && t.state === 'in_progress',
         )
+        if (occupied) {
+          throw new AppError(
+            ErrorCodes.CONFLICT,
+            `实例 ${cur.assignee} 已有进行中任务 ${occupied.id}（每 Agent 至多 1 in_progress；可先置 todo 排队）`,
+          )
+        }
       }
-    }
-    // D17-① 先结算未结算 code 改动，再置终态（done/terminated）
+      const updated: TaskRecord = { ...cur, state: to, updatedAt: nowIso() }
+      await this.rewrite(projectId, updated)
+      return { cur, next: updated }
+    })
+    const { cur } = next
+    this.emitUpdated(projectId, next.next, to)
+    // D17-① 置终态前先结算未结算 code 改动（结算内部会回调 linkArtifact，故必须在锁外）
     if ((to === 'done' || to === 'terminated') && this.hooks.settle) {
-      await this.hooks.settle(projectId, cur)
+      await this.hooks.settle(projectId, cur).catch(() => undefined)
     }
-    await this.rewrite(projectId, next)
-    this.emitUpdated(projectId, next, to)
     // 激活即唤醒（D18-③）：只有"别人替我开工"才需要唤醒；受派者自己置位说明它已在干活
     if (to === 'in_progress' && actor !== cur.assignee) {
-      await this.hooks.notifyClaim?.(projectId, cur.assignee, next).catch(() => undefined)
+      await this.hooks.notifyClaim?.(projectId, cur.assignee, next.next).catch(() => undefined)
     }
     // 完成/受阻/终止 → 通知委派人安排后续
     if (to === 'done' || to === 'blocked' || to === 'terminated') {
       await this.hooks
-        .notifyDelegator?.(projectId, next, to, actor === 'user' ? 'user' : actor)
+        .notifyDelegator?.(projectId, next.next, to, actor === 'user' ? 'user' : actor)
         .catch(() => undefined)
     }
     // 槽位释放 → 通知下一位待领取任务的受派人（不再自动开工）
     if (to === 'done' || to === 'terminated') {
       await this.notifyNextQueued(projectId, cur.assignee)
     }
-    return next
+    return next.next
   }
 
   /** 通知该受派人"任务栏上还有待领取任务"（槽位刚释放时调用；不改状态）。 */
@@ -286,13 +332,17 @@ export class TaskService {
 
   /** 记 artifact 关联（code 聚合产物结算时由 ArtifactService 调用）。 */
   async linkArtifact(projectId: string, taskId: string, artifactId: string): Promise<void> {
-    const cur = await this.get(projectId, taskId)
-    const next = {
-      ...cur,
-      artifactIds: [...new Set([...cur.artifactIds, artifactId])],
-      updatedAt: nowIso(),
-    }
-    await this.rewrite(projectId, next)
+    await this.withLock(projectId, async () => {
+      const all = await this.readAll(projectId)
+      const cur = all.find((x) => x.id === taskId)
+      if (!cur) return
+      const next = {
+        ...cur,
+        artifactIds: [...new Set([...cur.artifactIds, artifactId])],
+        updatedAt: nowIso(),
+      }
+      await this.rewrite(projectId, next)
+    })
   }
 
   /** 任务栏实时刷新：状态/发布/领取都广播。 */
@@ -307,7 +357,25 @@ export class TaskService {
     })
   }
 
-  /** 唤醒受派人（"别人替我开工"或排队提醒）：注入系统消息并触发一轮。 */
+  /**
+   * 单项目串行锁：tasks.jsonl 是「读全量 → 改 → 覆盖写」，并发发布会互相覆盖丢任务。
+   * 只包住读改写，不跨越通知/结算（那些会触发 Agent 回合，持锁会自锁）。
+   */
+  private async withLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(projectId) ?? Promise.resolve()
+    const run = prev.then(() => fn(), () => fn())
+    const guard = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.locks.set(projectId, guard)
+    try {
+      return await run
+    } finally {
+      if (this.locks.get(projectId) === guard) this.locks.delete(projectId)
+    }
+  }
+
   private async rewrite(projectId: string, rec: TaskRecord): Promise<void> {
     const all = await this.readAll(projectId)
     const idx = all.findIndex((x) => x.id === rec.id)
@@ -321,4 +389,11 @@ export class TaskService {
 /** 实例 id 是否为协调者角色（pm_1 / product_1）。 */
 function isCoordinator(actor: string): boolean {
   return COORDINATOR_PREFIXES.some((p) => actor === p || actor.startsWith(`${p}_`))
+}
+
+/** 标题归一化（去空白/标点/符号 + 小写）：用于跨管理者同题去重。 */
+export function normalizeTitle(title: string): string {
+  return title
+    .replace(/[\s\p{P}\p{S}]/gu, '')
+    .toLowerCase()
 }

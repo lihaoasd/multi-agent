@@ -60,7 +60,7 @@
 | `meeting_close` | 主持人总结并结束 | platform / none | ✅ | **meeting（仅主持人，H4 定稿）** |
 | `meeting_ask_user` | 请求用户拍板（question/options；会议转 blocked_waiting_user） | platform / none | — | **meeting（仅主持人，D18-①）** |
 | `task_view`/`task_list` | 查看任务（本人/项目） | platform / none | ✅ | user+meeting（**D15 默认关闭**） |
-| `task_assign` | **发布任务到任务栏**（甲模式，pm/product；平台随即通知受派人） | platform / none | ✅ | user only |
+| `task_assign` | **发布任务到任务栏**（甲模式，pm/product；平台随即通知受派人；同题自动去重，`force` 可强制） | platform / none | ✅ | user only |
 | `task_claim` | **领取**任务栏上派给自己的任务（缺省领最早一条；todo→in_progress） | platform / none | ❌ | user only |
 | `task_update` | 更新任务状态/汇报（开工/完成/受阻/终止；done 后平台通知委派人） | platform / none | 分动作 | user only |
 

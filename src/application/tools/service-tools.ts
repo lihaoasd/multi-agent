@@ -309,7 +309,8 @@ export function registerServiceTools(deps: {
         description:
           '把任务**发布到任务栏**并通知受派人领取（仅产品/项目经理可调用）：创建任务(state=待领取) + ' +
           '向受派人会话推送「待你领取」通知；受派人调用 task_claim 领取后才开工。' +
-          '一次调用发布一个任务，可连续调用多个',
+          '**发布前先对照系统提示里的[任务栏现状]**：同一受派人的同题任务只会保留一条（自动去重，' +
+          '回执会说明与谁发布的哪条重复）；确需重复发布时用 force=true。一次调用发布一个任务，可连续调用多个',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,
@@ -319,6 +320,10 @@ export function registerServiceTools(deps: {
             assignee: { type: 'string', description: '受派人实例 id（如 dev_1 / architect_1）' },
             title: { type: 'string', description: '任务标题（一句话说明要交付什么）' },
             desc: { type: 'string', description: '任务说明：产出、边界、验收要点' },
+            force: {
+              type: 'boolean',
+              description: '强制重复发布（缺省 false：同题活跃任务自动去重，返回既有任务）',
+            },
           },
           required: ['assignee', 'title'],
         },
@@ -350,10 +355,20 @@ export function registerServiceTools(deps: {
             assignee,
             title,
             desc: args.desc === undefined ? undefined : String(args.desc),
+            force: args.force === true,
           },
         )
         if (!r.ok) {
           return { ok: false, code: 'ERR_CONFLICT', reason: r.reason ?? '发布失败' }
+        }
+        if (r.duplicate) {
+          return {
+            ok: true,
+            summary:
+              `未重复创建：「${r.title}」→ ${r.assignee} 已有同题任务 ${r.taskId}` +
+              `（由 ${r.existingCreator ?? '他人'} 发布，状态 ${r.state ?? 'todo'}）。` +
+              '如需在同一任务上补充说明，请在会话中与发布者对账；确需再派一条时用 force=true',
+          }
         }
         return {
           ok: true,

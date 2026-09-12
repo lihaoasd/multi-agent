@@ -120,7 +120,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     },
     // D17-⑦ 纪要转出任务（creator=user，来源=本会议）
     async (pid, input) => {
-      const t = await tasks.create({
+      const r = await tasks.create({
         projectId: pid,
         title: input.title,
         desc: input.desc,
@@ -128,7 +128,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
         assignee: input.assignee,
         sessionId: input.sessionId,
       })
-      return { id: t.id }
+      return { id: r.task.id }
     },
   )
 
@@ -291,6 +291,18 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
         .sort((a, b) => (a.ts < b.ts ? -1 : 1))
         .slice(0, 5)
         .map((t) => ({ id: t.id, title: t.title, desc: t.desc, creator: t.creator })),
+    // 任务栏现状（共享视野，仅 pm/product 的提示会用到）：避免两位管理者重复派同一件事
+    boardTasks: async (ctx: TurnContext) =>
+      (await tasks.list(ctx.projectId))
+        .filter((t) => t.state === 'todo' || t.state === 'in_progress')
+        .slice(0, 12)
+        .map((t) => ({
+          id: t.id,
+          title: t.title,
+          assignee: t.assignee,
+          creator: t.creator,
+          state: t.state === 'todo' ? '待领取' : '进行中',
+        })),
     maxSteps: 6,
   }
 

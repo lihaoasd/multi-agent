@@ -134,6 +134,7 @@ describe('任务分派（甲模式）：pm/product 发布任务到任务栏 → 
       assignee: 'dev_1',
       title: 'A',
       desc: undefined,
+      force: false,
     })
 
     const plain = parseTaskIntents('方案通过，派活 [{"assignee":"dev_1","title":"C"}]')

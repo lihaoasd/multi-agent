@@ -16,6 +16,8 @@ export interface TaskDispatchIntent {
   assignee: string
   title: string
   desc?: string
+  /** 逃生阀：确需重复发布时跳过同题去重 */
+  force?: boolean
 }
 
 export interface ParseResult {
@@ -29,7 +31,10 @@ export interface DispatchItemResult {
   assignee: string
   title: string
   ok: boolean
-  state?: 'todo' | 'in_progress'
+  state?: 'todo' | 'in_progress' | 'done' | 'blocked' | 'terminated'
+  /** 命中同题去重（未新建，taskId=既有任务） */
+  duplicate?: boolean
+  existingCreator?: string
   reason?: string
 }
 /** 单条派发的依赖（工具入口与文本入口共用）。 */
@@ -121,6 +126,7 @@ export function parseTaskIntents(text: string): ParseResult {
         assignee,
         title,
         desc: typeof e.desc === 'string' ? e.desc : undefined,
+        force: e.force === true,
       })
     }
   }
@@ -161,31 +167,38 @@ export async function assignTaskFromIntent(
       assignee: intent.assignee,
       title: intent.title.slice(0, 200),
       desc: (intent.desc ?? '').slice(0, 300),
+      force: intent.force === true,
     },
   })
 
   try {
-    const rec = await deps.tasks.create({
-      projectId: deps.projectId,
-      title: intent.title,
-      desc: intent.desc,
-      creator: deps.actorId,
-      assignee: intent.assignee,
-      sessionId: `u_${intent.assignee}`,
-    })
+    const { task: rec, duplicate } = await deps.tasks.create(
+      {
+        projectId: deps.projectId,
+        title: intent.title,
+        desc: intent.desc,
+        creator: deps.actorId,
+        assignee: intent.assignee,
+        sessionId: `u_${intent.assignee}`,
+      },
+      { force: intent.force === true },
+    )
     await deps.emitTool('tool_result', {
       tool: 'task_assign',
       taskId: rec.id,
       assignee: intent.assignee,
       state: rec.state,
+      duplicate,
     })
     return {
       taskId: rec.id,
       assignee: intent.assignee,
       title: intent.title,
       ok: true,
-      state: 'todo',
-      reason: '已发布待领取',
+      state: rec.state,
+      duplicate,
+      existingCreator: duplicate ? rec.creator : undefined,
+      reason: duplicate ? `已存在同题任务（由 ${rec.creator} 发布）` : '已发布待领取',
     }
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
@@ -203,6 +216,11 @@ export async function assignTaskFromIntent(
 export function dispatchNoteFromResults(results: DispatchItemResult[]): string {
   const lines = results.map((r) => {
     if (!r.ok) return `- ⚠️ 未发布「${r.title}」→ ${r.assignee}：${r.reason ?? '未知原因'}`
+    if (r.duplicate)
+      return (
+        `- ♻️ 「${r.title}」→ ${r.assignee}：已存在同题任务 ${r.taskId}` +
+        `（由 ${r.existingCreator ?? '他人'} 发布，状态 ${r.state ?? 'todo'}），**本次未重复创建**`
+      )
     return `- 📤 任务 ${r.taskId}「${r.title}」已发布到任务栏 → ${r.assignee}（待领取，已通知对方）`
   })
   return `\n\n【系统 · 任务栏】\n${lines.join('\n')}`

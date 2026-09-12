@@ -169,6 +169,9 @@ agent_haness/                    # 平台仓库
 //   → 受派人 task_update 汇报 done/blocked/terminated；用户与委派人(creator)、甲模式协调者可干预。
 // 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/blocked/terminated = 通知委派人安排后续。
 // 状态变化广播 WS task.updated，任务栏面板实时刷新。
+// 撞车去重（2026-09-12）：同 assignee + 归一化标题（去空白/标点+小写）+ 状态∈{todo,in_progress} 视为同一件事，
+//   第二次发布不新建（回执点名重复对象）；force=true 可强制新建；终态任务不参与去重。
+// 并发安全：tasks.jsonl 的「读全量→改→覆盖写」由**单项目串行锁**保护（通知/结算在锁外，避免自锁）。
 // terminated（D17-①）= 显式终止：存在未结算改动时先结算为一条 code artifact 快照再置本状态（可回退）。
 // 激活规则（D17-①，修订 D16-④）：每 Agent 至多 1 个 in_progress；已有 in_progress 时**领取/置位被拒**（ERR_CONFLICT，
 //   不静默排队开工）；槽位由 done/terminated 释放，释放后平台**只通知**下一条待领取任务，由受派人自行 claim。

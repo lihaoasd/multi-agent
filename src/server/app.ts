@@ -588,21 +588,32 @@ function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
 
   app.post<{
     Params: { pid: string }
-    Body: { title?: string; desc?: string; creator?: string; assignee?: string; sessionId?: string }
+    Body: {
+      title?: string
+      desc?: string
+      creator?: string
+      assignee?: string
+      sessionId?: string
+      force?: boolean
+    }
   }>('/api/projects/:pid/tasks', async (req, reply) => {
     const b = req.body ?? {}
     if (!b.title || !b.assignee) {
       return reply.code(400).send({ code: 'ERR_VALIDATION', message: 'title/assignee 必填' })
     }
-    const task = await tasks.create({
-      projectId: req.params.pid,
-      title: b.title,
-      desc: b.desc,
-      creator: b.creator ?? 'user',
-      assignee: b.assignee,
-      sessionId: b.sessionId,
-    })
-    return reply.code(201).send({ task })
+    const r = await tasks.create(
+      {
+        projectId: req.params.pid,
+        title: b.title,
+        desc: b.desc,
+        creator: b.creator ?? 'user',
+        assignee: b.assignee,
+        sessionId: b.sessionId,
+      },
+      { force: b.force === true },
+    )
+    if (r.duplicate) return reply.code(200).send({ task: r.task, duplicate: true })
+    return reply.code(201).send({ task: r.task, duplicate: false })
   })
 
   app.patch<{
