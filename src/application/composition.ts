@@ -73,7 +73,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const gateway = new ModelGateway({ models: config.models })
   const memory = new MemoryStore(projectsRoot)
   const summary = new SummaryEngine(sessionStore)
-  const questions = new QuestionService(projectsRoot)
+  const questions = new QuestionService(projectsRoot, bus)
   // loop opts 可变：taskDispatch 依赖 tasks（后建），组合尾部再绑定（运行期读取）
   const loopOpts: ConstructorParameters<typeof AgentLoopRunner>[0] = {
     store: sessionStore,

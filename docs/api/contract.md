@@ -85,6 +85,8 @@
 { type:"approval.requested", payload:{approval:…}}
 { type:"meeting.event", payload:{meetingId, kind, …}}              // 轮次/决策点/结束
 { type:"artifact.updated", payload:{artifactId, state}}
+{ type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // 角色提问落盘后即时下行（2026-09-12）
+{ type:"question.answered", payload:{questionId, asker, answer}}                       // 回答/多标签页同步撤卡
 { type:"error", payload:{code, message}}
 ```
 

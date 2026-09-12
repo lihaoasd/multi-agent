@@ -991,6 +991,9 @@ async function submitQuestionAnswer(q, inputs, opts = {}) {
   try {
     const d = await api(`/projects/${current.pid}/questions/${q.id}/answer`, 'POST', body)
     toast(d.wakeError ? d.wakeError : `已提交回答，${senderName(q.asker)} 继续处理…`)
+    // 本地即时撤下卡片（服务端也会推 question.answered，多标签页一致）
+    current.questions = (current.questions ?? []).filter((x) => x.id !== q.id)
+    renderQuestions()
     await refreshPanels()
     if (opts.onDone) await opts.onDone()
     return true
@@ -1012,6 +1015,32 @@ function renderQuestions() {
   }
   zone.classList.remove('hidden')
   for (const q of list) zone.appendChild(buildQuestionCard(q))
+}
+
+/**
+ * 提问推送（WS `question.asked`/`question.answered`）：服务端落盘后即时下行。
+ * - 当前会话：把记录插进本地列表并**零请求**渲染卡片（不再等轮询）；
+ * - 别的角色会话：toast 提示 + 刷新「需你处理」角标（用户切到该会话即可见卡片）。
+ */
+function handleQuestionPush(e) {
+  const p = e.payload ?? {}
+  if (e.type === 'question.asked') {
+    const rec = p.record
+    if (rec && rec.id) {
+      const list = current.questions ?? []
+      current.questions = list.some((q) => q.id === rec.id) ? list : [rec, ...list]
+      if (rec.sessionId === current.sessionId) {
+        renderQuestions()
+      } else {
+        toast(`${senderName(rec.asker)} 有问题要问你，点顶部「需你处理」查看`)
+      }
+    }
+  } else {
+    current.questions = (current.questions ?? []).filter((q) => q.id !== p.questionId)
+    if (e.sessionId === current.sessionId) renderQuestions()
+  }
+  scheduleRefreshPanels()
+  scheduleRefreshAgents()
 }
 
 function senderName(sender) {
@@ -1364,6 +1393,11 @@ function connectWs(pid) {
     }
     ws.onmessage = (evt) => {
       const e = JSON.parse(evt.data)
+      // 提问推送：**在会话过滤之前**处理——别的角色会话里的提问也要能提示到用户
+      if (e.type === 'question.asked' || e.type === 'question.answered') {
+        handleQuestionPush(e)
+        return
+      }
       if (e.sessionId && e.sessionId !== current.sessionId) {
         // 其它会话的事件（别的角色在各自会话里干活）当前不需要在界面上反映，直接忽略
         return

@@ -69,6 +69,14 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(body).not.toContain('/rollback')
   })
 
+  it('提问卡片走 WS 推送（前端已接 question.asked/answered）', async () => {
+    const js = await ready().inject({ method: 'GET', url: '/app.js' })
+    const body = String(js.body)
+    expect(body).toContain('handleQuestionPush')
+    expect(body).toContain('question.asked')
+    expect(body).toContain('question.answered')
+  })
+
   it('未提供 webDir 时不注册静态托管（测试注入用），API 仍可用', async () => {
     const config = loadConfig({ dataDir: join(base, 'data2') }, base)
     config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]

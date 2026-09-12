@@ -2,6 +2,7 @@
  * 用户询问/确认交互（questions.jsonl，2026-09-09）：
  * Agent 在 user 会话内通过 ask_user 工具向用户提问（确认 / 单选 / 多选 / 文本），
  * 用户回答后由 API 层把答复作为用户消息写回会话并唤醒 Agent 回合（不阻塞进程）。
+ * 落盘后经 EventBus 推送 `question.asked/answered`（2026-09-12）：前端按 WS 即时出卡片，不再依赖轮询。
  */
 import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
@@ -9,6 +10,7 @@ import { promises as fs } from 'node:fs'
 import { AppError, ErrorCodes } from '../../shared/errors.js'
 import { genId, nowIso } from '../../infra/util/id.js'
 import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import type { EventBus } from '../../infra/bus/event-bus.js'
 
 export const QUESTION_KINDS = ['confirm', 'single', 'multi', 'text'] as const
 export type QuestionKind = (typeof QUESTION_KINDS)[number]
@@ -51,7 +53,11 @@ export interface AskInput {
 const DEFAULT_CONFIRM_OPTIONS = ['确认', '取消']
 
 export class QuestionService {
-  constructor(private readonly projectsRoot: string) {}
+  constructor(
+    private readonly projectsRoot: string,
+    /** 事件总线：落盘后推送 question.asked/answered（缺省=不推，便于单测直接构造） */
+    private readonly bus?: EventBus,
+  ) {}
 
   private file(projectId: string): string {
     return join(this.projectsRoot, projectId, 'questions.jsonl')
@@ -142,6 +148,15 @@ export class QuestionService {
     const all = await this.readAll(input.projectId)
     all.push(rec)
     await this.writeAll(input.projectId, all)
+    // 先盘后推：前端按 WS 立即在对应角色会话渲染问题卡片
+    this.bus?.emit('question.asked', rec.projectId, rec.sessionId, {
+      questionId: rec.id,
+      asker: rec.asker,
+      kind: rec.kind,
+      question: rec.question,
+      options: rec.options,
+      record: rec,
+    })
     return rec
   }
 
@@ -189,6 +204,12 @@ export class QuestionService {
     }
     all[idx] = next
     await this.writeAll(projectId, all)
+    // 先盘后推：多标签页/其它窗口同步移除待答卡片
+    this.bus?.emit('question.answered', next.projectId, next.sessionId, {
+      questionId: next.id,
+      asker: next.asker,
+      answer: normalized,
+    })
     return next
   }
 
