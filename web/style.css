@@ -511,62 +511,94 @@ li.active {
   border-bottom: 1px dashed var(--line);
   padding: 6px 0;
 }
-/* 任务栏面板（发布 → 待领取 → 进行中 → 完成） */
+/* 右栏「打开面板」小按钮 */
 button.mini {
   font-size: 12px;
   padding: 1px 8px;
   margin-left: 6px;
   border-radius: 6px;
 }
-.board-box {
-  width: min(1000px, 94vw);
-  max-height: 86vh;
-  overflow: auto;
+/* 任务栏面板：大窗口 + 三列各自滚动（卡片不再被裁切/挤在一起）。
+   注意选择器要带上 .modal-box：通用 .modal-box 规则在后面定义，同权重会覆盖这里。 */
+.modal-box.board-box {
+  width: min(1500px, 97vw);
+  max-width: 97vw;
+  height: min(90vh, 1000px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 滚动交给内部列，表头/说明常驻 */
+  padding: 14px 16px;
 }
 .board-head {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
 }
 .board-head h3 {
   margin: 0;
+  font-size: 17px;
 }
 .board-head .who {
   flex: 1;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+/* 底部说明常驻（不参与三列滚动区） */
+.modal-box.board-box > .empty-tip {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 .board-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  align-items: start;
-  margin: 10px 0;
+  grid-template-columns: repeat(3, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  margin: 12px 0 8px;
+  overflow: auto; /* 窄屏时整块横向滚动，而不是把卡片压扁 */
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .board-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(260px, 1fr);
   }
 }
 .board-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  max-height: 100%;
+  overflow-y: auto; /* 每列独立滚动 */
   background: #f7f8fa;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 6px 8px;
-  min-height: 90px;
+  padding: 8px 10px;
 }
 .board-col h5 {
-  margin: 2px 0 6px;
-  font-size: 13px;
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  margin: 0 0 8px;
+  padding: 6px 0 4px;
+  font-size: 13.5px;
+  background: #f7f8fa;
 }
 .board-card {
   background: #fff;
   border: 1px solid var(--line);
   border-left: 3px solid #999;
   border-radius: 6px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  flex: 0 0 auto;
 }
 .board-card .task-state {
-  margin-top: 4px;
+  display: inline-block;
+  margin-top: 5px;
 }
 .board-card.state-todo {
   border-left-color: #e0a800;
@@ -585,27 +617,29 @@ button.mini {
 }
 .board-title {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 .board-desc {
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: #555;
-  margin-top: 4px;
+  margin-top: 5px;
   white-space: pre-wrap;
-  max-height: 60px;
-  overflow: hidden;
+  word-break: break-word;
 }
 /* 完成总结 / 受阻原因（角色上报时给的说明） */
 .board-summary {
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: #1f6f43;
   background: #eefaf1;
   border-radius: 4px;
-  padding: 4px 6px;
-  margin-top: 4px;
+  padding: 6px 8px;
+  margin-top: 5px;
   white-space: pre-wrap;
-  max-height: 72px;
-  overflow: hidden;
+  word-break: break-word;
 }
 .board-card.state-blocked .board-summary {
   color: #a03325;

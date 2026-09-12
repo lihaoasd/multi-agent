@@ -334,7 +334,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
           })),
       }
     },
-    maxSteps: 10,
+    // 单回合工具步数：**不限制（无限轮）**，模型不再调用工具即结束；
+    // 空转由 loop 的无进展保护兜底（同工具+同入参+同结果连续 3 次即停）。
+    maxSteps: 0,
   }
 
   // 甲模式任务分派钩子（2026-09-09）：config.task.assignByAgent 时由 pm/product 的

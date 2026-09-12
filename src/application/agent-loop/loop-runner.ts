@@ -82,15 +82,18 @@ export interface ToolRuntimeHook {
   boardTasks?: (ctx: TurnContext) => Promise<BoardTask[]>
   /** 产出物归属（署名）：注入 [我的产出物] / [他人产出物（只读）] */
   fileOwnership?: (ctx: TurnContext) => Promise<FileOwnership>
-  /** 单回合最多工具步数（缺省 6） */
+  /**
+   * 单回合工具步数上限：**缺省不限制（无限轮）**，模型不再调用工具时自然结束。
+   * 传正数则作为硬上限（测试/特殊场景用）。为防止"原地空转"，另有无进展保护：
+   * 同一工具 + 同一入参 + 同一结果连续重复 REPEAT_STALL_LIMIT 次即停。
+   */
   maxSteps?: number
 }
 
 /**
  * 任务分派钩子（甲模式，后绑定）：在正文流完成、message 落盘前执行。
  * 返回追加到回复末尾的平台说明（无分派意图时返回空串）。
- */
-export interface TaskDispatchHook {
+ */export interface TaskDispatchHook {
   run: (ctx: TurnContext, text: string) => Promise<string>
 }
 
@@ -115,11 +118,13 @@ const MAX_TOOL_RESULT_CHARS = 8000
 const DISPATCH_ROLES = new Set(['pm', 'product'])
 /** 步数用尽后的收尾回合只允许这些"结项/沟通"工具（不再开新工作） */
 const CLOSURE_TOOLS = new Set(['task_update', 'task_claim', 'artifact_submit', 'ask_user'])
-/** 收尾回合的提示（步数用尽时注入，确保任务状态与用户总结不会因为预算耗尽而丢掉） */
+/** 收尾回合的提示（步数用尽/模型空手停下/检测到空转时注入，确保任务状态与用户总结不会丢） */
 const WRAPUP_PROMPT =
-  '【平台】本回合工具步数已达上限，现在进入**收尾**：不要开始新工作。请立刻完成两件事：' +
+  '【平台】现在进入**收尾**：不要开始新工作。请立刻完成两件事：' +
   '① 若你有进行中的任务且本轮已完成，调用 task_update（taskId 可省略，state=done，note=一句话完成总结）；' +
   '② 用一段话给出**面向用户的完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。'
+/** 无进展保护：同一工具+入参+结果连续重复这么多次 → 判定空转并收尾（无限轮时的安全阀） */
+const REPEAT_STALL_LIMIT = 3
 
 export class AgentLoopRunner {
   constructor(private readonly opts: AgentLoopRunnerOptions) {}
@@ -213,18 +218,25 @@ export class AgentLoopRunner {
     let thoughtCount = 0
     let failureText = ''
     let lastSeq = 0
-    const maxSteps = Math.max(1, this.opts.toolRuntime?.maxSteps ?? 10)
+    // 单回合工具步数：**缺省无限轮**（模型不再调用工具即结束）；只有显式传正数才设硬上限。
+    // 无限轮的安全阀是"无进展保护"（见下）：同一工具+入参+结果连续重复 REPEAT_STALL_LIMIT 次即收尾。
+    const configuredSteps = this.opts.toolRuntime?.maxSteps ?? 0
+    const stepLimit = configuredSteps > 0 ? configuredSteps : Number.POSITIVE_INFINITY
     /** 本回合调用过的工具名（用于回合末兜底提示：任务状态是否上报） */
     const calledTools = new Set<string>()
+    /** 无进展保护：签名 → 连续重复次数 */
+    const repeatCounts = new Map<string, number>()
     let toolCallCount = 0
     let exhausted = false
+    /** 检测到原地空转（重复同样调用）→ 收尾 */
+    let stalled = false
     /** 模型"空手停下"（有工具调用但最后一步没有任何正文/工具）→ 也走一次收尾回合 */
     let silentStop = false
     let wrappedUp = false
     /** 只出思考/预算被截断时，允许一次"少推理、直接输出"的重试（每回合至多一次） */
     let nudged = false
     try {
-      for (let step = 0; step < maxSteps; step++) {
+      for (let step = 0; step < stepLimit; step++) {
         const streamed = await this.streamStep(ctx, convo, turnId, tools)
         const { stepText, stepReasoning, calls, finishReason } = streamed
         // 步骤边界：按时间顺序落盘本步的「思考 → 正文」。
@@ -238,7 +250,7 @@ export class AgentLoopRunner {
           // 本回合没有正文也没有工具调用就结束了。重试一次，明确要求"直接输出/调用工具"。
           const bareStep = !stepText.trim() && !calls.size
           const truncated = finishReason === 'length'
-          if (bareStep && (stepReasoning.trim() || truncated) && !nudged && toolCallCount >= 0) {
+          if (bareStep && (stepReasoning.trim() || truncated) && !nudged) {
             nudged = true
             convo.push({
               role: 'system',
@@ -261,22 +273,41 @@ export class AgentLoopRunner {
         }
 
         const ordered = [...calls.entries()].sort((a, b) => a[0] - b[0])
-        const { toolCalls, toolMessages } = await this.execToolCalls(
+        const { toolCalls, toolMessages, stalled: hitStall } = await this.execToolCalls(
           ctx,
           meta,
           turnId,
           ordered,
           sessionType,
           calledTools,
+          repeatCounts,
         )
         toolCallCount += toolCalls.length
         convo.push({ role: 'assistant', content: stepText, toolCalls })
         convo.push(...toolMessages)
-        if (step === maxSteps - 1) exhausted = true
+        if (hitStall) {
+          // 无限轮 + 模型原地重复同一调用 → 停在这里，避免无限空转烧预算
+          stalled = true
+          const note = await this.opts.store.appendEvent(meta, {
+            kind: 'message',
+            role: 'user',
+            sender: 'system',
+            content: {
+              text:
+                `【系统】检测到连续 ${REPEAT_STALL_LIMIT} 次完全相同的工具调用且结果相同（原地空转），` +
+                '本回合已停止。若任务未完成，请调整思路（换参数/换工具）后重试。',
+              blocks: [],
+            },
+            payload: { turnId, system: true },
+          })
+          this.opts.bus.emitLogEvent(ctx.projectId, note)
+          break
+        }
+        if (Number.isFinite(stepLimit) && step === stepLimit - 1) exhausted = true
       }
 
-      // 步数用尽 / 模型空手停下 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢
-      if ((exhausted || silentStop) && this.opts.toolRuntime && !wrappedUp) {
+      // 步数用尽 / 模型空手停下 / 检测到空转 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢
+      if ((exhausted || silentStop || stalled) && this.opts.toolRuntime && !wrappedUp) {
         wrappedUp = true
         const wrap = await this.runWrapUp(ctx, meta, turnId, sessionType, convo, tools, calledTools)
         toolCallCount += wrap.toolCalls
@@ -423,7 +454,10 @@ export class AgentLoopRunner {
     return { stepText, stepReasoning, calls, finishReason }
   }
 
-  /** 执行一步里的工具调用（审计 + 审批桥 + 结果回注），并登记调用过的工具名。 */
+  /**
+   * 执行一步里的工具调用（审计 + 审批桥 + 结果回注），并登记调用过的工具名。
+   * 同时做**无进展检测**：同一「工具+入参+结果」连续重复 REPEAT_STALL_LIMIT 次 → 返回 stalled（由调用方收尾）。
+   */
   private async execToolCalls(
     ctx: TurnContext,
     meta: SessionMeta,
@@ -431,9 +465,11 @@ export class AgentLoopRunner {
     ordered: Array<[number, { id?: string; name?: string; args: string }]>,
     sessionType: string,
     calledTools: Set<string>,
-  ): Promise<{ toolCalls: ChatToolCall[]; toolMessages: ChatMessage[] }> {
+    repeatCounts?: Map<string, number>,
+  ): Promise<{ toolCalls: ChatToolCall[]; toolMessages: ChatMessage[]; stalled: boolean }> {
     const toolCalls: ChatToolCall[] = []
     const toolMessages: ChatMessage[] = []
+    let stalled = false
     for (const [index, cur] of ordered) {
       const name = cur.name ?? ''
       const id = cur.id ?? `call_${String(turn)}_${index}`
@@ -483,13 +519,21 @@ export class AgentLoopRunner {
           ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
           : { ok: false, code: result.code, reason: cut(result.reason, 300) }),
       })
+      // 无进展检测：同工具 + 同入参 + 同结果 → 计数；出现新签名则清空旧计数（要求"连续"重复）
+      if (repeatCounts) {
+        const sig = `${name}|${cur.args || '{}'}|${JSON.stringify(result).slice(0, 300)}`
+        for (const key of [...repeatCounts.keys()]) if (key !== sig) repeatCounts.delete(key)
+        const n = (repeatCounts.get(sig) ?? 0) + 1
+        repeatCounts.set(sig, n)
+        if (n >= REPEAT_STALL_LIMIT) stalled = true
+      }
       toolMessages.push({
         role: 'tool',
         toolCallId: id,
         content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
       })
     }
-    return { toolCalls, toolMessages }
+    return { toolCalls, toolMessages, stalled }
   }
 
   /**
@@ -691,7 +735,9 @@ export class AgentLoopRunner {
           (hasAsk
             ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
               '不要替用户决定；调用后请结束本轮并等待用户在会话中回答。'
-            : ''),
+            : '') +
+          '\n步数不设上限：请高效推进并把事情做完（不要为了凑步数而反复调用同一工具——' +
+          '同一工具+同一入参+同一结果连续 3 次会被平台判定为原地空转并停止本回合）。',
       )
     }
     // 产出物署名与归属：告诉角色"自己的产出物在哪、别人的只读"（2026-09-12）
