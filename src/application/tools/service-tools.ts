@@ -344,10 +344,24 @@ export function registerServiceTools(deps: {
         },
       },
       async (args, env) => {
+        const sid = env.sessionId ?? `u_${env.instanceId}`
         try {
+          // 软挂起：该会话已有待回答提问（常见于模型一轮里想连问几个）→ 不新建、不报错，
+          // 直接结束本回合等用户回答；用户回答后模型可从历史里看到提示并继续问剩下的。
+          const existing = await questions.pendingOf(env.projectId, sid).catch(() => null)
+          if (existing) {
+            return {
+              ok: true,
+              suspend: true,
+              summary:
+                `本轮不再新建提问：已有待回答的提问 ${existing.id}「${existing.question}」正在等用户回答` +
+                '（同一会话同时只保留 1 个待答问题）。本轮到此结束：你现在处于「等待用户决策」状态，' +
+                '不要继续执行任务；用户回答后你可以继续问剩下的问题（一次一个）。',
+            }
+          }
           const rec = await questions.ask({
             projectId: env.projectId,
-            sessionId: env.sessionId ?? `u_${env.instanceId}`,
+            sessionId: sid,
             asker: env.instanceId,
             question: String(args.question ?? ''),
             kind: args.kind === undefined ? undefined : String(args.kind),
@@ -364,7 +378,7 @@ export function registerServiceTools(deps: {
               `已向用户提问（${rec.id}，${rec.kind}）：${rec.question}` +
               (rec.options.length ? `\n选项：${rec.options.join(' / ')}` : '') +
               '\n本轮到此结束：你现在处于「等待用户决策」状态，不要继续执行任务、也不要臆测用户答复；' +
-              '用户回答后平台会唤醒你继续。',
+              '用户回答后平台会唤醒你继续（还有别的要问，等这轮问答结束后再一个一个问）。',
           }
         } catch (e) {
           return {

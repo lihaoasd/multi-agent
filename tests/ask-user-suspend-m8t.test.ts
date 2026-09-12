@@ -209,6 +209,133 @@ describe('ask_user：挂起等待用户决策 + 推送时序', () => {
     expect(me!.state).toBe('waiting')
   }, 30000)
 
+  it('同一步并发多个 ask_user：只执行第一个，其余直接跳过（不再出现失败行）', async () => {
+    const { pid, dev } = await setup()
+    let calls = 0
+    const gateway = {
+      async *streamChat() {
+        calls++
+        yield { content: '有三个点要你拍板。' }
+        // 真实案例：模型在一个 step 里并发给了 3 个 ask_user
+        for (const [i, q] of [
+          { question: '目标平台选哪个？', kind: 'single', options: ['A', 'B'] },
+          { question: '功能范围选哪些？', kind: 'multi', options: ['x', 'y'] },
+          { question: '技术栈有偏好吗？', kind: 'single', options: ['p', 'q'] },
+        ].entries()) {
+          yield { toolCall: { index: i, id: `q${i}`, name: 'ask_user' } }
+          yield { toolCall: { index: i, argumentsDelta: JSON.stringify(q) } }
+        }
+      },
+    } as unknown as ModelGateway
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      occupancy: svc.occupancy,
+      toolRuntime: {
+        listTools: () => [{ name: 'ask_user' }] as unknown as ToolSchema[],
+        exec: async (ctx, _st, name, args) =>
+          (await import('../src/infra/tools/executor.js')).executeTool(
+            name,
+            args,
+            await (await import('../src/application/composition.js')).buildToolEnv(
+              { config, projectService: svc.projectService },
+              ctx.projectId,
+              ctx.member.instanceId,
+              { sessionId: ctx.sessionId },
+            ),
+          ),
+        flushDeferred: async (ctx) => svc.questions.flushPending(ctx.projectId, ctx.sessionId),
+      },
+    })
+    await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: `u_${dev.instanceId}`,
+      member: dev,
+      scenario: 'multi-ask',
+    })
+    expect(calls).toBe(1)
+    const res = await ready().inject({
+      method: 'GET',
+      url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+    })
+    const evts = res.json().events as Array<{ kind: string; payload?: Record<string, unknown> }>
+    const askCalls = evts.filter((e) => e.kind === 'tool_call' && e.payload?.tool === 'ask_user')
+    const askResults = evts.filter((e) => e.kind === 'tool_result' && e.payload?.tool === 'ask_user')
+    // 只执行第一个：一次调用、一条结果、且成功（没有 ERR_CONFLICT 噪声）
+    expect(askCalls).toHaveLength(1)
+    expect(askResults).toHaveLength(1)
+    expect(askResults[0]!.payload?.ok).toBe(true)
+    // 只落一条待答提问
+    expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1)
+  }, 30000)
+
+  it('已有待答提问时再次提问 → 软挂起（ok+suspend），不报错、不再执行任务', async () => {
+    const { pid, dev } = await setup()
+    // 先造一个待答提问（模拟上一轮问过、用户还没回答）
+    await svc.questions.ask({
+      projectId: pid,
+      sessionId: `u_${dev.instanceId}`,
+      asker: dev.instanceId,
+      question: '上一轮的问题还在等你回答',
+      kind: 'confirm',
+    })
+    let calls = 0
+    const gateway = {
+      async *streamChat() {
+        calls++
+        yield { toolCall: { index: 0, id: 'q1', name: 'ask_user' } }
+        yield {
+          toolCall: {
+            index: 0,
+            argumentsDelta: JSON.stringify({ question: '另一个问题？', kind: 'text' }),
+          },
+        }
+      },
+    } as unknown as ModelGateway
+    const loop = new AgentLoopRunner({
+      store: svc.sessionStore,
+      gateway,
+      bus: svc.bus,
+      occupancy: svc.occupancy,
+      toolRuntime: {
+        listTools: () => [{ name: 'ask_user' }] as unknown as ToolSchema[],
+        exec: async (ctx, _st, name, args) =>
+          (await import('../src/infra/tools/executor.js')).executeTool(
+            name,
+            args,
+            await (await import('../src/application/composition.js')).buildToolEnv(
+              { config, projectService: svc.projectService },
+              ctx.projectId,
+              ctx.member.instanceId,
+              { sessionId: ctx.sessionId },
+            ),
+          ),
+        flushDeferred: async (ctx) => svc.questions.flushPending(ctx.projectId, ctx.sessionId),
+      },
+    })
+    await loop.runDirectTurn({
+      projectId: pid,
+      sessionId: `u_${dev.instanceId}`,
+      member: dev,
+      scenario: 'dup-ask',
+    })
+    expect(calls).toBe(1) // 软挂起：不再继续执行
+    const res = await ready().inject({
+      method: 'GET',
+      url: `/api/projects/${pid}/sessions/u_${dev.instanceId}/log`,
+    })
+    const evts = res.json().events as Array<{
+      kind: string
+      payload?: Record<string, unknown>
+      content?: { text?: string }
+    }>
+    const result = evts.find((e) => e.kind === 'tool_result' && e.payload?.tool === 'ask_user')
+    expect(result!.payload?.ok).toBe(true) // 关键：不再是 ERR_CONFLICT
+    expect(String(result!.payload?.summary ?? '')).toContain('已有待回答的提问')
+    expect(await svc.questions.list(pid, { status: 'pending' })).toHaveLength(1) // 没多建
+  }, 30000)
+
   it('挂起时不催任务状态（任务是暂停，不是完成）', async () => {
     const { pid, dev } = await setup()
     const { executeTool } = await import('../src/infra/tools/executor.js')

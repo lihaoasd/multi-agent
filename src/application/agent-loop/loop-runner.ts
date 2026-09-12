@@ -506,6 +506,9 @@ export class AgentLoopRunner {
     let stalled = false
     let suspended = false
     for (const [index, cur] of ordered) {
+      // 同一步里若模型并发给了多个 ask_user：第一个挂起后**不再执行后续调用**
+      // （否则会多出 "已有待回答的问题" 的失败行，用户看到像是报了两次错）
+      if (suspended) break
       const name = cur.name ?? ''
       const id = cur.id ?? `call_${String(turn)}_${index}`
       toolCalls.push({ id, name, arguments: cur.args || '{}' })

@@ -112,6 +112,16 @@ export class QuestionService {
     return rec
   }
 
+  /**
+   * 该会话当前待回答的提问（无则 null）。
+   * 供 ask_user 工具做**软挂起**：已有待答提问时不再新建、不再报错，直接结束本回合等用户回答，
+   * 避免"一次问多个 → 第二/第三个报错"这种看起来像失败的噪声（2026-09-12）。
+   */
+  async pendingOf(projectId: string, sessionId: string): Promise<QuestionRecord | null> {
+    const all = await this.readAll(projectId)
+    return all.find((q) => q.sessionId === sessionId && q.status === 'pending') ?? null
+  }
+
   /** 发起提问：同一会话同时只允许 1 个待回答（防刷屏）。 */
   async ask(input: AskInput): Promise<QuestionRecord> {
     const question = input.question?.trim()
