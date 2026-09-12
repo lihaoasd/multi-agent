@@ -48,11 +48,20 @@ export interface AskInput {
   kind?: string
   options?: string[]
   allowText?: boolean
+  /**
+   * 回合内工具调用发起（2026-09-12）：**先落盘、等回合结束再广播**。
+   * 否则会出现"角色还在思考/执行，提问卡片已经弹出来"的时间错位；
+   * 配合 loop 的"遇到 ask_user 即停"，卡片出现时角色正好进入「等待你处理」。
+   */
+  defer?: boolean
 }
 
 const DEFAULT_CONFIRM_OPTIONS = ['确认', '取消']
 
 export class QuestionService {
+  /** 回合内发起、等回合结束再广播的提问（内存队列；进程重启后由前端开会话时拉取兜底） */
+  private deferred: Array<{ projectId: string; sessionId: string; rec: QuestionRecord }> = []
+
   constructor(
     private readonly projectsRoot: string,
     /** 事件总线：落盘后推送 question.asked/answered（缺省=不推，便于单测直接构造） */
@@ -148,7 +157,33 @@ export class QuestionService {
     const all = await this.readAll(input.projectId)
     all.push(rec)
     await this.writeAll(input.projectId, all)
-    // 先盘后推：前端按 WS 立即在对应角色会话渲染问题卡片
+    // 先盘后推：默认立即广播；回合内发起（defer）则等回合结束由 flushPending 统一广播，
+    // 避免"角色还在思考/执行 → 提问卡片已经弹出"的时间错位。
+    if (input.defer) {
+      this.deferred.push({ projectId: rec.projectId, sessionId: rec.sessionId, rec })
+    } else {
+      this.emitAsked(rec)
+    }
+    return rec
+  }
+
+  /**
+   * 广播本回合积压的提问（由 loop 在**回合结束、占用释放之后**调用）：
+   * 此时角色的消息已落盘、状态已转「等待你处理」，卡片出现的时间点与状态一致。
+   */
+  flushPending(projectId: string, sessionId?: string): void {
+    const keep: typeof this.deferred = []
+    for (const item of this.deferred) {
+      if (item.projectId !== projectId || (sessionId && item.sessionId !== sessionId)) {
+        keep.push(item)
+        continue
+      }
+      this.emitAsked(item.rec)
+    }
+    this.deferred = keep
+  }
+
+  private emitAsked(rec: QuestionRecord): void {
     this.bus?.emit('question.asked', rec.projectId, rec.sessionId, {
       questionId: rec.id,
       asker: rec.asker,
@@ -157,7 +192,6 @@ export class QuestionService {
       options: rec.options,
       record: rec,
     })
-    return rec
   }
 
   /** 用户回答：校验后落盘（answered 不可重复回答）。 */

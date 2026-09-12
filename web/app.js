@@ -850,6 +850,8 @@ async function openSession(pid, sid) {
   const meta = d.session
   renderSessionHeader(meta)
   renderQuestions()
+  // 打开会话时拉一次待回答提问（WS 推送是主通道，这里是兜底）
+  void loadPendingQuestions(pid)
   const box = $('#messages')
   box.innerHTML = ''
   streaming = null
@@ -1043,13 +1045,16 @@ function handleQuestionPush(e) {
       } else {
         toast(`${senderName(rec.asker)} 有问题要问你，点顶部「需你处理」查看`)
       }
+      // 卡片出现的同时让团队状态立刻变「等待你处理」（不等 5s 轮询）
+      void refreshAgentsNow()
     }
   } else {
     current.questions = (current.questions ?? []).filter((q) => q.id !== p.questionId)
     if (e.sessionId === current.sessionId) renderQuestions()
+    void refreshAgentsNow()
   }
+  // 「需你处理」角标与其它面板合并刷新（仅事件驱动，不再定时轮询提问）
   scheduleRefreshPanels()
-  scheduleRefreshAgents()
 }
 
 /**
@@ -1414,6 +1419,9 @@ function connectWs(pid) {
     )
     ws.onopen = () => {
       wsReconnectDelay = 1000
+      // 连接（含重连）后拉一次待回答提问：断线期间的提问靠这次兜底补上
+      void loadPendingQuestions(pid)
+      void refreshAgentsNow()
     }
     ws.onmessage = (evt) => {
       const e = JSON.parse(evt.data)
@@ -1724,15 +1732,16 @@ function buildToolNode(who, e) {
 async function refreshPanels() {
   if (!current.pid) return
   const pid = current.pid
-  // 各面板**互相独立**：任一接口失败（网络/旧版本服务）都不能让其它面板（尤其提问卡片）不刷新
+  // 各面板**互相独立**：任一接口失败（网络/旧版本服务）都不能让其它面板不刷新。
+  // 注意：提问**不再轮询**（2026-09-12）——改由 WS question.asked/answered 驱动，
+  // 只在"打开会话/重连"时拉一次兜底（否则会出现空数组与被截断的时序错位）。
   const get = (p) => api(p).catch(() => null)
-  const [a, m, mem, att, tk, qs, ag] = await Promise.all([
+  const [a, m, mem, att, tk, ag] = await Promise.all([
     get(`/projects/${pid}/approvals?status=pending`),
     get(`/projects/${pid}/meetings`),
     get(`/projects/${pid}/memories?scope=global`),
     get(`/projects/${pid}/needs-attention`),
     get(`/projects/${pid}/tasks`),
-    get(`/projects/${pid}/questions?status=pending`),
     get(`/projects/${pid}/agents`),
   ])
   if (current.pid !== pid) return // 期间已切换项目/会话
@@ -1749,10 +1758,6 @@ async function refreshPanels() {
     current.tasks = tk.tasks ?? []
     renderTasks()
   }
-  if (qs) {
-    current.questions = qs.questions ?? []
-    renderQuestions() // 角色提问卡片（待回答）——独立渲染，不依赖其它面板
-  }
   if (ag) {
     current.agents = ag.agents ?? []
     renderTeamNav()
@@ -1768,6 +1773,25 @@ async function refreshPanels() {
       wrap.classList.add('hidden')
     }
   }
+}
+
+/** 拉一次待回答提问（打开会话 / WS 重连时的兜底；日常靠 WS 推送）。 */
+async function loadPendingQuestions(pid = current.pid) {
+  if (!pid) return
+  const d = await api(`/projects/${pid}/questions?status=pending`).catch(() => null)
+  if (!d || current.pid !== pid) return
+  current.questions = d.questions ?? []
+  renderQuestions()
+}
+
+/** 只刷新团队状态（提问/回答后需要立刻反映"等待你处理"）。 */
+async function refreshAgentsNow() {
+  const pid = current.pid
+  if (!pid) return
+  const d = await api(`/projects/${pid}/agents`).catch(() => null)
+  if (!d || current.pid !== pid) return
+  current.agents = d.agents ?? []
+  renderTeamNav()
 }
 
 /** 任务状态中文名（任务栏用；状态由角色自己汇报——todo=已发布待领取）。 */

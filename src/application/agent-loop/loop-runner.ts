@@ -88,6 +88,11 @@ export interface ToolRuntimeHook {
    * 同一工具 + 同一入参 + 同一结果连续重复 REPEAT_STALL_LIMIT 次即停。
    */
   maxSteps?: number
+  /**
+   * 回合结束（占用释放后）统一 flush 挂起类工具的推送（如 ask_user 的 question.asked）。
+   * 目的是让"提问卡片出现"与"角色进入等待你处理"发生在同一时刻。
+   */
+  flushDeferred?: (ctx: TurnContext) => Promise<void>
 }
 
 /**
@@ -160,6 +165,9 @@ export class AgentLoopRunner {
           sessionId: left?.sessionId ?? null,
         })
       }
+      // 回合结束、占用已释放 → 再广播本回合积压的提问（ask_user）：
+      // 顺序 = 角色消息落盘 → 状态转「等待你处理」→ 提问卡片出现，前端不会再看到时间错位。
+      await this.opts.toolRuntime?.flushDeferred?.(ctx).catch(() => undefined)
     }
   }
 
@@ -185,11 +193,13 @@ export class AgentLoopRunner {
       tools,
     )
     const history = await this.buildHistory(ctx)
-    await store.appendEvent(meta, {
+    const turnStartEvt = await store.appendEvent(meta, {
       kind: 'turn_start',
       sender: ctx.member.instanceId,
       payload: { turnId, loopStep: 'act' },
     })
+    // 广播回合边界：前端据此判断"本轮结束"（提问卡片/状态刷新都靠它对齐时序）
+    this.opts.bus.emitLogEvent(ctx.projectId, turnStartEvt)
     // plan-execute：回合开始即落计划/进度事件（data-storage §4.2 断点恢复依据）
     if ((ctx.member.loop?.strategy ?? 'direct') === 'plan-execute') {
       const planEvent = await store.appendEvent(meta, {
@@ -232,6 +242,8 @@ export class AgentLoopRunner {
     let stalled = false
     /** 模型"空手停下"（有工具调用但最后一步没有任何正文/工具）→ 也走一次收尾回合 */
     let silentStop = false
+    /** 角色因提问进入「等待用户决策」→ 本回合到此为止（不跑收尾、不催任务状态） */
+    let suspendedForUser = false
     let wrappedUp = false
     /** 只出思考/预算被截断时，允许一次"少推理、直接输出"的重试（每回合至多一次） */
     let nudged = false
@@ -273,7 +285,12 @@ export class AgentLoopRunner {
         }
 
         const ordered = [...calls.entries()].sort((a, b) => a[0] - b[0])
-        const { toolCalls, toolMessages, stalled: hitStall } = await this.execToolCalls(
+        const {
+          toolCalls,
+          toolMessages,
+          stalled: hitStall,
+          suspended,
+        } = await this.execToolCalls(
           ctx,
           meta,
           turnId,
@@ -285,6 +302,13 @@ export class AgentLoopRunner {
         toolCallCount += toolCalls.length
         convo.push({ role: 'assistant', content: stepText, toolCalls })
         convo.push(...toolMessages)
+        if (suspended) {
+          // 角色进入「等待用户决策」（ask_user）：**立即结束本回合**，不再继续调用工具/执行任务。
+          // 卡片/通知会在回合结束、占用释放后再推送（见 runDirectTurn 的 flushDeferred）。
+          pendingText = stepText.trim()
+          suspendedForUser = true
+          break
+        }
         if (hitStall) {
           // 无限轮 + 模型原地重复同一调用 → 停在这里，避免无限空转烧预算
           stalled = true
@@ -306,8 +330,9 @@ export class AgentLoopRunner {
         if (Number.isFinite(stepLimit) && step === stepLimit - 1) exhausted = true
       }
 
-      // 步数用尽 / 模型空手停下 / 检测到空转 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢
-      if ((exhausted || silentStop || stalled) && this.opts.toolRuntime && !wrappedUp) {
+      // 步数用尽 / 模型空手停下 / 检测到空转 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢。
+      // 注意：因提问而挂起（等待用户决策）时**不**跑收尾——任务是被暂停，不是完成。
+      if ((exhausted || silentStop || stalled) && !suspendedForUser && this.opts.toolRuntime && !wrappedUp) {
         wrappedUp = true
         const wrap = await this.runWrapUp(ctx, meta, turnId, sessionType, convo, tools, calledTools)
         toolCallCount += wrap.toolCalls
@@ -383,13 +408,16 @@ export class AgentLoopRunner {
       calledTools,
       toolCallCount,
       Boolean(tailText.trim()),
+      // 因提问而挂起时不催"任务仍为进行中"——角色本来就在等用户决策
+      suspendedForUser,
     )
 
-    await store.appendEvent(meta, {
+    const turnEndEvt = await store.appendEvent(meta, {
       kind: 'turn_end',
       sender: ctx.member.instanceId,
       payload: { turnId, ok: true },
     })
+    this.opts.bus.emitLogEvent(ctx.projectId, turnEndEvt)
     return (
       msgEvent ?? {
         seq: lastSeq,
@@ -466,10 +494,17 @@ export class AgentLoopRunner {
     sessionType: string,
     calledTools: Set<string>,
     repeatCounts?: Map<string, number>,
-  ): Promise<{ toolCalls: ChatToolCall[]; toolMessages: ChatMessage[]; stalled: boolean }> {
+  ): Promise<{
+    toolCalls: ChatToolCall[]
+    toolMessages: ChatMessage[]
+    stalled: boolean
+    /** 有工具要求挂起（ask_user）→ 调用方立即结束本回合 */
+    suspended: boolean
+  }> {
     const toolCalls: ChatToolCall[] = []
     const toolMessages: ChatMessage[] = []
     let stalled = false
+    let suspended = false
     for (const [index, cur] of ordered) {
       const name = cur.name ?? ''
       const id = cur.id ?? `call_${String(turn)}_${index}`
@@ -532,8 +567,10 @@ export class AgentLoopRunner {
         toolCallId: id,
         content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
       })
+      // 挂起类工具（ask_user）：本步执行完后 loop 会立即结束回合
+      if (result.ok && result.suspend === true) suspended = true
     }
-    return { toolCalls, toolMessages, stalled }
+    return { toolCalls, toolMessages, stalled, suspended }
   }
 
   /**
@@ -587,8 +624,11 @@ export class AgentLoopRunner {
     calledTools: Set<string>,
     toolCallCount: number,
     replied: boolean,
+    /** 因提问挂起（等待用户决策）→ 不催任务状态 */
+    suspendedForUser = false,
   ): Promise<void> {
     if (toolCallCount === 0) return
+    if (suspendedForUser) return
     const freshActive =
       (await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)) ?? activeTask
     const freshPending =

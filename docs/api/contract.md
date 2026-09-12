@@ -82,11 +82,11 @@
 { type:"agent.state", payload:{instanceId, state, sessionId} }
 { type:"team.updated", payload:{instanceId, enabled, …} }            // 实例停用/启用（D14-9）
 { type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
-{ type:"event.appended", payload:{sessionId, seq, kind}}            // tool/artifact/approval 等事件
+{ type:"event.appended", payload:{sessionId, seq, kind}}            // tool/artifact/approval 等事件 + 回合边界（turn_start/turn_end，2026-09-12 起广播）
 { type:"approval.requested", payload:{approval:…}}
 { type:"meeting.event", payload:{meetingId, kind, …}}              // 轮次/决策点/结束
 { type:"artifact.updated", payload:{artifactId, state}}
-{ type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // 角色提问落盘后即时下行（2026-09-12）
+{ type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // 回合结束、占用释放后推送（与「等待你处理」状态同时到达）
 { type:"question.answered", payload:{questionId, asker, answer}}                       // 回答/多标签页同步撤卡
 { type:"error", payload:{code, message}}
 ```

@@ -353,13 +353,18 @@ export function registerServiceTools(deps: {
             kind: args.kind === undefined ? undefined : String(args.kind),
             options: Array.isArray(args.options) ? args.options.map(String) : undefined,
             allowText: args.allowText === true,
+            // 回合内发起：等回合结束（占用释放后）再广播，避免"角色还在执行/思考，卡片已弹出"
+            defer: true,
           })
           return {
             ok: true,
+            // suspend：loop 见到这个标记立即结束本回合 → 角色进入「等待你处理」，不再继续执行任务
+            suspend: true,
             summary:
               `已向用户提问（${rec.id}，${rec.kind}）：${rec.question}` +
               (rec.options.length ? `\n选项：${rec.options.join(' / ')}` : '') +
-              '\n请结束本轮并等待用户在会话中回答；不要臆测用户的答复。',
+              '\n本轮到此结束：你现在处于「等待用户决策」状态，不要继续执行任务、也不要臆测用户答复；' +
+              '用户回答后平台会唤醒你继续。',
           }
         } catch (e) {
           return {

@@ -11,7 +11,15 @@ import { resolveVirtual, type PathRoots } from '../../domain/rules/path-resolver
 import { assessCommand, type PolicyVerdict } from '../../domain/rules/command-policy.js'
 
 export type ToolResult =
-  | { ok: true; summary: string }
+  | {
+      ok: true
+      summary: string
+      /**
+       * 挂起标记（2026-09-12）：工具让角色进入"等待用户决策"（如 ask_user）→
+       * loop 见到即结束本回合，不再继续调用工具/执行任务。
+       */
+      suspend?: boolean
+    }
   | { ok: false; code: string; reason: string; ruleId?: string; approvalId?: string }
 
 export interface ToolDef {

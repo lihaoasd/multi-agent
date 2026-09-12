@@ -1,0 +1,68 @@
+# 2026-09-12 提问改为纯 WS + ask_user 挂起等待用户决策
+
+## 需求/问题
+
+用户："ask 用户的功能采用 websocket 实现，调接口的方式出现时间错位——角色还在思考，弹窗却出来了；
+弹窗出来了，角色状态还没变；还会重新轮询（接口返回空数组、多调几次）。
+**角色 ask 的时候应该是等待用户决策的，不应该还在执行任务。**"
+
+三个问题分别对应：
+
+1. **时序错位**：`ask_user` 是回合内的普通工具调用 → 提问记录**立刻**落盘并且**立刻**推 WS，
+   于是角色还在同一个回合里思考/写文件时，卡片就已经出现在界面上；
+2. **状态不同步**：前端团队状态刷新是 5s 合并刷新，卡片出现时左侧还显示"工作中"；
+3. **仍在执行任务**：`ask_user` 只是工具结果，模型可以继续调用工具干活——与"等用户决策"的语义矛盾；
+4. **多余的轮询**：`refreshPanels()` 每次刷新都拉 `/questions?status=pending`，没提问时返回 `[]`，
+   DevTools 里就是"空数组 + 多次调用"。
+
+## 改动范围
+
+### 一、ask_user 挂起本回合（核心语义，`executor.ts` / `service-tools.ts` / `loop-runner.ts`）
+
+- `ToolResult` 新增 `suspend?: boolean`；`ask_user` 成功时返回 `suspend: true`，
+  并在工具结果里写明"本轮到此结束：你现在处于「等待用户决策」状态，不要继续执行任务"。
+- `execToolCalls` 汇总该标记；主循环见到 `suspended` → **立即 break**（不再调用任何工具），
+  并且**跳过收尾回合**（任务是暂停不是完成）、**跳过"任务仍未上报"的催促提示**。
+- 用户回答后由既有链路唤醒新回合继续（`POST /questions/:qid/answer` → 写用户消息 + 触发回合）。
+
+### 二、推送延迟到回合结束（`question-service.ts` / `loop-runner.ts` / `composition.ts`）
+
+- `QuestionService.ask({ defer: true })`：**先落盘**，把提问放进内存队列，不立即广播；
+  `flushPending(projectId, sessionId)` 统一广播 `question.asked`。
+- `ask_user` 工具传 `defer: true`；`toolRuntime.flushDeferred` 由组合根接到 `questions.flushPending`。
+- loop 在 `runDirectTurn` 的 **finally**（占用已释放、`agent.state` 已广播之后）调用 `flushDeferred`：
+  顺序 = 角色消息落盘 → 回合结束 → 占用释放 → **提问卡片推送**。
+  此刻 `GET /agents` 已经是 `waiting`（有待答提问且不在工作中）→ 卡片与状态同时变化。
+- 顺手把 `turn_start` / `turn_end` 也广播出去（此前只落盘不广播），前端据此对齐"本轮结束"。
+
+### 三、前端不再轮询提问（`web/app.js`）
+
+- `refreshPanels()` 移除 `GET /questions?status=pending`（现在全文件只有 1 处调用）。
+- 新增 `loadPendingQuestions(pid)`：只在**打开会话**与 **WS 打开/重连**时拉一次兜底
+  （断线期间产生的提问靠这次补上）。
+- 新增 `refreshAgentsNow()`：`question.asked/answered` 到达时**立即**刷新团队状态（不再等 5s 合并刷新），
+  保证"卡片出现 == 状态变「等待你处理」"。
+- 增删提问仍按 `id` 去重、仍沿用既有 `question.asked/answered` 处理（在会话过滤之前）。
+
+## 测试
+
+新增 `tests/ask-user-suspend-m8t.test.ts`（3 例，确定性 gateway + 真实 bus/occupancy）：
+
+1. **提问后本回合立即结束**：模型只被调用 1 次、工作目录里没有产生任何后续文件、提问已落盘；
+2. **推送时序**：`question.asked` 出现在 `turn_end` **之后**（断言事件顺序），且此刻 `GET /agents`
+   该角色状态为 `waiting`（不是 `working`）；
+3. **挂起不催任务**：不出现"任务仍为进行中，请 task_update"的系统提示，任务保持 `in_progress`（暂停而非被改状态）。
+
+## 验证结果
+
+- `npx tsc -p tsconfig.json` → 0；`npx eslint .` → 0；`node --check web/app.js` → 0
+- `npx vitest run --pool=threads` → **34 文件 / 201 用例全绿**
+- 前端自检：`/questions?status=pending` 在 `web/app.js` 中**只剩 1 处**（打开会话/重连的兜底）。
+- 说明：本轮未在用户实时项目里注入测试消息（用户正在界面上操作，避免干扰）；
+  真实模型下的 UI 表现请用户直接试一次（发一句话让角色 `ask_user`）。
+
+## 边界
+
+- `defer` 队列是**进程内存**：若推送前进程重启，卡片不会自动弹出（提问已落盘），
+  打开会话/重连时的兜底拉取会补上。
+- 仍保留 HTTP 兜底接口（`GET /questions?status=pending`）供断线与排查使用，只是不再用于轮询。
