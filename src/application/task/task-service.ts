@@ -17,6 +17,7 @@ import { promises as fs } from 'node:fs'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
 import { genId, nowIso } from '../../infra/util/id.js'
+import { KeyedLock } from '../../infra/util/keyed-lock.js'
 import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
 import type { EventBus } from '../../infra/bus/event-bus.js'
 
@@ -84,7 +85,7 @@ export interface TaskServiceHooks {
 
 export class TaskService {
   /** 单项目串行锁（异步 promise 链）：保护 tasks.jsonl 的读-改-写。 */
-  private readonly locks = new Map<string, Promise<void>>()
+  private readonly lock = new KeyedLock()
 
   constructor(
     private readonly projectsRoot: string,
@@ -362,18 +363,7 @@ export class TaskService {
    * 只包住读改写，不跨越通知/结算（那些会触发 Agent 回合，持锁会自锁）。
    */
   private async withLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.locks.get(projectId) ?? Promise.resolve()
-    const run = prev.then(() => fn(), () => fn())
-    const guard = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    this.locks.set(projectId, guard)
-    try {
-      return await run
-    } finally {
-      if (this.locks.get(projectId) === guard) this.locks.delete(projectId)
-    }
+    return this.lock.run(projectId, fn)
   }
 
   private async rewrite(projectId: string, rec: TaskRecord): Promise<void> {

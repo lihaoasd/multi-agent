@@ -1,3 +1,6 @@
+/**
+ * 产出物登记（artifact_submit → 项目工作目录就地登记 + 版本快照 + 署名，2026-09-12 取消私有区）。
+ */
 import { mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -60,69 +63,76 @@ async function exists(p: string): Promise<boolean> {
   )
 }
 
-describe('产出物提交通道（artifact_submit 工具 → 项目工作目录）', () => {
-  it('code 类：ws 私有区 → artifact_submit → 文件落入项目工作目录 + artifact approved', async () => {
-    const { pid, dev } = await setup()
-    // 1) 角色先在私有区写代码
-    const w = await executeTool(
-      'ws_write',
-      { path: 'ws://src/snake.js', action: 'write', content: 'console.log(1)\n' },
-      await env(pid, dev),
-    )
-    expect(w.ok).toBe(true)
-    expect(await exists(join(workdir, 'src/snake.js'))).toBe(false) // 还没进项目目录
+/** 直接写工作目录文件（模拟角色已产出；所有权由 fileOwners 登记）。 */
+const writeFileViaTool = async (pid: string, dev: string, rel: string, text: string) =>
+  executeTool(
+    'workdir_edit',
+    { path: `workdir://${rel}`, edits: [{ type: 'write', text }] },
+    await env(pid, dev),
+  )
 
-    // 2) 提交（提交即落地，不走审批门）
+describe('产出物登记（工作目录就地 → manifest + 版本快照 + 署名）', () => {
+  it('code 类：workdir_edit 写文件 → artifact_submit 登记 → approved + 署名 + 文件原地不动', async () => {
+    const { pid, dev } = await setup()
+    const w = await writeFileViaTool(pid, dev, 'src/snake.js', 'console.log(1)\n')
+    expect(w.ok).toBe(true)
+    expect(await exists(join(workdir, 'src/snake.js'))).toBe(true) // 产出直接落在项目目录
+
     const sub = await executeTool(
       'artifact_submit',
       {
         title: '贪吃蛇核心代码',
         type: 'code',
-        files: [{ fromWsRel: 'ws://src/snake.js', relPath: 'src/snake.js' }],
+        files: [{ relPath: 'src/snake.js' }],
       },
       await env(pid, dev),
     )
     expect(sub.ok).toBe(true)
     const summary = sub.ok ? sub.summary : ''
-    expect(summary).toContain('项目工作目录')
+    expect(summary).toContain('已登记产出物')
+    expect(summary).toContain('署名')
     expect(await readFile(join(workdir, 'src/snake.js'), 'utf8')).toBe('console.log(1)\n')
     const arts = await svc.artifacts.list(pid)
     expect(arts).toHaveLength(1)
     expect(arts[0]!.state).toBe('approved')
+    expect(arts[0]!.submitter).toBe(dev) // 署名
     expect(arts[0]!.files[0]!.relPath).toBe('src/snake.js')
+    // 版本快照存在
+    expect(
+      await exists(join(base, 'data', 'projects', pid, arts[0]!.versionDir, 'src/snake.js')),
+    ).toBe(true)
   }, 20000)
 
-  it('doc 类：提交即落地（不需要审批）→ 直接落入项目工作目录 + approved + 无审批记录', async () => {
+  it('doc 类：登记即完成（不需要审批）+ 归属记录含署名', async () => {
     const { pid, dev } = await setup()
-    await executeTool(
-      'ws_write',
-      { path: 'ws://docs/prd.md', action: 'write', content: '# 登录 PRD\n' },
-      await env(pid, dev),
-    )
+    await writeFileViaTool(pid, dev, 'docs/prd.md', '# 登录 PRD\n')
     const sub = await executeTool(
       'artifact_submit',
-      { title: '登录 PRD', type: 'doc', path: 'ws://docs/prd.md', relPath: 'docs/prd.md' },
+      { title: '登录 PRD', type: 'doc', path: 'docs/prd.md' },
       await env(pid, dev),
     )
     expect(sub.ok).toBe(true)
-    expect(sub.ok ? sub.summary : '').toContain('项目工作目录')
-    // 不产生审批请求，文件直接落地
-    expect(await readFile(join(workdir, 'docs/prd.md'), 'utf8')).toBe('# 登录 PRD\n')
     const arts = await svc.artifacts.list(pid)
     expect(arts[0]!.state).toBe('approved')
     expect(arts[0]!.approvalId).toBeNull()
-    const pending = await svc.approvals.list(pid, 'pending')
-    expect(pending).toHaveLength(0)
+    expect(await svc.approvals.list(pid, 'pending')).toHaveLength(0)
+
+    const owners = await svc.fileOwners.list(pid)
+    const rec = owners.find((o) => o.relPath === 'docs/prd.md')
+    expect(rec).toBeTruthy()
+    expect(rec!.owner).toBe(dev)
+    expect(rec!.via).toBe('artifact_submit')
+    expect(rec!.ownerName).not.toBe('') // 署名（显示名）
   }, 20000)
 
-  it('参数校验：无 files/path → 拒绝；源文件不存在 → 拒绝', async () => {
+  it('参数校验：无 files/path → 拒绝；文件不存在 → 拒绝', async () => {
     const { pid, dev } = await setup()
     const e = await env(pid, dev)
     const empty = await executeTool('artifact_submit', { title: 'x', type: 'doc' }, e)
     expect(empty.ok).toBe(false)
     const ghost = await executeTool(
       'artifact_submit',
-      { title: 'x', type: 'doc', path: 'ws://nope.md' },
+      { title: 'x', type: 'doc', path: 'docs/nope.md' },
       e,
     )
     expect(ghost.ok).toBe(false)

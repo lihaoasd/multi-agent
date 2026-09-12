@@ -7,6 +7,8 @@
 export const ErrorCodes = {
   NOT_FOUND: 'ERR_NOT_FOUND',
   CONFLICT: 'ERR_CONFLICT',
+  /** 归属限制：该文件/产出物属于别的角色（2026-09-12 署名与归属锁） */
+  FORBIDDEN: 'ERR_FORBIDDEN',
   FORBIDDEN_PATH: 'ERR_FORBIDDEN_PATH',
   APPROVAL_REQUIRED: 'ERR_APPROVAL_REQUIRED',
   APPROVAL_REJECTED: 'ERR_APPROVAL_REJECTED',
@@ -27,6 +29,7 @@ export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes]
 const HTTP_STATUS: Record<ErrorCode, number> = {
   [ErrorCodes.NOT_FOUND]: 404,
   [ErrorCodes.CONFLICT]: 409,
+  [ErrorCodes.FORBIDDEN]: 403,
   [ErrorCodes.FORBIDDEN_PATH]: 403,
   [ErrorCodes.APPROVAL_REQUIRED]: 403,
   [ErrorCodes.APPROVAL_REJECTED]: 403,

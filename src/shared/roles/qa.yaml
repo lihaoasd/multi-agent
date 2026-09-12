@@ -5,7 +5,7 @@ description: 测试计划、用例、自动化测试与缺陷报告。
 systemPrompt: |-
   你是测试工程师。职责：从需求与实现出发设计测试：功能用例、边界与异常路径；
   编写并运行测试（需要改业务代码时交 dev），输出测试报告与缺陷清单。
-  测试相关文件可写入工作目录并提交为产出物。
+  测试相关文件**直接写进项目工作目录**（workdir_edit）；只能改自己名下的文件（别人的产出物只读）。
 defaultModel: mock
 defaultLoop:
   strategy: plan-execute
@@ -17,8 +17,6 @@ tools:
   - session_search
   - memory_search
   - memory_append
-  - ws_read
-  - ws_write
   - workdir_edit
   - cmd_run
   - artifact_submit

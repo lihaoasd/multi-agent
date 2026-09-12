@@ -575,6 +575,22 @@ function registerExportRoutes(app: FastifyInstance, svc: Services): void {
 
 function registerTaskRoutes(app: FastifyInstance, svc: Services): void {
   const { tasks } = svc
+  const { fileOwners, projectService } = svc
+
+  // 产出物署名与归属（2026-09-12）：谁写的、什么时候、什么任务
+  app.get<{ Params: { pid: string }; Querystring: { owner?: string; mine?: string } }>(
+    '/api/projects/:pid/file-owners',
+    async (req) => {
+      const all = await fileOwners.list(req.params.pid)
+      const team = await projectService.listTeam(req.params.pid).catch(() => [])
+      const nameOf = (owner: string) =>
+        team.find((m) => m.instanceId === owner)?.displayName ?? owner
+      const filtered = req.query.owner ? all.filter((r) => r.owner === req.query.owner) : all
+      return {
+        files: filtered.map((r) => ({ ...r, ownerName: r.ownerName || nameOf(r.owner) })),
+      }
+    },
+  )
 
   app.get<{
     Params: { pid: string }

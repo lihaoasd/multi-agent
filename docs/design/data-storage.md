@@ -31,16 +31,17 @@ agent_haness/                    # 平台仓库
 │           │   ├── global.jsonl              # 项目全局记忆条目
 │           │   └── <roleInstanceId>.jsonl    # 角色长期记忆条目（个人）
 │           ├── workspaces/
-│           │   └── <roleInstanceId>/         # 私有工作区（草稿/中间物；其他角色与 UI 不可见）
+│           │   └── <roleInstanceId>/         # 私有工作区（2026-09-12 已取消：无写工具，目录保留仅为兼容）
 │           ├── artifacts.jsonl               # 产出物 manifest（相对工作目录路径）
+│           ├── file-owners.jsonl             # 产出物署名与归属：relPath → owner/ownerName/时间/次数（§6.1）
 │           ├── artifact-versions/            # 版本内容存储：doc=提交快照 / code=补丁（回退依据，见 §6）
 │           ├── tasks.jsonl                   # 任务委派记录
 │           ├── approvals.jsonl               # 审批队列与历史（含审计）
 │           └── search-index/                 # 派生倒排索引（可重建）
-└── (用户选定) <workdir>/       # 【项目工作目录 = 共享产出目录】：正式产出物在此落地
+└── (用户选定) <workdir>/       # 【项目工作目录 = 唯一产出地】：所有角色产出在此落地并署名
 ```
 
-> 会话日志/记忆/工作区 **永不在工作目录内**（prd 明确要求）；工作目录只被「产出物提交/受控命令」触碰。
+> 会话日志/记忆/工作区 **永不在工作目录内**（prd 明确要求）；工作目录只被「受控编辑（workdir_edit）/产出物登记/受控命令」触碰。
 
 ## 3. project.json（schema 示例）
 
@@ -141,6 +142,18 @@ agent_haness/                    # 平台仓库
 - 滚动摘要行**属于会话文件**（`summary` kind 事件），总摘要/纪要条目在结束后写入上述记忆文件。
 
 ## 6. 产出物 manifest（artifacts.jsonl）
+
+### 6.1 产出物署名与归属（file-owners.jsonl，2026-09-12）
+
+```jsonc
+{ "relPath": "src/snake.js", "owner": "dev_1", "ownerName": "高级开发",
+  "firstAt": "…", "lastAt": "…", "edits": 3, "lastTaskId": "t_…", "via": "workdir_edit|artifact_submit" }
+```
+
+- 一行一个文件；`ownerName` 即**署名**（角色显示名）。首次写入即认领；续写累加 `edits` 并刷新 `lastAt`。
+- 写前校验（`workdir_edit` / `artifact_submit`）：无主放行、owner=自己放行、**owner=他人 → `ERR_FORBIDDEN`**。
+- 写入用**单项目串行锁**（`KeyedLock`）保护，避免并发写丢记录；不做转交（用户选择"只读 + 新建文件"）。
+- 读取：`GET /api/projects/:pid/file-owners[?owner=]`；同时注入角色系统提示（我的/他人的产出物清单）。
 
 ```jsonc
 { "id": "a_…", "type": "doc|code|config|test|deploy", "title": "PRD v1",

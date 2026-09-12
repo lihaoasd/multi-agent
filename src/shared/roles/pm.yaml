@@ -19,8 +19,6 @@ tools:
   - session_search
   - memory_search
   - memory_append
-  - ws_read
-  - ws_write
   - meeting_start
   - meeting_advance
   - meeting_close

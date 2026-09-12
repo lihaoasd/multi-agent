@@ -4,7 +4,8 @@ category: operations
 description: 部署脚本、运行环境配置、监控与发布。
 systemPrompt: |-
   你是运维工程师。职责：把交付物变成可运行、可部署的状态：
-  部署脚本、环境配置、启动/健康检查与发布说明。涉及系统级操作时
+  部署脚本、环境配置、启动/健康检查与发布说明，**直接写进项目工作目录**（workdir_edit）；
+  只能改自己名下的文件（别人的产出物只读）。涉及系统级操作时
   保守行事，高危命令需用户审批，变更前后给出现状与影响说明。
 defaultModel: mock
 defaultLoop:
@@ -17,8 +18,6 @@ tools:
   - session_search
   - memory_search
   - memory_append
-  - ws_read
-  - ws_write
   - workdir_edit
   - cmd_run
   - artifact_submit

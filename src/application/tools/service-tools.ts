@@ -1,9 +1,10 @@
 /**
  * 应用级工具注册（记忆/检索/受控编辑/用户交互类，需服务依赖），组合根启动时调用一次。
  * 只读/检索类在 user+meeting 可用；memory_append own 写入、全局仅 pm_1（D18-② 权限）。
- * workdir_edit：code 受控编辑（写通道①，D14-⑧），仅 user 会话，改动归属 taskId 聚合轨迹。
+ * workdir_edit：**项目工作目录唯一写通道**（2026-09-12 取消私有区），改动归属 taskId 聚合轨迹，
+ *   并按 file-owners 做署名与归属校验（他人产出物不可改）。
  * ask_user：向用户提问/确认（单选·多选·确认·文本），仅 user 会话；用户回答后唤醒新回合。
- * task_assign：产品/项目经理给团队成员派单（创建任务 + 默认立即开工），仅 user 会话。
+ * task_assign：产品/项目经理发布任务到任务栏（通知受派人领取），仅 user 会话。
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -14,12 +15,14 @@ import { resolveVirtual } from '../../domain/rules/path-resolver.js'
 import { MemoryStore } from '../memory/memory-store.js'
 import { SearchService } from '../search/search-service.js'
 import { CodeEditStore } from '../code-edit/code-edit-store.js'
+import { AppError, ErrorCodes } from '../../shared/errors.js'
 import type { QuestionService } from '../question/question-service.js'
 import type { TaskService } from '../task/task-service.js'
 import type { TaskState } from '../task/task-service.js'
 import { assignTaskFromIntent } from '../task/task-dispatch.js'
 import type { MeetingService } from '../meeting/meeting-service.js'
 import type { ArtifactService } from '../artifact/artifact-service.js'
+import type { FileOwnerStore } from '../artifact/file-owner-store.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 
 /** 可派单的角色（与 task-dispatch 的 DISPATCH_ROLES 保持一致）。 */
@@ -35,8 +38,10 @@ export function registerServiceTools(deps: {
   tasks?: TaskService
   meetings?: MeetingService
   listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
-  /** 产出物提交（ws 私有区 → 项目工作目录） */
+  /** 产出物提交（项目工作目录就地登记 + 版本快照） */
   artifacts?: ArtifactService
+  /** 产出物署名与归属（file-owners）：写前校验、写后认领 */
+  fileOwners?: FileOwnerStore
   /** 在会议会话内为某实例执行一轮（会议发言） */
   runMeetingTurn?: (
     projectId: string,
@@ -54,6 +59,7 @@ export function registerServiceTools(deps: {
     meetings,
     listTeam,
     artifacts,
+    fileOwners,
     runMeetingTurn,
   } = deps
 
@@ -150,11 +156,13 @@ export function registerServiceTools(deps: {
     },
   )
 
-  // code 受控编辑（写工作目录通道①，workspaces-artifacts §2.2 / tools.md §6）
+  // 项目工作目录受控编辑（**唯一写通道**，2026-09-12 取消私有区）
   registerTool(
     {
       name: 'workdir_edit',
-      description: '工作目录受控编辑（单文件、声明式替换/写入，留 diff 轨迹；归属 taskId）',
+      description:
+        '写项目工作目录（唯一产出地；单文件、声明式替换/写入，留 diff 轨迹并署名）。' +
+        '只能改自己名下的文件（见系统提示 [我的产出物]）；写他人文件会被拒，请另建新文件',
       scope: 'workdir',
       availableIn: ['user'],
       idempotent: false,
@@ -188,12 +196,29 @@ export function registerServiceTools(deps: {
       }
       const r = resolveVirtual(path, env.roots)
       if (r.scheme !== 'workdir') {
-        return { ok: false, code: 'FS_BOUNDARY', reason: 'workdir_edit 仅限 workdir:// 内文件' }
+        return {
+          ok: false,
+          code: 'FS_BOUNDARY',
+          reason: 'workdir_edit 仅限 workdir:// 内文件（私有区已取消，所有产出直接写项目目录）',
+        }
       }
       const abs = ensureInside(env.roots.workdirRoot, r.absolute, 'relPath')
       // 归属锚点：dispatcher 注入的当前任务优先（D15）；模型自报仅作兜底
       const taskId =
         env.taskId ?? (args.taskId ? String(args.taskId) : `untracked_${env.instanceId}`)
+
+      // 署名与归属：他人名下文件不可改（2026-09-12，用户要求"其他人不能动"）
+      if (fileOwners) {
+        try {
+          await fileOwners.assertWritable(env.projectId, r.rel, env.instanceId)
+        } catch (e) {
+          return {
+            ok: false,
+            code: e instanceof AppError ? e.code : ErrorCodes.FORBIDDEN,
+            reason: e instanceof Error ? e.message : String(e),
+          }
+        }
+      }
 
       // 逐条应用编辑（整体事务：任一步失败不改文件）
       let current = await readFile(abs, 'utf8').catch(() => '')
@@ -232,9 +257,26 @@ export function registerServiceTools(deps: {
           changedChars,
         })
       }
+      // 认领/续写归属（署名）
+      let ownerName = env.instanceId
+      if (fileOwners) {
+        const team = listTeam ? await listTeam(env.projectId).catch(() => []) : []
+        ownerName = team.find((m) => m.instanceId === env.instanceId)?.displayName ?? env.instanceId
+        await fileOwners
+          .claim(env.projectId, {
+            relPath: r.rel,
+            owner: env.instanceId,
+            ownerName,
+            taskId: env.taskId ?? null,
+            via: 'workdir_edit',
+          })
+          .catch(() => undefined)
+      }
       return {
         ok: true,
-        summary: `已编辑 ${r.rel}${changed ? `（+${changedChars} 字符，归属 ${taskId}）` : '（无净变化）'}`,
+        summary:
+          `已编辑 ${r.rel}${changed ? `（+${changedChars} 字符` : '（无净变化'}）` +
+          `｜署名 ${ownerName}（${env.instanceId}）｜归属 ${taskId}`,
       }
     },
   )
@@ -686,8 +728,8 @@ export function registerServiceTools(deps: {
       {
         name: 'artifact_submit',
         description:
-          '把私有工作区(ws://)里的定稿提交到项目工作目录：产生产出物记录 + 版本快照。' +
-          '提交即落地（不需要用户审批）。只写 ws:// 不算交付，必须用本工具提交',
+          '把你的产出**登记为产出物**：为工作目录里已写好的文件建一条产出物记录 + 版本快照 + 署名' +
+          '（不移动文件；产出物本来就在项目目录里）。只能登记自己名下的文件',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,
@@ -703,25 +745,24 @@ export function registerServiceTools(deps: {
             summary: { type: 'string', description: '一句话说明（可选）' },
             files: {
               type: 'array',
-              description:
-                '要提交的文件清单：fromWsRel=私有区路径，relPath=项目工作目录内的相对路径',
+              description: '要登记的产出物文件：relPath = 项目工作目录内的相对路径',
               items: {
                 type: 'object',
                 properties: {
-                  fromWsRel: { type: 'string', description: '如 ws://docs/prd.md' },
                   relPath: { type: 'string', description: '如 docs/prd.md' },
+                  fromWsRel: {
+                    type: 'string',
+                    description: '（已废弃）旧私有区路径；私有区已取消，请用 relPath',
+                  },
                 },
-                required: ['fromWsRel'],
+                required: ['relPath'],
               },
             },
             path: {
               type: 'string',
-              description: '单文件简写：私有区路径（等价 files=[{fromWsRel:path}]）',
+              description: '单文件简写：工作目录相对路径（等价 files=[{relPath:path}]）',
             },
-            relPath: {
-              type: 'string',
-              description: '单文件简写：工作目录相对路径（缺省=去掉 ws:// 前缀）',
-            },
+            relPath: { type: 'string', description: '单文件简写：工作目录相对路径' },
           },
           required: ['title'],
         },
@@ -737,26 +778,41 @@ export function registerServiceTools(deps: {
         const list: Array<{ fromWsRel: string; relPath: string }> = []
         for (const f of rawFiles) {
           if (typeof f !== 'object' || f === null) continue
-          const fromWsRel = String((f as Record<string, unknown>).fromWsRel ?? '').trim()
-          if (!fromWsRel) continue
-          const relRaw = (f as Record<string, unknown>).relPath
-          const relPath = (relRaw === undefined ? '' : String(relRaw)).trim() || stripWs(fromWsRel)
-          list.push({ fromWsRel, relPath })
+          const row = f as Record<string, unknown>
+          const relRaw = String(row.relPath ?? '').trim()
+          const legacy = String(row.fromWsRel ?? '').trim()
+          // 私有区已取消：新调用只认 relPath；历史 fromWsRel 仅作兼容
+          const relPath = relRaw || stripWs(legacy)
+          if (!relPath) continue
+          list.push({ fromWsRel: legacy || `workdir://${relPath}`, relPath })
         }
-        if (!list.length && args.path) {
-          const fromWsRel = String(args.path).trim()
+        if (!list.length && (args.path || args.relPath)) {
           const relPath =
-            (args.relPath === undefined ? '' : String(args.relPath)).trim() || stripWs(fromWsRel)
-          list.push({ fromWsRel, relPath })
+            String(args.relPath ?? '').trim() || stripWs(String(args.path ?? '').trim())
+          if (relPath) list.push({ fromWsRel: `workdir://${relPath}`, relPath })
         }
         if (!list.length) {
           return {
             ok: false,
             code: 'ERR_VALIDATION',
-            reason: 'files 不能为空（或提供 path 单文件简写）',
+            reason: 'files 不能为空（或提供 path/relPath 单文件简写）',
           }
         }
-        // 产出物提交**不走审批门**：直接拷贝到项目工作目录（用户要求，2026-09-09）
+        // 署名与归属：不能把他人产出物登记/覆盖成自己的
+        if (fileOwners) {
+          for (const f of list) {
+            try {
+              await fileOwners.assertWritable(env.projectId, f.relPath, env.instanceId)
+            } catch (e) {
+              return {
+                ok: false,
+                code: e instanceof AppError ? e.code : ErrorCodes.FORBIDDEN,
+                reason: e instanceof Error ? e.message : String(e),
+              }
+            }
+          }
+        }
+        // 产出物提交**不走审批门**（用户要求，2026-09-09）
         const needsApproval = false
         try {
           const { record } = await artifacts.submit({
@@ -770,10 +826,29 @@ export function registerServiceTools(deps: {
             files: list,
             needsApproval,
           })
+          let ownerName = env.instanceId
+          if (fileOwners) {
+            const team = listTeam ? await listTeam(env.projectId).catch(() => []) : []
+            ownerName =
+              team.find((m) => m.instanceId === env.instanceId)?.displayName ?? env.instanceId
+            for (const f of list) {
+              await fileOwners
+                .claim(env.projectId, {
+                  relPath: f.relPath,
+                  owner: env.instanceId,
+                  ownerName,
+                  taskId: env.taskId ?? null,
+                  via: 'artifact_submit',
+                })
+                .catch(() => undefined)
+            }
+          }
           const where = list.map((f) => f.relPath).join('、')
           return {
             ok: true,
-            summary: `已提交产出物 ${record.id}「${title}」v${record.version} → 项目工作目录：${where}`,
+            summary:
+              `已登记产出物 ${record.id}「${title}」v${record.version} → ${where}` +
+              `｜署名 ${ownerName}（${env.instanceId}）｜版本快照已存`,
           }
         } catch (e) {
           return {

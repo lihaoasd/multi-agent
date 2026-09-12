@@ -50,6 +50,12 @@ export interface BoardTask {
   state: string
 }
 
+/** 产出物归属（署名 + 只读约束）。 */
+export interface FileOwnership {
+  mine: Array<{ relPath: string; lastAt: string; lastTaskId: string | null }>
+  others: Array<{ relPath: string; owner: string; ownerName: string; lastAt: string }>
+}
+
 /** 工具运行时钩子（由组合根注入；缺省则回合不启用工具）。 */
 export interface ToolRuntimeHook {
   /** 该会话可用工具（角色白名单 ∩ 注册表 ∩ availableIn） */
@@ -74,6 +80,8 @@ export interface ToolRuntimeHook {
   pendingTasks?: (ctx: TurnContext) => Promise<PendingTask[]>
   /** 任务栏活跃任务（todo/in_progress）：给 pm/product 注入 [任务栏现状]，避免两人重复派同一件事 */
   boardTasks?: (ctx: TurnContext) => Promise<BoardTask[]>
+  /** 产出物归属（署名）：注入 [我的产出物] / [他人产出物（只读）] */
+  fileOwnership?: (ctx: TurnContext) => Promise<FileOwnership>
   /** 单回合最多工具步数（缺省 6） */
   maxSteps?: number
 }
@@ -153,6 +161,7 @@ export class AgentLoopRunner {
     const activeTask = await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)
     const pendingTasks = await this.opts.toolRuntime?.pendingTasks?.(ctx).catch(() => null)
     const boardTasks = await this.opts.toolRuntime?.boardTasks?.(ctx).catch(() => null)
+    const ownership = await this.opts.toolRuntime?.fileOwnership?.(ctx).catch(() => null)
     const tools = this.opts.toolRuntime?.listTools(ctx, sessionType) ?? []
     const system = this.buildSystemPrompt(
       ctx,
@@ -160,6 +169,7 @@ export class AgentLoopRunner {
       activeTask ?? null,
       pendingTasks ?? [],
       boardTasks ?? [],
+      ownership ?? null,
       tools,
     )
     const history = await this.buildHistory(ctx)
@@ -461,6 +471,7 @@ export class AgentLoopRunner {
     activeTask: ActiveTask | null,
     pendingTasks: PendingTask[],
     boardTasks: BoardTask[],
+    ownership: FileOwnership | null,
     tools: ToolSchema[],
   ): string {
     const m = ctx.member
@@ -479,19 +490,43 @@ export class AgentLoopRunner {
     ]
     if (tools.length) {
       const hasAsk = tools.some((t) => t.name === 'ask_user')
+      const hasWrite = tools.some((t) => t.name === 'workdir_edit')
       const hasSubmit = tools.some((t) => t.name === 'artifact_submit')
       parts.push(
         `[可用工具] ${tools.map((t) => t.name).join('、')}。` +
           '需要查看/修改工作目录或检索信息时请直接调用工具，不要凭空猜测文件内容；' +
-          '写工作目录用 workdir_edit，运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。' +
+          (hasWrite
+            ? '**所有产出直接写进项目工作目录**（workdir_edit，路径用 workdir://）：项目目录是唯一交付地，没有私有草稿区；' +
+              '你只能改自己名下的文件（见 [我的产出物]），别人的产出物只能读、不能改，需要新版本请另建新文件。'
+            : '') +
+          '运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。' +
           (hasSubmit
-            ? 'ws:// 私有区只是草稿区：**交付物必须用 artifact_submit 提交到项目工作目录**才算交付，只写在 ws:// 里项目目录看不到。'
+            ? '需要把某些文件登记成一条产出物（版本快照 + 署名）时用 artifact_submit。'
             : '') +
           (hasAsk
             ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
               '不要替用户决定；调用后请结束本轮并等待用户在会话中回答。'
             : ''),
       )
+    }
+    // 产出物署名与归属：告诉角色"自己的产出物在哪、别人的只读"（2026-09-12）
+    if (ownership && (ownership.mine.length || ownership.others.length)) {
+      const lines: string[] = []
+      if (ownership.mine.length) {
+        lines.push('[我的产出物（可改）]')
+        for (const f of ownership.mine) {
+          lines.push(
+            `- ${f.relPath}（最近修改 ${f.lastAt.slice(11, 16)}${f.lastTaskId ? `，任务 ${f.lastTaskId}` : ''}）`,
+          )
+        }
+      }
+      if (ownership.others.length) {
+        lines.push('[他人产出物（只读，不可改；需要新版本请另建文件）]')
+        for (const f of ownership.others) {
+          lines.push(`- ${f.relPath} —— 属 ${f.ownerName}（${f.owner}）`)
+        }
+      }
+      parts.push(lines.join('\n'))
     }
     if (activeTask) {
       parts.push(

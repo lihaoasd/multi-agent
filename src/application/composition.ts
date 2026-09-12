@@ -23,6 +23,7 @@ import { MeetingService } from './meeting/meeting-service.js'
 import { TaskService } from './task/task-service.js'
 import { dispatchTasksFromText } from './task/task-dispatch.js'
 import { QuestionService } from './question/question-service.js'
+import { FileOwnerStore } from './artifact/file-owner-store.js'
 import { CodeEditStore } from './code-edit/code-edit-store.js'
 import { AttentionService } from './attention/attention-service.js'
 import { registerServiceTools } from './tools/service-tools.js'
@@ -50,6 +51,8 @@ export interface Services {
   tasks: TaskService
   questions: QuestionService
   attention: AttentionService
+  /** 产出物署名与归属（file-owners.jsonl，2026-09-12） */
+  fileOwners: FileOwnerStore
 }
 
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
@@ -74,6 +77,8 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   const memory = new MemoryStore(projectsRoot)
   const summary = new SummaryEngine(sessionStore)
   const questions = new QuestionService(projectsRoot, bus)
+  // 产出物署名与归属（2026-09-12：所有产出落项目目录、署名、他人不可改）
+  const fileOwners = new FileOwnerStore(projectsRoot)
   // loop opts 可变：taskDispatch 依赖 tasks（后建），组合尾部再绑定（运行期读取）
   const loopOpts: ConstructorParameters<typeof AgentLoopRunner>[0] = {
     store: sessionStore,
@@ -212,6 +217,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     tasks,
     meetings,
     artifacts,
+    fileOwners,
     listTeam: (pid) => projectService.listTeam(pid),
     // 会议内发言：在会议会话里为该实例跑一轮
     runMeetingTurn: async (pid, mid, instanceId, prompt) => {
@@ -303,6 +309,28 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
           creator: t.creator,
           state: t.state === 'todo' ? '待领取' : '进行中',
         })),
+    // 产出物签名与归属：告诉我"自己的产出物在哪、别人的只读"（2026-09-12）
+    fileOwnership: async (ctx: TurnContext) => {
+      const all = await fileOwners.list(ctx.projectId)
+      const team = await projectService.listTeam(ctx.projectId)
+      const nameOf = (owner: string) =>
+        team.find((m) => m.instanceId === owner)?.displayName ?? owner
+      return {
+        mine: all
+          .filter((r) => r.owner === ctx.member.instanceId)
+          .slice(0, 8)
+          .map((r) => ({ relPath: r.relPath, lastAt: r.lastAt, lastTaskId: r.lastTaskId })),
+        others: all
+          .filter((r) => r.owner !== ctx.member.instanceId)
+          .slice(0, 8)
+          .map((r) => ({
+            relPath: r.relPath,
+            owner: r.owner,
+            ownerName: nameOf(r.owner),
+            lastAt: r.lastAt,
+          })),
+      }
+    },
     maxSteps: 6,
   }
 
@@ -359,6 +387,7 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     tasks,
     questions,
     attention,
+    fileOwners,
   }
 }
 

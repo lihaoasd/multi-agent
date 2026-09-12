@@ -5,7 +5,7 @@
  * doc 门（docSubmitApproval=true）→ 先落 submitted+审批（detail 存文件清单+首文件预览），approved 后 finalize 写入。
  */
 import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
@@ -235,8 +235,11 @@ export class ArtifactService {
     for (const f of files) {
       const src = this.resolveSource(f, ctx)
       const dest = ensureInside(ctx.workdirRoot, join(ctx.workdirRoot, f.relPath), 'relPath')
-      await mkdir(dirname(dest), { recursive: true })
-      await copyFile(src, dest)
+      // 2026-09-12 取消私有区后，产出物本来就在项目目录里（src === dest）→ 只做快照，不做拷贝
+      if (resolve(src) !== resolve(dest)) {
+        await mkdir(dirname(dest), { recursive: true })
+        await copyFile(src, dest)
+      }
       const snap = ensureInside(vdir, join(vdir, f.relPath))
       await mkdir(dirname(snap), { recursive: true })
       await copyFile(src, snap)

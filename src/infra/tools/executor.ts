@@ -3,8 +3,8 @@
  * 校验链：已注册 → 会话类型可用 → 策略/审批判定 → 路径边界 → 执行。
  * 失败结构化返回 { ok:false, code, reason }；approval 命中返回 APPROVAL_REQUIRED+approvalId。
  */
-import { readFile, readdir, writeFile, rm, mkdir } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { readFile, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
 import { resolveVirtual, type PathRoots } from '../../domain/rules/path-resolver.js'
@@ -131,72 +131,6 @@ registerTool(
       e.code === 'ENOENT' ? [] : Promise.reject(e),
     )
     return { ok: true, summary: names.join('\n') || '(空目录)' }
-  },
-)
-
-registerTool(
-  {
-    name: 'ws_write',
-    description: '写私有工作区文件（新建/覆盖/追加/删除），仅 user 会话',
-    scope: 'workspace',
-    availableIn: ['user'],
-    idempotent: false,
-    paramsSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '私有区路径，如 ws://notes/a.md' },
-        action: { type: 'string', enum: ['write', 'append', 'delete'], description: '缺省 write' },
-        content: { type: 'string', description: '写入内容' },
-      },
-      required: ['path'],
-    },
-  },
-  async (args, env) => {
-    const r = resolveVirtual(String(args.path ?? ''), env.roots)
-    if (r.scheme !== 'ws')
-      return { ok: false, code: 'FS_BOUNDARY', reason: 'ws_write 仅限本人私有区 ws://' }
-    const action = String(args.action ?? 'write')
-    const content = args.content === undefined ? '' : String(args.content)
-    if (action === 'delete') {
-      await rm(r.absolute, { force: true })
-      return { ok: true, summary: `已删除 ${r.rel}` }
-    }
-    await mkdir(dirname(r.absolute), { recursive: true })
-    await writeFile(
-      r.absolute,
-      action === 'append'
-        ? content + (await readFile(r.absolute, 'utf8').catch(() => ''))
-        : content,
-      'utf8',
-    )
-    return {
-      ok: true,
-      summary: `已${action === 'append' ? '追加' : '写入'} ${r.rel} (${content.length} 字符)`,
-    }
-  },
-)
-
-registerTool(
-  {
-    name: 'ws_read',
-    description: '读本人私有工作区文件',
-    scope: 'workspace',
-    availableIn: ['user', 'meeting'],
-    idempotent: true,
-    paramsSchema: {
-      type: 'object',
-      properties: { path: { type: 'string', description: '私有区路径，如 ws://notes/a.md' } },
-      required: ['path'],
-    },
-  },
-  async (args, env) => {
-    const r = resolveVirtual(String(args.path ?? ''), env.roots)
-    if (r.scheme !== 'ws')
-      return { ok: false, code: 'FS_BOUNDARY', reason: 'ws_read 仅限本人私有区 ws://' }
-    const buf = await readFile(r.absolute, 'utf8').catch((e) =>
-      e.code === 'ENOENT' ? '' : Promise.reject(e),
-    )
-    return { ok: true, summary: buf.slice(0, 12000) || '(空文件)' }
   },
 )
 

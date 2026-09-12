@@ -1,34 +1,51 @@
 # 工作区与产出物设计 · Agent Haness
 
 > 类别：design · 状态：草稿(待评审) · 决策依据：D3（提交制）、D13（代码受控编辑路径 + 审批默认值）、prd FR-06/07、US-3/12
-> 关联：[data-storage.md](data-storage.md)（manifest）、[agent-runtime.md](agent-runtime.md)（工具）、[architecture.md](architecture.md)
+> 关联：[data-storage.md](data-storage.md)（manifest/归属表）、[agent-runtime.md](agent-runtime.md)（工具）、[architecture.md](architecture.md)
+> **2026-09-12 变更（用户要求）**：取消私有工作区，**所有角色的产出直接写进项目工作目录**；产出带**署名**；
+> **他人产出物不可改**（只读 + 另建新文件）。详见 §1/§2。
 
 ## 1. 三类空间与边界（谁在哪里放什么）
 
 | 空间 | 位置 | 谁能写 | 放什么 |
 | --- | --- | --- | --- |
-| 私有工作区 | 运行时项目 `workspaces/<instanceId>/` | **仅该 Agent**（用户 UI 默认不可见） | 草稿、中间分析、实验脚本、研究笔记、待提交文档定稿 |
-| 项目工作目录(workdir) | 用户选定路径 | 仅经**提交服务/受控编辑**写入（用户可自由改） | 正式产出物：文档产物、源码、配置、测试与部署文件 |
-| 运行时项目文件夹其余部分 | `data/projects/<id>/` | 平台 | 会话日志/记忆/manifest/任务/审批（永不在 workdir） |
+| ~~私有工作区~~（**已取消** 2026-09-12） | 运行时项目 `workspaces/<instanceId>/`（目录保留，无工具可写） | 无人（`ws_read`/`ws_write` 工具已下线） | ~~草稿/中间分析~~ → 改为直接写项目目录 |
+| 项目工作目录(workdir) | 用户选定路径 | 经 `workdir_edit`（**唯一写通道**）与 `artifact_submit`（仅登记）；**按文件归属校验**：只能改自己名下的文件；用户可自由改 | 全部产出：文档、设计稿说明、源码、配置、测试与部署文件 |
+| 运行时项目文件夹其余部分 | `data/projects/<id>/` | 平台 | 会话日志/记忆/manifest/归属表/任务/审批（永不在 workdir） |
 
 产出物类型注册表（MVP）：`doc`（PRD/架构/设计/规范）、`code`、`config`、`test`、`deploy`（脚本/手册/清单）。
 每类型默认落地建议路径：doc→`workdir/docs/`，code→按仓库结构，test→`workdir/tests|test/`，deploy→`workdir/deploy/` 等（可配置；已有仓库以现结构为准；D14-②）。
 > ui/ux 的设计稿/二进制产出（图片等）暂归 `doc` 子类（标注 design）或按需注册新类型；diff/内容预览仅支持文本文件（FR-16 为 P1）。（M14c）
 
-## 2. 提交制（D3）—— 两种产出路径
+## 2. 产出与署名（D3 提交制的 2026-09-12 修订）
 
-草稿/中间物永远留在私有工作区；进入工作目录的正式产出必须有**提交记录**（署名/版本/可回退）。
+**项目工作目录是唯一产出地**：角色产出即刻可见，不再"先写私有区、提交后才进目录"。
+写通道只有一条 —— `workdir_edit`（见 tools.md §6），它在写入前后各做一件事：
 
-### 2.1 静态产物路径（doc/config/deploy 样板等）
+### 2.1 写前：归属校验（他人产出物不可改）
+
+| 文件状态 | 结果 |
+| --- | --- |
+| 无归属记录（如用户既有仓库文件、首次产出） | **允许**写入；写完即认领 |
+| 归属 = 自己 | 允许（`edits` 计数 +1、更新最近修改时间） |
+| 归属 = 他人 | **拒绝** `ERR_FORBIDDEN`，消息点名 owner，提示"另建新文件"（如加版本后缀） |
+
+不提供转交/接管（用户明确选择"只读 + 新建文件"）；**用户本人**始终可改（不经该表校验）。
+
+### 2.2 写后：署名（`file-owners.jsonl`）
 
 ```
-Agent 在私有区产出/迭代草稿(drafts/) → 定稿
-  → 调用 artifact_submit{type,title,summary,files:[{rel,action,fromWorkspaceRel}]}
-  → 提交服务校验（类型合法/relPath 在工作目录内/源文件存在）
-  → 若审批策略要求(type=doc 默认需审批，可配置) → 提交服务生成**只读预览**（文本=内容预览；二进制/设计稿=文件信息+大小）随审批卡提供并落审批记录 previewRef（D16-⑥，不开放私有区整体浏览）→ approval → approved 后执行
-  → 拷贝写入 workdir + 写入版本快照(artifact-versions，回退依据) + 写 artifacts.jsonl 新版本 + 事件推送
-  → 版本=一次提交记录(可含多文件清单)：同 relPath 的后续修改产生新版本，追溯以 versionDir 快照为准
+{ relPath, owner: "dev_1", ownerName: "高级开发", firstAt, lastAt, edits, lastTaskId, via: "workdir_edit"|"artifact_submit" }
 ```
+
+- 一行一个文件；`ownerName` 即**署名**（角色显示名），随团队配置变化以最近一次写入为准。
+- 供三处使用：① 系统提示 [`我的产出物（可改）` / `他人产出物（只读）`]，让角色知道"自己在哪改自己的东西"；
+  ② `GET /api/projects/:pid/file-owners`（含 `?owner=` 过滤）；③ 写入回执（`已编辑 …｜署名 高级开发（dev_1）`）。
+
+### 2.3 产出物登记（`artifact_submit`）
+
+把项目目录里**已经写好**的文件登记为一条产出物：版本快照（`artifact-versions/<id>/v<n>/`）+ `artifacts.jsonl` manifest + 署名；
+**不移动文件、不涉及审批**（用户 2026-09-09 要求提交免审批）。登记同样受归属校验：不能把他人文件登记/覆盖成自己的。
 
 ### 2.2 代码受控编辑路径（code，兼顾真实开发可测试性；D13① 确认）
 
@@ -52,7 +69,7 @@ Agent 在私有区产出/迭代草稿(drafts/) → 定稿
 ## 4. 产出物状态机与可见性
 
 ```
-draft(私有区，无 manifest) ──提交──▶ approved        （2026-09-09：提交免审批，直接落地）
+(产出直接写 workdir) ──artifact_submit 登记──▶ approved   （2026-09-09：登记免审批）
 approved ──回退──▶ reverted
 ```
 
@@ -61,11 +78,13 @@ approved ──回退──▶ reverted
 
 ## 5. 审计与防呆
 
-- 越界写入（非 workspace/workdir 的路径）→ 拒绝 + `error` 事件（工具层强制，见 agent-runtime §6）。
+- 越界写入（非 workdir 的路径）→ 拒绝 + `error` 事件（工具层强制，见 agent-runtime §6）；私有区工具已下线。
+- **归属锁（2026-09-12 取代原"跨 Agent 编辑锁"设想）**：`file-owners.jsonl` 记录每个文件的 owner；
+  非 owner 写入 → `ERR_FORBIDDEN`（点名 owner 并提示另建文件）；无主文件首写认领。写入后再更新署名与 `edits`。
 - 未声明目标文件的受控编辑：`workdir_edit` 要求每次声明 relPath；批量/覆盖写需 high 审批。
-- 删除工作目录既有文件（未经提交上下文）→ high 审批；提交中的 delete action 需显示受影响文件。
-- **跨 Agent 文件锁（M5 定稿）**：file-store 维护"编辑会话锁"（内存 + runtime.state 持久化）：某 relPath 处于 Agent A 未结算的受控编辑中时，Agent B 的 `workdir_edit`/提交命中该文件 → `ERR_CONFLICT` 并提示协调；任务聚合/结算后释放锁。（MVP 每模板单实例已大幅降低同文件并发概率，锁是兜底。）
-- 所有提交/回退/审批决策都落 approvals/artifacts 文件与 session log（双写一致性由事件总线保证）。
+- 删除工作目录既有文件（未经提交上下文）→ high 审批。
+- 所有登记/回退/审批决策都落 approvals/artifacts/file-owners 文件与 session log（双写一致性由事件总线保证）。
+- **已知边界**：`cmd_run` 的命令副作用不按 owner 校验（无法静态判定命令会写哪些文件）；回退接口当前无 UI 入口。
 
 ## 6. 审批默认值（已确认，D13②）与 P1 预留
 
@@ -77,6 +96,7 @@ approved ──回退──▶ reverted
 | 代码类提交（workdir_edit 按任务聚合，type=code） | **无需审批**（code 门，初始 state=approved），全程留痕（diff 审计 + manifest + versionDir 补丁） |
 | 高危命令 | **需审批**（见 agent-runtime §6） |
 
-> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json/config.yaml 中保留（项目数据模型），但 `artifact_submit` 当前**不读该策略**：产出物提交一律直落。
+> 自 2026-09-12 起产出**直接写进项目工作目录并署名**（§2），产出物登记只是"再给它一个版本快照"；
+> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json/config.yaml 中保留（项目数据模型），但当前**不读该策略**。
 
 P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合（如某评审节点）锁定为基线，后续改动需先解锁/评审。

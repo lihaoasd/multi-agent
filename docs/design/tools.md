@@ -45,11 +45,10 @@
 | `fs_read_file` | 读文本文件（workdir+ro://，可 range；**不含私有区**） | readonly-global / none | ✅ | user+meeting |
 | `fs_list_dir` | 列目录（workdir+ro://） | readonly-global / none | ✅ | user+meeting |
 | `fs_search` | 目录内关键词搜索（workdir+ro://） | readonly-global / none | ✅ | user+meeting |
-| `ws_write` | 写私有工作区文件（新建/覆盖/追加/删除） | workspace / none | 分动作 | user only |
-| `ws_read` | 读自己私有区 | workspace / none | ✅ | user+meeting（D14-⑩：会议内可引用本人笔记） |
-| `workdir_edit` | 工作目录受控编辑（单文件、留 diff 审计） | workdir / low | ❌ | user only |
+| `ws_write` | ~~写私有工作区文件~~ **已下线**（2026-09-12 取消私有区） | — | — | 不可用 |
+| `workdir_edit` | **项目工作目录唯一写通道**（单文件、留 diff 审计、**署名 + 归属校验**：他人产出物拒改） | workdir / low | ❌ | user only |
 | `cmd_run` | 在 workdir 内执行命令（结构化 argv，沙箱见 sandbox.md） | workdir / 按命令 / allowed | 视命令 | user only |
-| `artifact_submit` | 提交产出物（ws 定稿 → workdir，免审批直落） | workdir / low | ❌ | user only |
+| `artifact_submit` | 把项目目录里已写好的文件**登记为产出物**（版本快照 + manifest + 署名），不移动文件 | workdir / low | ❌ | user only |
 | `artifact_rollback` | 回退产出物版本（服务接口保留；2026-09-09 起无 UI 入口） | workdir / high | ❌ | user only |
 | `memory_search` | 检索记忆（角色+全局，按权限） | readonly-global / none | ✅ | user+meeting |
 | `memory_append` | 追加长期记忆条目（scope=own 默认） | workspace(记忆) / none | ✅ | user+meeting(仅 own) |
@@ -66,8 +65,8 @@
 
 说明：
 - `approval_request` 不列为模型工具：审批由执行器在工具命中 high/策略时自动产生（见 sandbox.md §5），Agent 无需也不能"替用户批准"。
-- **会议内（D14-⑩）**：产出与执行类一律不可用（ws_write/workdir_edit/cmd_run/artifact_*/approval_query/meeting_start）；可读：fs 读 workdir+ro://、ws_read 本人私有区、session_search、memory_search、memory_append(own)。
-- **可用根（B4 定稿）**：`fs_*` 的 allowedRoots=[workdir, ro://]（**不含私有区**，读本人私有区一律走 ws_read）；`ws_read`/`ws_write` allowedRoots=[ws-self]。loop runner 的工具可用性校验 = 角色白名单 × 会话类型 × allowedRoots × 主持人身份（H4），与 sandbox §3.2 的工具级可用根一致。
+- **会议内（D14-⑩）**：产出与执行类一律不可用（workdir_edit/cmd_run/artifact_*/approval_query/meeting_start）；可读：fs 读 workdir+ro://、session_search、memory_search、memory_append(own)。
+- **可用根（B4 定稿）**：`fs_*` 的 allowedRoots=[workdir, ro://]；`workdir_edit` allowedRoots=[workdir]。**私有工作区（ws://）与 `ws_read`/`ws_write` 已于 2026-09-12 取消**：项目工作目录是唯一产出地，写入一律经 `workdir_edit` 并按 `file-owners` 校验归属（详见 workspaces-artifacts.md §2）。loop runner 的工具可用性校验 = 角色白名单 × 会话类型 × allowedRoots × 主持人身份（H4），与 sandbox §3.2 的工具级可用根一致。
 - **主持人例外（H4 定稿 + D18-①）**：`meeting_advance/meeting_close/meeting_ask_user` 的 availableIn 语义 = `session.type=="meeting"` **且调用者是主持人**；loop runner 的可用性校验 = 白名单 × 会话类型 × 身份（主持人），不能只按会话类型过滤；`meeting_ask_user` 另受"同一时刻至多 1 个 pending 决策点"约束（meetings.md §5）。
 - **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign/task_claim/task_update` 为**平台工具**，user 会话始终可用（不依赖角色模板快照）：`task_assign` 内部校验角色（仅 pm/product）→ 发布任务到任务栏（state=todo 待领取）+ 通知受派人；受派人 `task_claim` 领取（只能领自己的，槽位检查）→ in_progress；`task_update` 由受派人汇报，done/blocked/terminated 会通知委派人安排后续。状态变化同步推 WS `task.updated`。
 - 用户直接操作（右栏回退按钮、任务状态、停用实例等）不经工具注册表。
@@ -80,10 +79,10 @@
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | 调研读取（fs_read/fs_list/fs_search/session_search） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 记忆（memory_search/memory_append-own） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 私有工作区读写（ws_*） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 工作目录受控编辑（workdir_edit） | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅¹ | ✅ |
+| 私有工作区读写（ws_*） | — | — | — | — | — | — | — | — |
+| 工作目录编辑（workdir_edit，**唯一写通道**） | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅¹ | ✅ |
 | 命令执行（cmd_run，按 sandbox 风险审批） | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅¹ | ✅ |
-| 产出物提交（artifact_submit） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 产出物登记（artifact_submit，署名+快照） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 回退请求（artifact_rollback，审批） | ✅(自己的) | 同上 | 同上 | 同上 | 同上 | ✅ | ✅ | ✅ |
 | 任务（task_*） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | 会议（meeting_start/advance/close/ask_user） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -93,8 +92,8 @@
 ² 仅 pm 可登记任务/进度/里程碑类全局条目；决策/会议结论类全局写入由引擎自动完成（memory.md §4），不通过工具。
 
 设计理由：
-- 命令/编辑能力默认只给"需要真机验证"的角色（dev/qa/ops），大幅降低其余角色误操作面；
-- 全员都可提交自己的产出物（文档/设计稿/测试报告/部署脚本都在各自职责内）；
+- 编辑能力默认只给"需要真机验证"的角色（dev/qa/ops）；**2026-09-12 起 productive 角色（product/architect/ux/ui）也获得 `workdir_edit`**——产出必须直接落项目目录，pm 仍无写权限（只协调不产出）；
+- 全员都可登记自己的产出物（文档/设计稿/测试报告/部署脚本都在各自职责内），且**只能登记/修改自己名下的文件**（署名与归属锁见 workspaces-artifacts.md §2.3）；
 - 角色"默认零执行权限，按需授权"是可扩展方向：非开发角色遇到需要跑命令的任务，应把需求交给 dev/ops 或请用户在实例配置中临时启用（决策写记忆）。
 - **任务行（D15）**：MVP（乙模式）全部关闭——任务由用户经 UI 创建/流转，Agent 经上下文注入获知自己的任务；开启 `task.assignByAgent` 进入甲模式后，由模板授权（如 pm 可 assign、受派者可 update），与乙模式并存用于效果对比。
 
@@ -118,11 +117,12 @@ loop 步骤 → 模型输出 tool_call{callId, name, args}
 
 | 通道 | 工具/服务 | 特征 | 留痕 |
 | --- | --- | --- | --- |
-| ① 受控编辑 | `workdir_edit` | 单文件声明式编辑，diff 审计；**任务级**聚合成 code artifact（无任务按回合兜底，D14-⑧） | tool 事件 + manifest + versionDir 补丁 |
-| ② 静态产物提交 | `artifact_submit` | 私有区定稿文件 → 校验 → 写入（doc 默认审批） | approval + manifest |
-| ③ 命令副作用 | `cmd_run` | 命令 cwd 在 workdir 内（npm install 等运行副产物），风险分级+审批 | tool 事件审计 |
+| ① 受控编辑（**主通道**） | `workdir_edit` | 单文件声明式编辑，diff 审计 + **署名/归属校验**（他人产出物拒改，ERR_FORBIDDEN）；**任务级**聚合成 code artifact（无任务按回合兜底，D14-⑧） | tool 事件 + manifest + versionDir 补丁 + file-owners |
+| ② 产出物登记 | `artifact_submit` | 项目目录里已写好的文件 → 版本快照 + manifest + 署名（**不移动文件**、不审批） | manifest + file-owners |
+| ③ 命令副作用 | `cmd_run` | 命令 cwd 在 workdir 内（npm install 等运行副产物），风险分级+审批 | tool 事件审计（**已知边界：不按 owner 限制**） |
 
 工具层**不存在**"自由写 workdir 文件"的通道；越界调用由 executor 拒绝（代码 FS_BOUNDARY）。
+2026-09-12 起**私有工作区（ws://）通道已取消**：角色所有产出都经 ① 直接写进项目工作目录。
 
 ## 7. 扩展点
 

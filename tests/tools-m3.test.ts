@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { assessCommand } from '../src/domain/rules/command-policy.js'
 import { resolveVirtual, type PathRoots } from '../src/domain/rules/path-resolver.js'
 import { AppError } from '../src/shared/errors.js'
-import { executeTool, setCommandRunner, type ToolEnv } from '../src/infra/tools/executor.js'
+import {
+  executeTool,
+  listToolDefs,
+  setCommandRunner,
+  type ToolEnv,
+} from '../src/infra/tools/executor.js'
 import { ApprovalService } from '../src/application/approval/approval-service.js'
 import { ToolCoordinator } from '../src/application/tools/tool-coordinator.js'
 import type { SessionLogEvent } from '../src/shared/types/session.js'
@@ -104,18 +109,24 @@ describe('工具执行器', () => {
     expect(bad.ok).toBe(false)
   })
 
-  it('ws_write 写私有区、ws_read 读回', async () => {
+  it('私有区工具已下线（ws_write/ws_read 不在注册表里）', async () => {
+    expect(listToolDefs().some((d) => d.name === 'ws_write' || d.name === 'ws_read')).toBe(false)
     const w = await executeTool('ws_write', { path: 'ws://notes/a.md', content: 'draft' }, env())
-    expect(w.ok).toBe(true)
-    const r = await executeTool('ws_read', { path: 'ws://notes/a.md' }, env())
-    expect(r.ok && 'summary' in r ? r.summary : '').toBe('draft')
+    expect(w.ok).toBe(false)
+    expect(w.ok ? '' : w.code).toBe('ERR_TOOL_REJECTED')
   })
 
-  it('meeting 会话中 ws_write/命令不可用，只读可用', async () => {
+  it('meeting 会话中写工具/命令不可用，只读可用', async () => {
     const meetingEnv: ToolEnv = { ...env(), sessionType: 'meeting' }
-    expect((await executeTool('ws_write', { path: 'ws://x', content: '1' }, meetingEnv)).ok).toBe(
-      false,
-    )
+    expect(
+      (
+        await executeTool(
+          'workdir_edit',
+          { path: 'workdir://x.md', edits: [{ type: 'write', text: '1' }] },
+          meetingEnv,
+        )
+      ).ok,
+    ).toBe(false)
     expect((await executeTool('cmd_run', { program: 'ls', args: [] }, meetingEnv)).ok).toBe(false)
   })
 

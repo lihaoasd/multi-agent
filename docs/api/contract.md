@@ -51,6 +51,7 @@
 | POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 |
 | GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
 | PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
+| GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12 |
 | GET | /api/projects/:pid/approvals?status=pending | 审批列表 |
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 {decision, reason?} |
 | GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
@@ -101,7 +102,8 @@ API 统一返回 `{ code: ERR_*, message }`。工具执行/审计事件内部用
 | API code | 含义 | 内部简码 |
 | --- | --- | --- |
 | ERR_NOT_FOUND | 资源不存在 | — |
-| ERR_CONFLICT | 状态冲突（Agent busy / 会议已结束 / 文件编辑锁命中 / 版本已回退） | FILE_LOCKED 等 |
+| ERR_CONFLICT | 状态冲突（Agent busy / 会议已结束 / 任务槽位被占 / 非法状态流转） | — |
+| ERR_FORBIDDEN | **归属限制**：该文件/产出物属他人（署名与归属锁，2026-09-12） | — |
 | ERR_FORBIDDEN_PATH | 路径越界 | FS_BOUNDARY |
 | ERR_APPROVAL_REQUIRED | 动作需审批（返回 approvalId） | APPROVAL_REQUIRED |
 | ERR_APPROVAL_REJECTED | 审批被拒（回注 Agent） | APPROVAL_REJECTED |
