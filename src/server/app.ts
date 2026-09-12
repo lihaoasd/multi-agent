@@ -536,13 +536,20 @@ function registerQuestionRoutes(app: FastifyInstance, svc: Services): void {
    */
   app.post<{
     Params: { pid: string; qid: string }
-    Body: { choice?: string; choices?: string[]; text?: string }
+    Body: {
+      choice?: string
+      choices?: string[]
+      text?: string
+      /** 问题列表逐题作答（推荐）：itemId 缺省按顺序对齐 */
+      answers?: Array<{ itemId?: string; choice?: string; choices?: string[]; text?: string }>
+    }
   }>('/api/projects/:pid/questions/:qid/answer', async (req) => {
     const pid = req.params.pid
     const { question: rec, next } = await questions.answer(pid, req.params.qid, {
       choice: req.body?.choice,
       choices: req.body?.choices,
       text: req.body?.text,
+      answers: req.body?.answers,
     })
     let wakeError: string | null = null
     const meta = await sessionStore.tryReadMeta(pid, rec.sessionId)

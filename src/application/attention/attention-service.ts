@@ -70,11 +70,20 @@ export class AttentionService {
     if (this.questions) {
       const pendingQ = await this.questions.list(projectId, { status: 'pending' })
       for (const q of pendingQ) {
+        // 问题列表（多题）：标题带上题数与第一题，详情列全部题干
+        const first = q.items[0]
+        const multi = q.items.length > 1
         out.push({
           kind: 'question',
           id: q.id,
-          title: `${q.asker} 问你：${q.question.slice(0, 60)}`,
-          detail: `需要你${KIND_ZH[q.kind] ?? q.kind}${q.options.length ? `：${q.options.join(' / ')}` : ''}`,
+          title: multi
+            ? `${q.asker} 问你 ${q.items.length} 个问题：${(first?.question ?? '').slice(0, 50)}…`
+            : `${q.asker} 问你：${(first?.question ?? q.question).slice(0, 60)}`,
+          detail: multi
+            ? q.items.map((it, i) => `${i + 1}. ${it.question}`).join('  ')
+            : `需要你${KIND_ZH[(first?.kind ?? q.kind) as keyof typeof KIND_ZH] ?? first?.kind ?? q.kind}${
+                first?.options.length ? `：${first.options.join(' / ')}` : ''
+              }`,
           sessionId: q.sessionId,
           at: q.createdAt,
           questionId: q.id,

@@ -904,86 +904,105 @@ const Q_KIND_ZH = { confirm: '确认', single: '单选', multi: '多选', text: 
 
 /**
  * 待回答提问卡片（会话内交互，也用于「需你处理」弹窗）：
- * confirm/single → radio；multi → checkbox；text → 输入框；allowText → 附加说明。
+ * **一次 ask_user 可以带一个问题列表**——卡片里逐题呈现（confirm/single → radio；
+ * multi → checkbox；text → 输入框；allowText → 附加说明），用户**一次提交全部答案**。
  */
 function buildQuestionCard(q, opts = {}) {
   const card = document.createElement('div')
   card.className = 'q-card'
+  const items = q.items?.length ? q.items : [q]
   const head = document.createElement('div')
   head.className = 'q-head'
-  head.textContent = `❓ ${senderName(q.asker)} 需要你${Q_KIND_ZH[q.kind] ?? q.kind}${
-    q.kind === 'confirm' || q.kind === 'text' ? '' : '选择'
-  }`
-  const text = document.createElement('div')
-  text.className = 'q-text'
-  text.textContent = q.question
+  head.textContent =
+    items.length > 1
+      ? `❓ ${senderName(q.asker)} 需要你回答 ${items.length} 个问题（一次提交）`
+      : `❓ ${senderName(q.asker)} 需要你${Q_KIND_ZH[q.kind] ?? q.kind}${
+          q.kind === 'confirm' || q.kind === 'text' ? '' : '选择'
+        }`
   card.appendChild(head)
-  card.appendChild(text)
 
-  const inputs = { choice: null, choices: [], text: null }
-  if (q.kind === 'confirm' || q.kind === 'single') {
-    const box = document.createElement('div')
-    box.className = 'q-options'
-    for (const o of q.options ?? []) {
-      const lab = document.createElement('label')
-      lab.className = 'q-option'
-      const radio = document.createElement('input')
-      radio.type = 'radio'
-      radio.name = `q_${q.id}`
-      radio.value = o
-      radio.addEventListener('change', () => {
-        inputs.choice = o
-      })
-      lab.appendChild(radio)
-      lab.appendChild(document.createTextNode(o))
-      box.appendChild(lab)
+  const answers = new Map() // itemId → {choice, choices, text}
+  items.forEach((it, i) => {
+    const slot = { choice: null, choices: [], text: null }
+    answers.set(it.id, slot)
+    const block = document.createElement('div')
+    block.className = 'q-item'
+    if (items.length > 1) {
+      const idx = document.createElement('div')
+      idx.className = 'q-item-idx'
+      idx.textContent = `${i + 1}.`
+      block.appendChild(idx)
     }
-    card.appendChild(box)
-  } else if (q.kind === 'multi') {
-    const box = document.createElement('div')
-    box.className = 'q-options'
-    for (const o of q.options ?? []) {
-      const lab = document.createElement('label')
-      lab.className = 'q-option'
-      const cb = document.createElement('input')
-      cb.type = 'checkbox'
-      cb.value = o
-      cb.addEventListener('change', () => {
-        inputs.choices = [...box.querySelectorAll('input:checked')].map((c) => c.value)
+    const text = document.createElement('div')
+    text.className = 'q-text'
+    text.textContent = it.question
+    block.appendChild(text)
+
+    if (it.kind === 'confirm' || it.kind === 'single') {
+      const box = document.createElement('div')
+      box.className = 'q-options'
+      for (const o of it.options ?? []) {
+        const lab = document.createElement('label')
+        lab.className = 'q-option'
+        const radio = document.createElement('input')
+        radio.type = 'radio'
+        radio.name = `q_${q.id}_${it.id}`
+        radio.value = o
+        radio.addEventListener('change', () => {
+          slot.choice = o
+        })
+        lab.appendChild(radio)
+        lab.appendChild(document.createTextNode(o))
+        box.appendChild(lab)
+      }
+      block.appendChild(box)
+    } else if (it.kind === 'multi') {
+      const box = document.createElement('div')
+      box.className = 'q-options'
+      for (const o of it.options ?? []) {
+        const lab = document.createElement('label')
+        lab.className = 'q-option'
+        const cb = document.createElement('input')
+        cb.type = 'checkbox'
+        cb.value = o
+        cb.addEventListener('change', () => {
+          slot.choices = [...box.querySelectorAll('input:checked')].map((c) => c.value)
+        })
+        lab.appendChild(cb)
+        lab.appendChild(document.createTextNode(o))
+        box.appendChild(lab)
+      }
+      block.appendChild(box)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.className = 'q-input'
+      ta.rows = 2
+      ta.placeholder = '请输入你的回答'
+      ta.addEventListener('input', () => {
+        slot.text = ta.value
       })
-      lab.appendChild(cb)
-      lab.appendChild(document.createTextNode(o))
-      box.appendChild(lab)
+      block.appendChild(ta)
     }
-    card.appendChild(box)
-  } else {
-    const ta = document.createElement('textarea')
-    ta.className = 'q-input'
-    ta.rows = 2
-    ta.placeholder = '请输入你的回答'
-    ta.addEventListener('input', () => {
-      inputs.text = ta.value
-    })
-    card.appendChild(ta)
-  }
-  if (q.allowText && q.kind !== 'text') {
-    const note = document.createElement('input')
-    note.className = 'q-input'
-    note.placeholder = '补充说明（可选）'
-    note.addEventListener('input', () => {
-      inputs.text = note.value
-    })
-    card.appendChild(note)
-  }
+    if (it.allowText && it.kind !== 'text') {
+      const note = document.createElement('input')
+      note.className = 'q-input'
+      note.placeholder = '补充说明（可选）'
+      note.addEventListener('input', () => {
+        slot.text = note.value
+      })
+      block.appendChild(note)
+    }
+    card.appendChild(block)
+  })
 
   const row = document.createElement('div')
   row.className = 'q-actions'
   const submit = document.createElement('button')
   submit.className = 'primary'
-  submit.textContent = '提交回答'
+  submit.textContent = items.length > 1 ? `提交全部回答（${items.length} 题）` : '提交回答'
   submit.addEventListener('click', async () => {
     submit.disabled = true
-    const ok = await submitQuestionAnswer(q, inputs, opts)
+    const ok = await submitQuestionAnswer(q, items, answers, opts)
     submit.disabled = false
     if (ok && opts.compact) $('#attention-modal').classList.add('hidden')
   })
@@ -993,16 +1012,36 @@ function buildQuestionCard(q, opts = {}) {
 }
 
 /** 提交回答：成功后刷新面板（Agent 回合由服务端唤醒，WS 流式返回）。 */
-async function submitQuestionAnswer(q, inputs, opts = {}) {
-  const body = {}
-  if (q.kind === 'multi') body.choices = inputs.choices
-  else if (q.kind === 'text') body.text = String(inputs.text ?? '').trim()
-  else body.choice = inputs.choice
-  if (q.allowText && q.kind !== 'text' && inputs.text) body.text = String(inputs.text).trim()
+async function submitQuestionAnswer(q, items, answers, opts = {}) {
+  const list = items ?? (q.items?.length ? q.items : [q])
+  const body = { answers: [] }
+  for (const it of list) {
+    const slot = answers?.get(it.id) ?? {}
+    const one = { itemId: it.id }
+    if (it.kind === 'multi') {
+      if (!slot.choices?.length) return toastAndFail(`第 ${body.answers.length + 1} 题还没选`)
+      one.choices = slot.choices
+    } else if (it.kind === 'text') {
+      const t = String(slot.text ?? '').trim()
+      if (!t) return toastAndFail(`第 ${body.answers.length + 1} 题还没填`)
+      one.text = t
+    } else {
+      if (!slot.choice) return toastAndFail(`第 ${body.answers.length + 1} 题还没选`)
+      one.choice = slot.choice
+    }
+    if (it.allowText && it.kind !== 'text' && slot.text) one.text = String(slot.text).trim()
+    body.answers.push(one)
+  }
   try {
     const d = await api(`/projects/${current.pid}/questions/${q.id}/answer`, 'POST', body)
-    toast(d.wakeError ? d.wakeError : `已提交回答，${senderName(q.asker)} 继续处理…`)
-    // 本地即时撤下卡片（服务端也会推 question.answered，多标签页一致）
+    toast(
+      d.wakeError
+        ? d.wakeError
+        : d.nextQuestion
+          ? `已提交回答（还有 1 个问题）`
+          : `已提交回答，${senderName(q.asker)} 继续处理…`,
+    )
+    // 本地即时撤下卡片（服务端也会推 question.answered；下一题会随 question.asked 推来）
     current.questions = (current.questions ?? []).filter((x) => x.id !== q.id)
     renderQuestions()
     await refreshPanels()
@@ -1012,6 +1051,11 @@ async function submitQuestionAnswer(q, inputs, opts = {}) {
     toast('提交失败：' + e.message)
     return false
   }
+}
+
+function toastAndFail(msg) {
+  toast(msg)
+  return false
 }
 
 /** 会话窗口内的待回答提问卡片（输入框上方）。 */

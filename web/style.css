@@ -720,6 +720,24 @@ button.ghost {
   color: var(--text);
   white-space: pre-wrap;
 }
+/* 问题列表：一张卡片里逐题作答（一次提交） */
+.q-item {
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.q-item:first-of-type {
+  border-top: none;
+}
+.q-item-idx {
+  display: inline-block;
+  font-weight: 600;
+  color: #2f80ed;
+  margin-right: 4px;
+}
+.q-item .q-text {
+  display: inline;
+}
 .q-options {
   display: flex;
   flex-wrap: wrap;

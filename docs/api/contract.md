@@ -52,6 +52,8 @@
 | GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
 | PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
 | GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12 |
+| GET | /api/projects/:pid/questions?status=pending\|queued&sessionId= | 提问列表（**问题列表**：一条记录含 `items[]`；`pending`=待答、`queued`=排队），2026-09-12 |
+| POST | /api/projects/:pid/questions/:qid/answer | 回答提问：`{answers:[{itemId?,choice?/choices?/text?}]}`（问题列表**每题必答**、一次提交）；单题兼容 `{choice/choices/text}`。返回 `{question, nextQuestion, wakeError}`：`nextQuestion` 非空=还有排队提问，此时**不唤醒角色** |
 | GET | /api/projects/:pid/approvals?status=pending | 审批列表 |
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 {decision, reason?} |
 | GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
