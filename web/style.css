@@ -535,19 +535,23 @@ button.mini {
   flex: 1;
 }
 .board-body {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  align-items: flex-start;
+  align-items: start;
   margin: 10px 0;
-  flex-wrap: wrap;
+}
+@media (max-width: 760px) {
+  .board-body {
+    grid-template-columns: 1fr;
+  }
 }
 .board-col {
-  flex: 1 1 180px;
-  min-width: 170px;
   background: #f7f8fa;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 6px 8px;
+  min-height: 90px;
 }
 .board-col h5 {
   margin: 2px 0 6px;
@@ -560,6 +564,9 @@ button.mini {
   border-radius: 6px;
   padding: 6px 8px;
   margin-bottom: 6px;
+}
+.board-card .task-state {
+  margin-top: 4px;
 }
 .board-card.state-todo {
   border-left-color: #e0a800;

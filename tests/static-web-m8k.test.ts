@@ -87,6 +87,13 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(body).toContain('handleTaskPush')
     expect(body).toContain('task.updated')
     expect(body).toContain('待领取')
+    // 右栏只显示活跃任务 + 面板三列：规则在同源纯函数模块里，这里保证接线没断
+    expect(body).toContain('task-board.js')
+    expect(body).toContain('activeTasks')
+    expect(body).toContain('groupBoardTasks')
+    const mod = await ready().inject({ method: 'GET', url: '/task-board.js' })
+    expect(mod.statusCode).toBe(200)
+    expect(String(mod.body)).toContain('BOARD_COLUMNS')
   })
 
   it('未提供 webDir 时不注册静态托管（测试注入用），API 仍可用', async () => {

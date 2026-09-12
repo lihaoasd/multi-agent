@@ -3,6 +3,7 @@
  * 覆盖：项目列表/创建(选目录+勾角色)、团队与会话列表、聊天(WS 流式/历史)、审批、会议、产出物、记忆/纪要。
  */
 import { renderMarkdown } from './markdown.js'
+import { activeTasks, groupBoardTasks, countByState } from './task-board.js'
 
 const $ = (sel) => document.querySelector(sel)
 const $$ = (sel) => [...document.querySelectorAll(sel)]
@@ -1785,26 +1786,30 @@ const TASK_GROUPS = [
   { state: 'terminated', title: '已终止' },
 ]
 
-/** 右栏任务栏摘要：状态计数 + 最近任务（完整视图在任务栏面板）。 */
+/** 右栏任务栏：只显示**活跃任务**（进行中 / 待领取）；历史任务看任务栏面板。 */
 function renderTasks() {
   const ul = $('#task-list')
-  const tasks = current.tasks ?? []
+  const all = current.tasks ?? []
+  const active = activeTasks(all)
+  const closed = all.length - active.length
   const count = $('#task-count')
   if (count) {
-    const pending = tasks.filter((t) => t.state === 'todo').length
-    const active = tasks.filter((t) => t.state === 'in_progress').length
-    count.textContent = tasks.length ? `${pending} 待领取 / ${active} 进行中` : ''
+    const pending = active.filter((t) => t.state === 'todo').length
+    const doing = active.filter((t) => t.state === 'in_progress').length
+    count.textContent = all.length ? `${pending} 待领取 / ${doing} 进行中` : ''
   }
   ul.innerHTML = ''
-  if (!tasks.length) {
+  if (!active.length) {
     const li = document.createElement('div')
     li.className = 'empty-tip'
-    li.textContent = '（任务栏暂无任务；产品/项目经理在会话中发布后显示于此）'
+    li.textContent = all.length
+      ? '（暂无进行中/待领取任务；历史任务见任务栏面板）'
+      : '（任务栏暂无任务；产品/项目经理在会话中发布后显示于此）'
     ul.appendChild(li)
     renderTaskBoard()
     return
   }
-  for (const t of tasks.slice(0, 12)) {
+  for (const t of active.slice(0, 12)) {
     const li = document.createElement('div')
     li.className = 'task-item'
     const state = document.createElement('span')
@@ -1817,42 +1822,44 @@ function renderTasks() {
     li.appendChild(title)
     ul.appendChild(li)
   }
-  // 状态由角色自己领取/汇报，用户只查看
   const tip = document.createElement('div')
   tip.className = 'empty-tip'
-  tip.textContent = '状态由角色自行领取/汇报（发布→领取→完成），你无需手动点击'
+  tip.textContent = closed
+    ? `另有 ${closed} 条已完成/受阻/终止 → 打开面板查看`
+    : '状态由角色自行领取/汇报（发布→领取→完成），你无需手动点击'
   ul.appendChild(tip)
   renderTaskBoard()
 }
 
-/** 任务栏面板：按状态分组展示全部任务（只读）。 */
+/** 任务栏面板：固定三列（待领取 / 进行中 / 已结束），只读。 */
 function renderTaskBoard() {
   const body = $('#task-board-body')
   if (!body) return
   const tasks = current.tasks ?? []
+  const counts = countByState(tasks)
   const stat = $('#task-board-stat')
   if (stat) {
     stat.textContent = tasks.length
       ? `共 ${tasks.length} 条 · ` +
-        TASK_GROUPS.map(
-          (g) => `${TASK_STATE_ZH[g.state]} ${tasks.filter((t) => t.state === g.state).length}`,
-        ).join(' · ')
+        TASK_GROUPS.filter((g) => counts[g.state])
+          .map((g) => `${TASK_STATE_ZH[g.state]} ${counts[g.state]}`)
+          .join(' · ')
       : '（暂无任务）'
   }
   body.innerHTML = ''
-  if (!tasks.length) {
-    body.innerHTML = '<div class="empty-tip">（暂无任务）</div>'
-    return
-  }
-  for (const g of TASK_GROUPS) {
-    const list = tasks.filter((t) => t.state === g.state)
-    if (!list.length) continue
-    const col = document.createElement('section')
-    col.className = 'board-col'
+  for (const col of groupBoardTasks(tasks)) {
+    const sec = document.createElement('section')
+    sec.className = `board-col board-col-${col.key}`
     const h = document.createElement('h5')
-    h.textContent = `${g.title}（${list.length}）`
-    col.appendChild(h)
-    for (const t of list) {
+    h.textContent = `${col.title}（${col.tasks.length}）`
+    sec.appendChild(h)
+    if (!col.tasks.length) {
+      const empty = document.createElement('div')
+      empty.className = 'empty-tip'
+      empty.textContent = '（暂无）'
+      sec.appendChild(empty)
+    }
+    for (const t of col.tasks) {
       const card = document.createElement('div')
       card.className = `board-card state-${t.state}`
       card.title = `${t.id}\n${t.desc ?? ''}`
@@ -1863,6 +1870,13 @@ function renderTaskBoard() {
       meta.className = 'who'
       meta.textContent = `${t.assignee} ← ${t.creator === 'user' ? '你' : t.creator} · ${fmtTime(t.updatedAt)}`
       card.appendChild(title)
+      // 第三列混装三种状态 → 每张卡片标出自己的准确状态
+      if (col.key === 'closed') {
+        const badge = document.createElement('span')
+        badge.className = `state task-state state-${t.state}`
+        badge.textContent = TASK_STATE_ZH[t.state] ?? t.state
+        card.appendChild(badge)
+      }
       card.appendChild(meta)
       if (t.desc) {
         const desc = document.createElement('div')
@@ -1870,9 +1884,9 @@ function renderTaskBoard() {
         desc.textContent = t.desc
         card.appendChild(desc)
       }
-      col.appendChild(card)
+      sec.appendChild(card)
     }
-    body.appendChild(col)
+    body.appendChild(sec)
   }
 }
 
