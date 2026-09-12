@@ -14,7 +14,6 @@ let current = {
   team: [],
   approvals: [],
   meetings: [],
-  artifacts: [],
   tasks: [],
   questions: [],
   agents: [],
@@ -1664,10 +1663,9 @@ async function refreshPanels() {
   const pid = current.pid
   // 各面板**互相独立**：任一接口失败（网络/旧版本服务）都不能让其它面板（尤其提问卡片）不刷新
   const get = (p) => api(p).catch(() => null)
-  const [a, m, ar, mem, att, tk, qs, ag] = await Promise.all([
+  const [a, m, mem, att, tk, qs, ag] = await Promise.all([
     get(`/projects/${pid}/approvals?status=pending`),
     get(`/projects/${pid}/meetings`),
-    get(`/projects/${pid}/artifacts`),
     get(`/projects/${pid}/memories?scope=global`),
     get(`/projects/${pid}/needs-attention`),
     get(`/projects/${pid}/tasks`),
@@ -1683,10 +1681,6 @@ async function refreshPanels() {
     current.meetings = m.meetings ?? []
     renderMeetings()
     renderMeetingsNav()
-  }
-  if (ar) {
-    current.artifacts = ar.artifacts ?? []
-    renderArtifacts()
   }
   if (tk) {
     current.tasks = tk.tasks ?? []
@@ -1983,38 +1977,6 @@ function renderMeetings() {
         toast('纪要已重新生成')
       }
       li.appendChild(regen)
-    }
-    ul.appendChild(li)
-  }
-}
-
-function renderArtifacts() {
-  const ul = $('#artifact-list')
-  ul.innerHTML = ''
-  if (!current.artifacts.length) {
-    const li = document.createElement('div')
-    li.className = 'empty-tip'
-    li.textContent = '（暂无产出物；Agent 提交后显示于此）'
-    ul.appendChild(li)
-    return
-  }
-  for (const a of current.artifacts.slice(0, 20)) {
-    const li = document.createElement('div')
-    li.className = 'artifact-item'
-    const submitter = senderName(a.submitter)
-    li.innerHTML = `<b>${a.title}</b> <span class="badge state-${
-      a.state === 'approved' ? 'open' : a.state
-    }">${a.state === 'approved' ? '已批准' : a.state}</span><br/>
-      <span class="who">v${a.version} · ${submitter} · ${a.type}</span>`
-    if (a.state !== 'reverted') {
-      const rb = document.createElement('button')
-      rb.textContent = '回退'
-      rb.onclick = async () => {
-        await api(`/projects/${current.pid}/artifacts/${a.id}/rollback`, 'POST', {})
-        toast('已回退')
-        await refreshPanels()
-      }
-      li.appendChild(rb)
     }
     ul.appendChild(li)
   }

@@ -72,7 +72,7 @@ describe('产出物提交通道（artifact_submit 工具 → 项目工作目录�
     expect(w.ok).toBe(true)
     expect(await exists(join(workdir, 'src/snake.js'))).toBe(false) // 还没进项目目录
 
-    // 2) 提交（code 门默认免审批）
+    // 2) 提交（提交即落地，不走审批门）
     const sub = await executeTool(
       'artifact_submit',
       {
@@ -92,7 +92,7 @@ describe('产出物提交通道（artifact_submit 工具 → 项目工作目录�
     expect(arts[0]!.files[0]!.relPath).toBe('src/snake.js')
   }, 20000)
 
-  it('doc 类：提交后待审批（不落盘）→ 用户批准 → 落入项目工作目录', async () => {
+  it('doc 类：提交即落地（不需要审批）→ 直接落入项目工作目录 + approved + 无审批记录', async () => {
     const { pid, dev } = await setup()
     await executeTool(
       'ws_write',
@@ -105,20 +105,14 @@ describe('产出物提交通道（artifact_submit 工具 → 项目工作目录�
       await env(pid, dev),
     )
     expect(sub.ok).toBe(true)
-    const arts = await svc.artifacts.list(pid)
-    expect(arts[0]!.state).toBe('submitted')
-    const approvalId = arts[0]!.approvalId!
-    expect(await exists(join(workdir, 'docs/prd.md'))).toBe(false) // 审批前不落盘
-
-    // 用户批准 → 平台 finalize（此前漏了这一步，批准也不会落地）
-    const decide = await ready().inject({
-      method: 'POST',
-      url: `/api/projects/${pid}/approvals/${approvalId}/decide`,
-      payload: { decision: 'approved' },
-    })
-    expect(decide.statusCode).toBe(200)
+    expect(sub.ok ? sub.summary : '').toContain('项目工作目录')
+    // 不产生审批请求，文件直接落地
     expect(await readFile(join(workdir, 'docs/prd.md'), 'utf8')).toBe('# 登录 PRD\n')
-    expect((await svc.artifacts.list(pid))[0]!.state).toBe('approved')
+    const arts = await svc.artifacts.list(pid)
+    expect(arts[0]!.state).toBe('approved')
+    expect(arts[0]!.approvalId).toBeNull()
+    const pending = await svc.approvals.list(pid, 'pending')
+    expect(pending).toHaveLength(0)
   }, 20000)
 
   it('参数校验：无 files/path → 拒绝；源文件不存在 → 拒绝', async () => {

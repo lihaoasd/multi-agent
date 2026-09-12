@@ -49,8 +49,8 @@
 | `ws_read` | 读自己私有区 | workspace / none | ✅ | user+meeting（D14-⑩：会议内可引用本人笔记） |
 | `workdir_edit` | 工作目录受控编辑（单文件、留 diff 审计） | workdir / low | ❌ | user only |
 | `cmd_run` | 在 workdir 内执行命令（结构化 argv，沙箱见 sandbox.md） | workdir / 按命令 / allowed | 视命令 | user only |
-| `artifact_submit` | 提交产出物（静态产物路径） | workdir / low（doc 类按 D13 需审批） | ❌ | user only |
-| `artifact_rollback` | 回退产出物版本（需审批） | workdir / high | ❌ | user only |
+| `artifact_submit` | 提交产出物（ws 定稿 → workdir，免审批直落） | workdir / low | ❌ | user only |
+| `artifact_rollback` | 回退产出物版本（服务接口保留；2026-09-09 起无 UI 入口） | workdir / high | ❌ | user only |
 | `memory_search` | 检索记忆（角色+全局，按权限） | readonly-global / none | ✅ | user+meeting |
 | `memory_append` | 追加长期记忆条目（scope=own 默认） | workspace(记忆) / none | ✅ | user+meeting(仅 own) |
 | `session_search` | 关键词检索本项目会话日志（受 Agent 可检索集约束，D18-②） | readonly-global / none | ✅ | user+meeting |

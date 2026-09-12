@@ -191,7 +191,6 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     tasks,
     meetings,
     artifacts,
-    artifactPolicy: async (pid) => (await projectService.get(pid)).artifactPolicy,
     listTeam: (pid) => projectService.listTeam(pid),
     // 会议内发言：在会议会话里为该实例跑一轮
     runMeetingTurn: async (pid, mid, instanceId, prompt) => {

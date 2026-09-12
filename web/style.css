@@ -507,8 +507,7 @@ li.active {
   padding: 8px;
   margin-bottom: 8px;
 }
-.meeting-item,
-.artifact-item {
+.meeting-item {
   border-bottom: 1px dashed var(--line);
   padding: 6px 0;
 }

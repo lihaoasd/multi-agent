@@ -57,6 +57,18 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(String(md.body)).toContain('renderMarkdown')
   })
 
+  it('右侧栏不再有「产出物」栏（提交免审批，无回退入口）', async () => {
+    const index = await ready().inject({ method: 'GET', url: '/' })
+    expect(String(index.body)).not.toContain('产出物')
+    expect(String(index.body)).not.toContain('artifact-list')
+
+    const js = await ready().inject({ method: 'GET', url: '/app.js' })
+    const body = String(js.body)
+    expect(body).not.toContain('renderArtifacts')
+    expect(body).not.toContain('/artifacts')
+    expect(body).not.toContain('/rollback')
+  })
+
   it('未提供 webDir 时不注册静态托管（测试注入用），API 仍可用', async () => {
     const config = loadConfig({ dataDir: join(base, 'data2') }, base)
     config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]

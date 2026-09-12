@@ -37,9 +37,6 @@ export function registerServiceTools(deps: {
   listTeam?: (projectId: string) => Promise<TeamMemberConfig[]>
   /** 产出物提交（ws 私有区 → 项目工作目录） */
   artifacts?: ArtifactService
-  artifactPolicy?: (
-    projectId: string,
-  ) => Promise<{ codeSubmitApproval: boolean; docSubmitApproval: boolean }>
   /** 在会议会话内为某实例执行一轮（会议发言） */
   runMeetingTurn?: (
     projectId: string,
@@ -57,7 +54,6 @@ export function registerServiceTools(deps: {
     meetings,
     listTeam,
     artifacts,
-    artifactPolicy,
     runMeetingTurn,
   } = deps
 
@@ -637,8 +633,8 @@ export function registerServiceTools(deps: {
       {
         name: 'artifact_submit',
         description:
-          '把私有工作区(ws://)里的定稿提交到项目工作目录：产生产出物记录 + 版本快照（可回退）。' +
-          'doc 类默认需要用户审批，code 类免审批直接落地。只写 ws:// 不算交付，必须用本工具提交',
+          '把私有工作区(ws://)里的定稿提交到项目工作目录：产生产出物记录 + 版本快照。' +
+          '提交即落地（不需要用户审批）。只写 ws:// 不算交付，必须用本工具提交',
         scope: 'platform',
         availableIn: ['user'],
         idempotent: false,
@@ -707,15 +703,10 @@ export function registerServiceTools(deps: {
             reason: 'files 不能为空（或提供 path 单文件简写）',
           }
         }
-        const policy = artifactPolicy ? await artifactPolicy(env.projectId).catch(() => null) : null
-        const needsApproval =
-          type === 'doc'
-            ? (policy?.docSubmitApproval ?? false)
-            : type === 'code'
-              ? (policy?.codeSubmitApproval ?? false)
-              : false
+        // 产出物提交**不走审批门**：直接拷贝到项目工作目录（用户要求，2026-09-09）
+        const needsApproval = false
         try {
-          const { record, approvalId } = await artifacts.submit({
+          const { record } = await artifacts.submit({
             projectId: env.projectId,
             actor: env.instanceId,
             sessionId: env.sessionId,
@@ -729,9 +720,7 @@ export function registerServiceTools(deps: {
           const where = list.map((f) => f.relPath).join('、')
           return {
             ok: true,
-            summary: approvalId
-              ? `已提交产出物 ${record.id}「${title}」v${record.version}（${where}）→ 等待用户审批（${approvalId}）；批准后写入项目工作目录`
-              : `已提交产出物 ${record.id}「${title}」v${record.version} → 项目工作目录：${where}`,
+            summary: `已提交产出物 ${record.id}「${title}」v${record.version} → 项目工作目录：${where}`,
           }
         } catch (e) {
           return {

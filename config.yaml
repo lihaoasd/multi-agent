@@ -15,7 +15,7 @@ models:
       model: deepseek-v4-flash
 approval: # 全局默认审批策略（项目级可覆盖）
   highRiskCommands: true
-  docSubmitApproval: true
+  docSubmitApproval: true # 保留字段：artifact_submit 自 2026-09-09 起免审批直落，当前不读此值
   codeSubmitApproval: false
 sandbox:
   network: online # online | offline

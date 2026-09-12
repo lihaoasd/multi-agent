@@ -52,13 +52,11 @@ Agent 在私有区产出/迭代草稿(drafts/) → 定稿
 ## 4. 产出物状态机与可见性
 
 ```
-draft(私有区，无 manifest) ──提交──▶ submitted ──(审批通过)──▶ approved
-                                        │──(策略不需审批)──▶ approved
-                                        │──(审批拒绝)──▶ rejected
-approved/rejected/submitted ──回退──▶ reverted
+draft(私有区，无 manifest) ──提交──▶ approved        （2026-09-09：提交免审批，直接落地）
+approved ──回退──▶ reverted
 ```
 
-- 右栏"产出物"面板列出 approved/submitted 记录：类型/标题/署名/版本/文件数/diff 摘要/时间/审批状态；点击查看文件清单与摘要。
+- **不在界面设"产出物"栏**（2026-09-09 用户要求）：提交即交付，工作目录里的文件本身就是可见结果；manifest（artifacts.jsonl）仍为唯一记录，供审计与回退接口使用（回退无 UI 入口）。
 - manifest（artifacts.jsonl）为唯一记录；工作目录文件本身用户可用任意工具查看。
 
 ## 5. 审计与防呆
@@ -75,10 +73,10 @@ approved/rejected/submitted ──回退──▶ reverted
 
 | 动作 | 默认 |
 | --- | --- |
-| 文档类提交（doc/config/deploy 文档/test 报告等静态产物，经 artifact_submit） | **需审批**（doc 门，approval 后写入；含 D16-⑥ 只读预览） |
+| 静态产物提交（doc/config/deploy 文档/test 报告等，经 artifact_submit） | **无需审批**（2026-09-09 用户要求：提交即落地，初始 state=approved） |
 | 代码类提交（workdir_edit 按任务聚合，type=code） | **无需审批**（code 门，初始 state=approved），全程留痕（diff 审计 + manifest + versionDir 补丁） |
 | 高危命令 | **需审批**（见 agent-runtime §6） |
 
-> 类型→门映射（B9 定稿）：`artifact_submit` 静态类型 doc/config/deploy(文档脚本类)/test(报告类) 默认入 **doc 门**（docSubmitApproval）；`workdir_edit` 产生的 code 入 **code 门**（codeSubmitApproval）；各类型默认门可在项目策略中按类型细化覆盖。
+> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json/config.yaml 中保留（项目数据模型），但 `artifact_submit` 当前**不读该策略**：产出物提交一律直落。
 
 P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合（如某评审节点）锁定为基线，后续改动需先解锁/评审。
