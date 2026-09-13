@@ -1,7 +1,7 @@
 # Agent Haness · 本地多 Agent 软件开发协作平台
 
 > **当前状态：M0~M8 已交付（2026-09-08 编码完成轮次 1）；默认真实模型 deepseek-v4-flash；think 展示、甲模式任务分派、Agent 工具循环已落地（2026-09-09）。**
-> 代码可运行、116 用例测试全绿；详见 [docs/plan/development.md](docs/plan/development.md) 与 [docs/changes/](docs/changes/)。
+> 代码可运行、**49 文件 / 315 用例**测试全绿（2026-09-14 纯重构后实测）；详见 [docs/plan/development.md](docs/plan/development.md) 与 [docs/changes/](docs/changes/)。
 
 一个**本地运行**的软件开发协作平台：用户以"老板"身份，与一组可自由编排的 AI 研发角色（Agent）组成虚拟团队，通过**一对一会话**与**多方会议**协作，把软件项目从想法推进到可运行、可部署的产出物。
 
@@ -55,6 +55,8 @@ npm run build && npm start   # 生产：tsc 编译后单端口运行
 - **任务完成总结（2026-09-12）**：受派人 `task_update(state=done, note=一句话完成总结)` → 总结落库 `resultNote`；任务栏面板卡片显示**完成总结/受阻原因**，`task.updated` 前端 toast 直接展示「任务「X」已完成（dev_1）：<总结>」，委派人收到带总结的系统通知。未领取就上报会自动**补领取**再完成（`task_update` 默认任务：显式 taskId > 进行中 > 我的最旧待领取）。
 - **工作区与归属（2026-09-12 起）**：**项目工作目录是唯一产出地**，私有工作区 `ws://` 已取消（`ws_read`/`ws_write` 工具下线，目录保留仅为兼容）。角色用 `workdir_edit` 直接写项目目录；写入前按 `file-owners.jsonl` 校验归属——**无主可写（写完认领）、自己的可写、别人的拒改**（`ERR_FORBIDDEN`，提示另建新文件）；写入后记录**署名**（角色显示名）与任务归属。不提供转交/接管（跨角色协作 = 另建新文件或由用户自己改）。后端 `POST /artifacts/:id/rollback` 保留（按版本快照恢复），界面无回退入口。
 - **已知边界**：`cmd_run` 的命令副作用不受归属锁约束（无法静态判定命令会写哪些文件）；回退接口不做 owner 校验（无 UI 入口）。
+- **agent loop 策略是"提示级"（2026-09-14 如实标注）**：`direct` / `reflective` / `plan-execute` **目前没有执行编排差异**，三条策略共用同一个回合实现——差别只在系统提示第 3 段注入的一句"执行模式"文案，外加 `plan-execute` 会在回合开始落一条**硬编码单步** `plan` 事件（`steps:[{step:1,title:'执行任务并汇报'}]`，前端画一行"计划"，**没有任何消费者**）。`reflective` 没有 critique 调用；`params.maxIterations` 从未被读取；`plan-execute` 也不"逐步执行"。**角色间真正的能力差异来自 `tools:` 白名单**，不是策略。补齐属独立方案（改行为），详见 `docs/design/agent-runtime.md` §3 的现状标注与 `docs/changes/2026-09-14-refactor-p6.md`。
+- **重构成果（2026-09-14 纯重构）**：分层规则已可机器校验（`eslint.config.js` 六层依赖，存量违规 50 → 11 warning / 0 error，`server`/`domain`/`ports`/`infra`/`shared` 五层为 error）；存储抽象落地（`src/ports/storage.ts` + `src/infra/store/`，15 个 store 全迁移、application 层持久化 IO 归零）；领域逻辑归位 `src/domain/`（2 → 7 文件：agent/task/meeting/approval 状态机 + 路径边界）；超大文件 9 → 3（`app.ts` 816→77、`service-tools` 998→80、`question-service` 448→307、`loop-runner` 875→691）；剩余 3 个超标文件（`composition` 692 / `loop-runner` 691 / `meeting-service` 643）按用户指示停止优化。收尾另做了一轮**旧代码审计**：删除 18 处零消费者声明（死函数/死方法/死端口成员）并把 4 处重复实现接线为 domain 单一来源，同时清掉重构前的陈旧 `dist/`（见 `docs/changes/2026-09-14-refactor-dead-code-audit.md`）。过程与遗留见 `docs/changes/2026-09-14-refactor-p*.md` 与 `docs/plan/2026-09-14-refactor-architecture.md`。
 - **角色详情（2026-09-13）**：左栏角色行「详情」= **只读配置一览**（提示词 / agent loop 策略与参数 / 工具 / 模型 / 实时状态 + 当前任务），数据来自 `GET /projects/:pid/agents/:iid`；「有什么工具」按**运行期口径**给出（角色白名单 ∩ 会话类型 ∩ 注册表，另加平台交互工具），因此会如实暴露"白名单里配了却没注册"的工具（当前：`fs_search`、`artifact_rollback`、`meeting_advance`、`meeting_ask_user`）。**只读**：不含编辑入口。**完整系统提示词预览（2026-09-13）**：弹窗里可一键查看"模型实际收到什么"——`GET /projects/:pid/agents/:iid/system-prompt` 按 user 会话实时拼装并逐段标注来源（**第 1 段=角色配置的提示词**，其余 10 段为平台注入：场景/执行模式/可用工具/产出物归属/当前任务/待领取任务/任务栏现状/团队名册/分派说明）；与运行期同源（`application/agent-loop/system-prompt.ts` 单点），不落盘；会议会话的工具段是只读子集，界面以文字说明。
 - **真实模型验收**：已在用户本机 DEEPSEEK_API_KEY 环境下对默认 deepseek-v4-flash 完成冒烟——正常回复、think/reasoning 展示、PM 派活→开发自动开工、**开发真实多步工具调用**（fs_list_dir → fs_read_file → workdir_edit 写入文件 → 回读复核）。
 - 其余按各 `docs/changes/2026-09-08-mN-*.md` 修改记录的"遗留"节为准。

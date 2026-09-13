@@ -45,16 +45,35 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 
 ## 3. 内置 agent loop（执行模板，D4）
 
-loop = 一次"Agent 处理一条新输入"的执行编排。实现为策略注册表（strategy name → runner），用户只做选择与参数配置（不写代码，MVP）。
+> ⚠️ **实现现状（2026-09-14 重构 P6 如实标注，原文保留在下方以便对照）**
+>
+> 本节原先描述的是**目标形态**；实际代码**目前并未实现策略注册表**，三者的差别只有"提示级"：
+>
+> | 本节承诺 | 代码实际（截至 2026-09-14） |
+> | --- | --- |
+> | "实现为策略注册表（strategy name → runner）" | **不存在注册表**。`AgentLoopRunner` 只有一个回合实现，三条策略共用它 |
+> | `direct` = 单轮一次模型调用 | 实际跑**无限轮工具循环**（`stepLimit = Infinity`，安全阀是"同工具+同入参+同结果连续 3 次"空转保护） |
+> | `reflective` = 生成 → 自查 → 修订 | **没有 critique 调用**。只在系统提示第 3 段注入一句"先给出初稿，再自查一遍…"，是否照做取决于模型 |
+> | `plan-execute` = 显式计划 → 逐步执行 → 验证 | **计划不来自模型**：代码在回合开始塞一条**硬编码单步** `plan` 事件（`steps: [{step:1, title:'执行任务并汇报'}]`），且**没有任何消费者**读取它（恢复逻辑实际用"缺 `turn_end` = 未完成"判定） |
+> | 通用参数 `maxIterations` / `stepModelOverride` / `toolBudget` | **无消费者**。`maxIterations` 只写在 4 个角色 YAML 的 `params` 里，从未被读取 |
+>
+> 也就是说：**三条策略当前是"提示级策略"，不是执行编排**；角色间真正的能力差异来自
+> `tools:` 白名单（见 §6）。`docs/changes/2026-09-08-m3-runtime-tools.md` 当时已注明
+> "MVP 提示级差异，真实多步执行留 M8 验证"，但 M8 只验了工具链冒烟，未补策略机制。
+>
+> 补齐需要：计划由模型结构化产出 → 每步回写 `stepIndex/status` → 恢复时消费 plan 事件 →
+> `maxIterations`/`toolBudget` 生效。这**改动行为**，属独立方案，不在本次纯重构范围内。
 
-| strategy | 语义 | 适用 |
-| --- | --- | --- |
-| `direct` | 单轮：组装上下文 → 一次模型调用 → 返回文本（可带受限工具：检索/记忆/读文件） | 闲聊、澄清、快速问答 |
-| `reflective` | 生成 → 自查(critique) → 修订，可配 maxIter(=2)，每步可换模型 | 文案/方案起草、PRD 初稿 |
-| `plan-execute` | 显式计划(步骤清单)→ 逐步执行(每步可用工具：读写文件/检索/提交/命令)→ 验证/收尾 | 开发、测试、架构任务（重活） |
-| （扩展位） | strategy 注册表开放 | 场景化新增 |
+loop = 一次"Agent 处理一条新输入"的执行编排。**目标形态**为策略注册表（strategy name → runner），用户只做选择与参数配置（不写代码，MVP）。
 
-loop 通用参数：`maxIterations`、`stepModelOverride`、`toolBudget`、`interruptibleAfterStep: true`（可中断点）。
+| strategy | 目标语义 | 适用 | 现状 |
+| --- | --- | --- | --- |
+| `direct` | 单轮：组装上下文 → 一次模型调用 → 返回文本（可带受限工具：检索/记忆/读文件） | 闲聊、澄清、快速问答 | 提示级（实为无限轮工具循环） |
+| `reflective` | 生成 → 自查(critique) → 修订，可配 maxIter(=2)，每步可换模型 | 文案/方案起草、PRD 初稿 | 提示级（无 critique 调用） |
+| `plan-execute` | 显式计划(步骤清单)→ 逐步执行(每步可用工具：读写文件/检索/提交/命令)→ 验证/收尾 | 开发、测试、架构任务（重活） | 提示级（硬编码单步 plan 事件，无消费者） |
+| （扩展位） | strategy 注册表开放 | 场景化新增 | 注册表不存在 |
+
+loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterations`、`stepModelOverride`、`toolBudget`、`interruptibleAfterStep: true`（可中断点）。
 每次执行都会：
 1. dispatcher 从 waiting/idle 领活并置 working；
 2. 组装上下文（见 §4）；
