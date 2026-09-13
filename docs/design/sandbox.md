@@ -76,7 +76,7 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 
 ### 5.1 判定引擎
 
-输入 = program 基名 + args 模式 + 动作网络语义；规则表为**声明式配置**（config.yaml / 项目覆盖 / 角色可收紧），输出：
+输入 = program 基名 + args 模式 + 动作网络语义；规则表为**声明式配置**（`.env` / 项目覆盖 / 角色可收紧），输出：
 
 > 统一策略入口（D18-⑥）：本节 L2 判定是 **PolicyEngine** 的命令侧数据源；与 tool 元数据 needsApproval、project.json 策略、信任开关（D17-④）合并后输出最终 allow/approval/deny，优先级 **deny > approval > allow**（见 tools.md §2）。
 

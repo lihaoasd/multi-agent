@@ -21,6 +21,7 @@ import type { TaskService } from '../task/task-service.js'
 import type { TaskState } from '../task/task-service.js'
 import { assignTaskFromIntent } from '../task/task-dispatch.js'
 import type { MeetingService } from '../meeting/meeting-service.js'
+import type { MeetingRecord } from '../meeting/meeting-service.js'
 import type { ArtifactService } from '../artifact/artifact-service.js'
 import type { FileOwnerStore } from '../artifact/file-owner-store.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
@@ -29,6 +30,17 @@ import type { TeamMemberConfig } from '../../shared/types/project.js'
 const DISPATCH_ROLES = new Set(['pm', 'product'])
 /** 任务状态全集（task_update 校验用） */
 const TASK_STATES: TaskState[] = ['todo', 'in_progress', 'done', 'blocked', 'terminated']
+
+/** 会议讨论链入参（启动时机由调用方决定：立即开会 or 排队被提升后）。 */
+export interface MeetingChainInput {
+  projectId: string
+  meeting: MeetingRecord
+  topic: string
+  desc: string
+  /** 受邀成员（不含主持人） */
+  members: string[]
+  host: string
+}
 
 export function registerServiceTools(deps: {
   memory: MemoryStore
@@ -42,13 +54,17 @@ export function registerServiceTools(deps: {
   artifacts?: ArtifactService
   /** 产出物署名与归属（file-owners）：写前校验、写后认领 */
   fileOwners?: FileOwnerStore
-  /** 在会议会话内为某实例执行一轮（会议发言） */
-  runMeetingTurn?: (
-    projectId: string,
-    meetingId: string,
-    instanceId: string,
-    prompt: string,
-  ) => Promise<void>
+  /**
+   * 会议讨论链（主持人开场 → 各成员发言 → 主持人收尾 → 满足条件则结束会议）。
+   * `meeting_start` 在会议**立即开始**时直接调用；会议因槽位被占而排队时**不调用**，
+   * 改由槽位空出、会议被提升时经 `MeetingService.onPromoted` 调用同一个链。
+   */
+  runMeetingChain?: (input: MeetingChainInput) => Promise<void>
+  /**
+   * 会议功能是否启用（`config.meeting.enabled`）。缺省 true；
+   * false 时**不注册** meeting_start/close/talk 三个工具。
+   */
+  meetingsEnabled?: boolean
 }): void {
   const {
     memory,
@@ -60,7 +76,8 @@ export function registerServiceTools(deps: {
     listTeam,
     artifacts,
     fileOwners,
-    runMeetingTurn,
+    runMeetingChain,
+    meetingsEnabled = true,
   } = deps
 
   registerTool(
@@ -637,8 +654,9 @@ export function registerServiceTools(deps: {
     )
   }
 
-  // 发起/结束会议：任意角色都可发起（平台代受邀 AI 成员接受）；仅主持人可结束
-  if (meetings && listTeam) {
+  // 发起/结束会议：任意角色都可发起（平台代受邀 AI 成员接受）；仅主持人可结束。
+  // `meetingsEnabled=false`（会议功能总开关关闭）时**不注册这些工具**——角色连"能开会"都不知道。
+  if (meetings && listTeam && meetingsEnabled) {
     registerTool(
       {
         name: 'meeting_start',
@@ -700,42 +718,29 @@ export function registerServiceTools(deps: {
           for (const m of members) {
             await meetings.respond(env.projectId, rec.id, m, 'accept').catch(() => undefined)
           }
-          // 让会议真正"开起来"：主持人开场 → 依次请成员发言 → 主持人收尾（后台串行，不阻塞本回合）
-          if (runMeetingTurn) {
-            const hostOpen =
-              `【会议开场】你是主持人（${env.instanceId}）。会议主题「${topic}」` +
-              (desc ? `，描述：${desc}` : '') +
-              `，参会：${members.join('、')} 与用户。请先开场：说明议题与期望产出；` +
-              '然后可用 meeting_talk 逐个点名成员发言（他们的发言会写进会议会话）。'
-            const hostWrap =
-              `【会议收尾】会议「${topic}」的成员发言已写入会议会话。请阅读后给出：结论、待办（谁做什么）、` +
-              '仍需用户拍板的事项；如需结束会议可调用 meeting_close。'
-            void (async () => {
-              await runMeetingTurn(env.projectId, rec.id, env.instanceId, hostOpen).catch(
-                () => undefined,
-              )
-              for (const m of members) {
-                const p =
-                  `【会议邀请】${env.instanceId} 邀请你参加「${topic}」` +
-                  (desc ? `（${desc}）` : '') +
-                  '。请在会议中发表意见：结论 + 理由 + 需要谁配合（简明，不要复述别人）。'
-                await runMeetingTurn(env.projectId, rec.id, m, p).catch(() => undefined)
-              }
-              await runMeetingTurn(env.projectId, rec.id, env.instanceId, hostWrap).catch(
-                () => undefined,
-              )
-              // 结论产出后由发起人结束会议（平台代收尾 → 生成纪要）
-              const cur = (await meetings.list(env.projectId)).find((m) => m.id === rec.id)
-              if (cur && (cur.state === 'open' || cur.state === 'blocked_waiting_user')) {
-                await meetings.close(env.projectId, rec.id, env.instanceId).catch(() => undefined)
-              }
-            })().catch(() => undefined)
+          // 同一时刻只允许一个会议进行：已有占槽会议时本条落 `queued`，等它结束再自动开始
+          const current = (await meetings.list(env.projectId)).find((m) => m.id === rec.id)
+          const queued = current?.state === 'queued'
+          // 会议开场/发言/收尾链（后台串行，不阻塞本回合）。
+          // **排队等待的会议不在这里开场**：同一个时刻只允许一个会议进行，等槽位空出、被
+          // promoteQueuedIfFree 提升时，再由组合根的 onPromoted 用同一个 runMeetingChain 开场。
+          if (runMeetingChain && !queued) {
+            void runMeetingChain({
+              projectId: env.projectId,
+              meeting: rec,
+              topic,
+              desc,
+              members,
+              host: env.instanceId,
+            }).catch(() => undefined)
           }
           return {
             ok: true,
-            summary:
-              `已发起会议 ${rec.id}「${topic}」，参会：我（${env.instanceId}，主持）、${members.join('、')}、用户。` +
-              '会议已开始；请在会议会话中跟进结论，结束后用 meeting_close 收尾（会生成纪要）。',
+            summary: queued
+              ? `已有会议在进行（同一时刻只允许一个会议），会议 ${rec.id}「${topic}」已**发起并排队等待**：` +
+                '等当前会议结束后平台会自动开始并通知你，你**本轮就到这里**，不要反复重试发起、也不要自己拉人开会。'
+              : `已发起会议 ${rec.id}「${topic}」，参会：我（${env.instanceId}，主持）、${members.join('、')}、用户。` +
+                '会议已开始；请在会议会话中跟进结论，结束后用 meeting_close 收尾（会生成纪要）。',
           }
         } catch (e) {
           return {

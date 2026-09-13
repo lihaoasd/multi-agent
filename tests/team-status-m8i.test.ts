@@ -26,14 +26,27 @@ beforeEach(async () => {
   await mkdir(workdir, { recursive: true })
   config = loadConfig({ dataDir: join(base, 'data') }, base)
   config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]
-  svc = composeServices(config, join(base, 'roles'))
-  app = await buildApp(svc)
+  // 默认关掉会议自动开始/自动收尾：本文件多数用例断言"手动推进"的中间态（proposed/open/占用/点名）；
+  // 需要验证"平台自动开场"的用例传 autoStart: true（见两个 meeting_start 用例）。
+  await boot()
 })
 afterEach(async () => {
   await app?.close()
   app = null
   if (base) await rm(base, { recursive: true, force: true }).catch(() => undefined)
 })
+
+/** 装配服务 + app（可覆盖会议自动开始/收尾；同一个用例多次调用会重建服务）。 */
+async function boot(opts: { autoStart?: boolean; autoClose?: boolean } = {}): Promise<void> {
+  config.meeting = {
+    autoStart: opts.autoStart ?? false,
+    autoClose: opts.autoClose ?? false,
+  }
+  await app?.close()
+  app = null
+  svc = composeServices(config, join(base, 'roles'))
+  app = await buildApp(svc)
+}
 
 function ready(): FastifyInstance {
   if (!app) throw new Error('app not ready')
@@ -258,6 +271,7 @@ describe('任务状态由角色自管', () => {
 
 describe('任意角色可发起会议（meeting_start/meeting_close 工具）', () => {
   it('dev 发起评审会 → 会议 open（受邀 AI 成员自动接受）+ 占用=会议中；主持人可结束', async () => {
+    await boot({ autoStart: true, autoClose: false })
     const { pid, id, team } = await setup(['dev', 'pm', 'qa'])
     const dev = id('dev')
     const pm = id('pm')
@@ -332,6 +346,7 @@ describe('任意角色可发起会议（meeting_start/meeting_close 工具）', 
   }, 20000)
 
   it('会议真正"开起来"：主持人开场 + 受邀成员在会议会话发言', async () => {
+    await boot({ autoStart: true, autoClose: true })
     const { pid, id, team } = await setup(['dev', 'pm'])
     const dev = id('dev')
     const pm = id('pm')

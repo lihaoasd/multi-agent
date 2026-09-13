@@ -125,6 +125,43 @@ export class ApprovalService {
     return next
   }
 
+  /** 作废该角色所有待批审批（2026-09-12）：pending → expired。
+   *  用途同 question.cancelPending——角色被拉进会议前先放下"等待你处理"，
+   *  否则会出现"审批待你处理、角色却已入会"的状态叠加。作废后不可再批准/拒绝。 */
+  async expirePending(
+    projectId: string,
+    actor: string,
+    reason: string,
+  ): Promise<Array<{ id: string; summary: string }>> {
+    const all = await this.readAll(projectId)
+    const hit = all.filter((a) => a.actor === actor && a.status === 'pending')
+    if (!hit.length) return []
+    const decidedAt = nowIso()
+    const ids = new Set(hit.map((a) => a.id))
+    const next = all.map((a) =>
+      ids.has(a.id) ? { ...a, status: 'expired' as const, decidedAt } : a,
+    )
+    const lines = next.map((a) => JSON.stringify(a)).join('\n') + '\n'
+    await atomicWriteFile(this.file(projectId), lines)
+    for (const a of hit) {
+      if (a.sessionId) {
+        await this.appendLog(projectId, a.sessionId, {
+          kind: 'approval_result',
+          role: 'system',
+          sender: a.actor,
+          payload: {
+            approvalId: a.id,
+            decision: 'expired',
+            reason,
+            summary: a.summary,
+          },
+        }).catch(() => undefined)
+      }
+      this.onStateChange?.(projectId, { ...a, status: 'expired', decidedAt })
+    }
+    return hit.map((a) => ({ id: a.id, summary: a.summary }))
+  }
+
   /** append 单条（pending 追加 / 决定重写同 id 行）。MVP：重写全表以保简单正确。 */
   private async append(rec: ApprovalRecord): Promise<void> {
     const all = await this.readAll(rec.projectId)

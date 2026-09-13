@@ -16,6 +16,7 @@
           需你处理 <span id="attention-count" class="badge"></span></button
       ></span>
       <button id="btn-new-project">新建项目</button>
+      <button id="btn-records" class="hidden" title="项目记录：任务完成 / 会议完成">项目记录</button>
       <button id="btn-export" class="hidden">导出 zip</button>
     </header>
 
@@ -39,7 +40,7 @@
           <button id="btn-add-member" class="ghost" title="添加角色实例">＋添加</button>
         </div>
         <ul id="team-list"></ul>
-        <div class="panel-head">
+        <div class="panel-head" id="meeting-nav-head">
           <h4>会议</h4>
           <button id="btn-new-meeting" class="ghost" title="发起会议（需主题与描述）">
             ＋发起
@@ -70,12 +71,29 @@
         <ul id="task-list"></ul>
         <h4>审批 <span id="approval-count" class="badge"></span></h4>
         <ul id="approval-list"></ul>
-        <h4>当前会议</h4>
+        <h4 id="right-meeting-head">当前会议</h4>
         <div id="meeting-actions"></div>
         <ul id="meeting-list"></ul>
         <h4>记忆/纪要</h4>
         <div id="memory-panel"></div>
       </aside>
+    </main>
+
+    <!-- 页 3：项目记录（任务完成 / 会议完成 的卡片流，只读） -->
+    <main id="records-view" class="hidden">
+      <div class="page-head">
+        <div class="page-head-row">
+          <h2>项目记录</h2>
+          <button id="btn-records-back" title="返回会话工作台">← 返回工作台</button>
+        </div>
+        <p class="muted">
+          任务完成与会议完成的记载（时间倒序）。只读；卡片上可一键跳到源会话。
+        </p>
+      </div>
+      <div id="records-list" class="record-list"></div>
+      <div id="records-empty" class="empty hidden">
+        暂无记录。任务被角色上报为「已完成/已终止」、会议结束后，这里会出现对应卡片。
+      </div>
     </main>
 
     <!-- 新建项目向导（弹窗） -->
@@ -143,6 +161,18 @@
         <h3>添加角色到团队</h3>
         <ul id="member-list" class="member-list"></ul>
         <div class="row"><button id="btn-member-close">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- 角色详情弹窗（只读：提示词 / agent loop / 工具 / 模型 / 实时状态） -->
+    <div id="agent-modal" class="modal hidden">
+      <div class="modal-box card agent-detail-box">
+        <div class="board-head">
+          <h3 id="agent-detail-title">角色详情</h3>
+          <span id="agent-detail-sub" class="who"></span>
+          <button type="button" id="btn-agent-close">关闭</button>
+        </div>
+        <div id="agent-detail-body" class="agent-detail-body"></div>
       </div>
     </div>
 

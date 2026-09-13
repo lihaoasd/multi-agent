@@ -22,6 +22,8 @@ let current = {
   /** 本次已从历史渲染到的最新 seq（用于过滤广播中重复事件） */
   lastRenderedSeq: 0,
   busy: false,
+  /** 会议功能开关（服务端 /capabilities 下发；false 时隐藏会议入口） */
+  meetingEnabled: true,
 }
 let ws = null
 
@@ -85,7 +87,27 @@ function toast(msg) {
 
 async function boot() {
   bindGlobal()
+  await loadCapabilities()
   await showProjectsView()
+}
+
+/**
+ * 平台能力开关（会议功能可被 config.meeting.enabled=false 关闭）：
+ * 关闭时隐藏左栏「会议」区与「＋发起」按钮，避免出现点了没反应的入口。
+ * （真正的拒绝在服务端：会议 REST 与 meeting_* 工具都已关闭。）
+ */
+async function loadCapabilities() {
+  const d = await api('/capabilities').catch(() => null)
+  current.meetingEnabled = d?.capabilities?.meeting !== false
+  applyCapabilities()
+}
+
+function applyCapabilities() {
+  const off = current.meetingEnabled === false
+  for (const sel of ['#meeting-nav-head', '#meeting-nav-list', '#right-meeting-head', '#meeting-list', '#meeting-actions']) {
+    const el = $(sel)
+    if (el) el.classList.toggle('hidden', off)
+  }
 }
 
 /** 页 1：项目列表视图（离开当前项目、断开 WS）。 */
@@ -104,10 +126,12 @@ async function showProjectsView() {
     ws = null
   }
   $('#layout').classList.add('hidden')
+  $('#records-view').classList.add('hidden')
   $('#projects-view').classList.remove('hidden')
   $('#current-project').classList.add('hidden')
   $('#current-project').textContent = ''
   setExportVisible(false)
+  setRecordsVisible(false)
   $('#attention-wrap').classList.add('hidden')
   $('#attention-modal').classList.add('hidden')
   await refreshProjectList()
@@ -179,8 +203,10 @@ async function enterProject(pid) {
   $('#current-project').textContent = p ? ` / ${p.name}` : ` / ${pid}`
   $('#current-project').classList.remove('hidden')
   $('#projects-view').classList.add('hidden')
+  $('#records-view').classList.add('hidden')
   $('#layout').classList.remove('hidden')
   setExportVisible(true)
+  setRecordsVisible(true)
   setDocTitle(p ? p.name : pid)
   await openProject(pid)
 }
@@ -189,8 +215,148 @@ function setExportVisible(visible) {
   $('#btn-export').classList.toggle('hidden', !visible)
 }
 
+/** 顶栏「项目记录」入口（仅进入项目后可见）。 */
+function setRecordsVisible(visible) {
+  $('#btn-records').classList.toggle('hidden', !visible)
+}
+
+/**
+ * 页 3：项目记录页（任务完成 / 会议完成的卡片流，只读）。
+ * 复用当前项目上下文（current.pid 不变，WS 保持连接），只切换主视图。
+ */
+async function showRecordsView() {
+  if (!current.pid) return showProjectsView()
+  // 已在记录页时再点顶栏按钮 = 返回工作台（同一入口可来回切换）
+  if (!$('#records-view').classList.contains('hidden')) return showWorkbenchView()
+  $('#layout').classList.add('hidden')
+  $('#projects-view').classList.add('hidden')
+  $('#records-view').classList.remove('hidden')
+  await refreshRecords()
+}
+
+/**
+ * 从项目记录页返回会话工作台（回到当前会话；没有会话时回该项目的第一个角色会话）。
+ * 卡片上的「看会话/看会议」也用它（跳源后可选地打开某会话）。
+ */
+async function showWorkbenchView(sessionId) {
+  if (!current.pid) return showProjectsView()
+  $('#records-view').classList.add('hidden')
+  $('#projects-view').classList.add('hidden')
+  $('#layout').classList.remove('hidden')
+  const target =
+    sessionId ?? current.sessionId ?? (current.team[0] ? `u_${current.team[0].instanceId}` : null)
+  await refreshPanels()
+  if (target) await openSession(current.pid, target)
+}
+
+/**
+ * 项目记录页开着时才刷新（避免在会话页做多余请求）。
+ * 任务终态（task.updated）与会议结束（meetings 列表变化）都会走到这里。
+ */
+async function refreshRecordsIfOpen() {
+  if (!$('#records-view').classList.contains('hidden')) await refreshRecords()
+}
+
+/** 拉取并渲染项目记录卡片。 */
+async function refreshRecords() {
+  if (!current.pid) return
+  const pid = current.pid
+  const d = await api(`/projects/${pid}/records`).catch(() => null)
+  if (current.pid !== pid) return
+  renderRecords(d?.records ?? [])
+}
+
+/** 记录卡片：类型徽标 + 标题 + 谁做的/什么时候 + 说明 + 一键跳源。 */
+function renderRecords(records) {
+  const list = $('#records-list')
+  list.innerHTML = ''
+  $('#records-empty').classList.toggle('hidden', records.length > 0)
+  for (const r of records) {
+    const card = document.createElement('div')
+    card.className = `record-card kind-${r.kind}`
+
+    const head = document.createElement('div')
+    head.className = 'record-head'
+    const badge = document.createElement('span')
+    badge.className = `badge record-kind kind-${r.kind}`
+    badge.textContent = r.kind === 'meeting' ? '会议' : '任务'
+    head.appendChild(badge)
+    const title = document.createElement('span')
+    title.className = 'record-title'
+    title.textContent = r.title
+    head.appendChild(title)
+    const at = document.createElement('span')
+    at.className = 'record-at'
+    at.textContent = fmtTime(r.at)
+    head.appendChild(at)
+    card.appendChild(head)
+
+    const meta = document.createElement('div')
+    meta.className = 'record-meta who'
+    if (r.kind === 'meeting') {
+      const who = senderName(r.by)
+      const members = (r.members ?? []).map((m) => senderName(m)).join('、')
+      const st = r.meetingState ?? '进行中'
+      meta.textContent = `${st} · 主持人 ${who}${members ? ` · 参会 ${members}` : ''}`
+    } else {
+      const st = r.taskState === 'terminated' ? '已终止' : '已完成'
+      meta.textContent = `${st} · 受派人 ${senderName(r.by)}`
+    }
+    card.appendChild(meta)
+
+    if (r.desc) {
+      const desc = document.createElement('div')
+      desc.className = 'record-desc'
+      desc.textContent = r.desc
+      card.appendChild(desc)
+    }
+    if (r.note) {
+      const note = document.createElement('div')
+      note.className = 'board-summary'
+      note.textContent = r.note
+      card.appendChild(note)
+    }
+
+    const actions = document.createElement('div')
+    actions.className = 'card-actions'
+    if (r.sessionId) {
+      const open = document.createElement('button')
+      open.className = 'mini'
+      open.textContent = r.kind === 'meeting' ? '看会议' : '看会话'
+      open.onclick = () => openRecordSource(r)
+      actions.appendChild(open)
+    }
+    if (r.kind === 'meeting') {
+      const min = document.createElement('button')
+      min.className = 'mini'
+      min.textContent = '看纪要'
+      min.onclick = async () => {
+        try {
+          const d = await api(`/projects/${current.pid}/meetings/${r.id}/minutes`)
+          await openRecordSource(r)
+          $('#memory-panel').innerHTML = `<pre>${escapeHtml(d.minutes.text)}</pre>`
+          toast('纪要已显示在右侧「记忆/纪要」区')
+        } catch (e) {
+          toast('读取纪要失败：' + e.message)
+        }
+      }
+      actions.appendChild(min)
+    }
+    card.appendChild(actions)
+    list.appendChild(card)
+  }
+}
+
+/** 从记录卡片跳到源（任务=受派人会话；会议=会议会话），回到工作台视图。 */
+async function openRecordSource(r) {
+  if (!r.sessionId) return showWorkbenchView()
+  await showWorkbenchView(r.sessionId)
+}
+
 function bindGlobal() {
   $('#btn-home').addEventListener('click', () => showProjectsView())
+  $('#btn-records').addEventListener('click', () => showRecordsView())
+  $('#btn-records-back').addEventListener('click', () => showWorkbenchView())
   $('#btn-new-project').addEventListener('click', loadRolePicker)
   // 每次打开弹窗都重新拉角色（容错：失败 toast，避免空列表）
   /** 同步「全选」勾选态（含半选）与已选计数。 */
@@ -273,8 +439,12 @@ function bindGlobal() {
   // 团队：添加成员 / 弹窗关闭
   $('#btn-add-member').addEventListener('click', openMemberModal)
   $('#btn-member-close').addEventListener('click', () => $('#member-modal').classList.add('hidden'))
+  $('#btn-agent-close').addEventListener('click', () => $('#agent-modal').classList.add('hidden'))
   // 会议：发起（主题 + 描述 + 参会人）
-  $('#btn-new-meeting').addEventListener('click', openMeetingModal)
+  $('#btn-new-meeting').addEventListener('click', () => {
+    if (current.meetingEnabled === false) return toast('会议功能已关闭')
+    openMeetingModal()
+  })
   $('#btn-meeting-cancel').addEventListener('click', () =>
     $('#meeting-modal').classList.add('hidden'),
   )
@@ -510,6 +680,13 @@ const AGENT_STATE_ZH = {
   disabled: '已停用',
 }
 
+/** agent loop 策略中文说明（与 loop-runner 的 [执行模式] 提示同口径）。 */
+const AGENT_LOOP_ZH = {
+  direct: '直接作答',
+  reflective: '反思自省：先给初稿，再自查（边界与漏洞）后输出修订版',
+  'plan-execute': '计划-执行：先给简短执行计划，再逐步执行并输出结论',
+}
+
 /** 拉取团队实时状态（/agents）并刷新左栏团队行。 */
 async function refreshAgents() {
   if (!current.pid) return
@@ -545,6 +722,16 @@ function renderTeamNav() {
     if (state === 'waiting') st.title = '有需要你处理的提问或审批：点击进入该角色会话'
     else if (a?.currentTask) st.title = `当前任务：${a.currentTask.title}`
     li.appendChild(st)
+
+    const detail = document.createElement('button')
+    detail.className = 'ghost nav-action'
+    detail.textContent = '详情'
+    detail.title = '查看该角色的提示词、agent loop、工具与实时状态（只读）'
+    detail.addEventListener('click', (ev) => {
+      ev.stopPropagation() // 不要触发行点击（进入会话）
+      openAgentDetail(m.instanceId)
+    })
+    li.appendChild(detail)
 
     const toggle = document.createElement('button')
     toggle.className = 'ghost nav-action'
@@ -584,6 +771,208 @@ function renderTeamNav() {
   }
 }
 
+/** 角色详情弹窗（只读）：提示词 / agent loop / 工具 / 模型 / 实时状态。 */
+async function openAgentDetail(instanceId) {
+  if (!current.pid) return
+  const box = $('#agent-detail-body')
+  box.innerHTML = '<div class="who">加载角色详情…</div>'
+  $('#agent-detail-title').textContent = '角色详情'
+  $('#agent-detail-sub').textContent = ''
+  $('#agent-modal').classList.remove('hidden')
+  try {
+    const d = await api(`/projects/${current.pid}/agents/${instanceId}`)
+    renderAgentDetail(d.agent)
+  } catch (e) {
+    box.innerHTML = '<div class="who">加载失败：' + escapeHtml(e.message) + '</div>'
+  }
+}
+
+/** 详情键值块。 */
+function detailKv(pairs) {
+  const dl = document.createElement('dl')
+  dl.className = 'kv'
+  for (const [k, v] of pairs) {
+    const dt = document.createElement('dt')
+    dt.textContent = k
+    const dd = document.createElement('dd')
+    dd.textContent = v === null || v === undefined || v === '' ? '—' : String(v)
+    dl.appendChild(dt)
+    dl.appendChild(dd)
+  }
+  return dl
+}
+
+/** 详情分区（标题 + 若干节点）。 */
+function detailSection(title, nodes) {
+  const sec = document.createElement('div')
+  sec.className = 'detail-sec'
+  const h = document.createElement('h5')
+  h.textContent = title
+  sec.appendChild(h)
+  for (const n of nodes) sec.appendChild(n)
+  return sec
+}
+
+/** 渲染角色详情（只读）：身份与配置 / 模型与 loop / 工具 / 提示词。 */
+function renderAgentDetail(a) {
+  const box = $('#agent-detail-body')
+  box.innerHTML = ''
+  const state = a.enabled ? (a.state ?? 'idle') : 'disabled'
+  const loop = a.loop ?? { strategy: 'direct' }
+  const tools = a.tools ?? { effective: [], unavailable: [] }
+  const tpl = a.template
+
+  $('#agent-detail-title').textContent = `${a.displayName}（${a.instanceId}）`
+  $('#agent-detail-sub').textContent = `${AGENT_STATE_ZH[state] ?? state}${
+    a.currentTask ? ` · 当前任务：${a.currentTask.title}` : ''
+  }`
+
+  box.appendChild(
+    detailSection('身份与配置', [
+      detailKv([
+        ['实例', `${a.displayName}（${a.instanceId}）`],
+        [
+          '角色模板',
+          tpl
+            ? `${tpl.name}（${tpl.roleId}）· ${tpl.source === 'builtin' ? '内置' : '自建'}`
+            : `${a.roleTemplateId}（模板已删除）`,
+        ],
+        ['状态', AGENT_STATE_ZH[state] ?? state],
+        ['当前任务', a.currentTask ? `${a.currentTask.title}（${a.currentTask.id}）` : '无'],
+        ['所在会话', a.sessionId || '—'],
+        ['创建时间', a.createdAt ? String(a.createdAt).slice(0, 16).replace('T', ' ') : '—'],
+      ]),
+    ]),
+  )
+
+  const loopNodes = [
+    detailKv([
+      ['模型', a.model],
+      ['agent loop', `${loop.strategy}（${AGENT_LOOP_ZH[loop.strategy] ?? '自定义策略'}）`],
+    ]),
+  ]
+  if (loop.params && Object.keys(loop.params).length) {
+    const pre = document.createElement('pre')
+    pre.className = 'agent-prompt'
+    pre.textContent = JSON.stringify(loop.params)
+    loopNodes.push(pre)
+  }
+  box.appendChild(detailSection('模型与 loop', loopNodes))
+
+  // 工具：按**运行期口径**给出（白名单 ∩ 会话类型 ∩ 注册表 + 平台交互工具）
+  const toolNodes = []
+  if (tools.effective.length) {
+    const chips = document.createElement('div')
+    chips.className = 'tool-chips'
+    for (const t of tools.effective) {
+      const chip = document.createElement('span')
+      chip.className = 'tool-chip'
+      chip.textContent = t.name
+      const src = document.createElement('span')
+      src.className = 'src'
+      src.textContent = t.source === 'platform' ? '平台' : '白名单'
+      src.title = t.source === 'platform' ? '平台交互工具：user 会话始终可用' : '来自角色工具白名单'
+      chip.appendChild(src)
+      chips.appendChild(chip)
+    }
+    toolNodes.push(chips)
+  } else {
+    toolNodes.push(detailKv([['可用工具', '无']]))
+  }
+  if (tools.unavailable.length) {
+    const miss = document.createElement('div')
+    miss.className = 'tool-miss'
+    miss.textContent =
+      '白名单里配置但当前 user 会话用不上：' +
+      tools.unavailable
+        .map((t) =>
+          t.availableIn?.length
+            ? `${t.name}（仅 ${t.availableIn.join('/')} 会话可用）`
+            : `${t.name}（未注册，可能已下线或尚未实现）`,
+        )
+        .join('；')
+    toolNodes.push(miss)
+  }
+  box.appendChild(
+    detailSection(
+      `工具（user 会话实际可用 ${tools.effective.length} 个，与运行期一致）`,
+      toolNodes,
+    ),
+  )
+
+  const promptNodes = []
+  if (a.promptSource === 'none') {
+    const warn = document.createElement('div')
+    warn.className = 'tool-miss'
+    warn.textContent = '该实例未设置提示词：运行时按空提示词执行（不回落模板）。'
+    promptNodes.push(warn)
+  }
+  const pre = document.createElement('pre')
+  pre.className = 'agent-prompt'
+  pre.textContent = a.prompt || '（空）'
+  promptNodes.push(pre)
+  // 说明 + 「查看完整系统提示词」：实例提示词只是第 1 段，其余为平台实时注入（懒加载）
+  const note = document.createElement('div')
+  note.className = 'who'
+  note.textContent =
+    '以上是角色配置里的提示词——实际发给模型的是「完整系统提示词」，平台还会在每回合追加' +
+    '场景/执行模式/可用工具/产出物归属/任务/团队名册等段（随状态实时变化）。'
+  promptNodes.push(note)
+  const fullBtn = document.createElement('button')
+  fullBtn.type = 'button'
+  fullBtn.textContent = '查看完整系统提示词'
+  fullBtn.addEventListener('click', () => loadFullSystemPrompt(a.instanceId, fullBtn))
+  promptNodes.push(fullBtn)
+  const fullBox = document.createElement('div')
+  fullBox.id = 'agent-full-prompt'
+  fullBox.className = 'full-prompt hidden'
+  promptNodes.push(fullBox)
+  box.appendChild(detailSection('提示词（实例配置）', promptNodes))
+}
+
+/** 懒加载「完整系统提示词」：逐段渲染（段名 + 来源徽标 + 全文）。 */
+async function loadFullSystemPrompt(instanceId, btn) {
+  const box = $('#agent-full-prompt')
+  if (!box) return
+  box.classList.remove('hidden')
+  box.innerHTML = '<div class="who">拼装中…</div>'
+  btn.disabled = true
+  try {
+    const d = await api(`/projects/${current.pid}/agents/${instanceId}/system-prompt`)
+    const p = d.preview
+    box.innerHTML = ''
+    for (const b of p.blocks) {
+      const sec = document.createElement('div')
+      sec.className = 'full-prompt-sec'
+      const head = document.createElement('div')
+      head.className = 'full-prompt-head'
+      const name = document.createElement('span')
+      name.textContent = b.title
+      const origin = document.createElement('span')
+      origin.className = b.origin === 'role-config' ? 'origin-role' : 'origin-platform'
+      origin.textContent = b.origin === 'role-config' ? '角色配置' : '平台注入'
+      head.appendChild(name)
+      head.appendChild(origin)
+      const pre = document.createElement('pre')
+      pre.className = 'agent-prompt'
+      pre.textContent = b.text.replace(/\s+$/, '') || '（空）'
+      sec.appendChild(head)
+      sec.appendChild(pre)
+      box.appendChild(sec)
+    }
+    const tip = document.createElement('div')
+    tip.className = 'who'
+    tip.textContent =
+      `以上按 user 会话实时拼装（共 ${p.blocks.length} 段）。会议会话的工具段不同（会议内只有只读工具）；` +
+      '任务、产出物归属、团队名册等段会随状态变化。'
+    box.appendChild(tip)
+  } catch (e) {
+    box.innerHTML = '<div class="who">加载失败：' + escapeHtml(e.message) + '</div>'
+  } finally {
+    btn.disabled = false
+  }
+}
+
 /** 会议列表（左栏）：所有会议，点击进入会议会话。 */
 function renderMeetingsNav() {
   const ul = $('#meeting-nav-list')
@@ -599,7 +988,7 @@ function renderMeetingsNav() {
     li.appendChild(title)
     const st = document.createElement('span')
     st.className = `badge state-${mt.state}`
-    st.textContent = stateZh(mt.state)
+    st.textContent = meetingStateZh(mt)
     li.appendChild(st)
     li.addEventListener('click', () => openSession(current.pid, mt.id))
     ul.appendChild(li)
@@ -719,7 +1108,11 @@ async function createMeetingFromModal() {
       members,
     })
     $('#meeting-modal').classList.add('hidden')
-    toast(`会议已发起：${topic}`)
+    toast(
+      d.meeting?.waiting
+        ? `已有会议在进行，会议「${topic}」已排队等待，当前会议结束后自动开始`
+        : `会议已发起：${topic}`,
+    )
     await refreshPanels()
     await openSession(current.pid, d.meeting.id)
   } catch (e) {
@@ -756,6 +1149,15 @@ const STATE_ZH = {
 }
 function stateZh(s) {
   return STATE_ZH[s] ?? s
+}
+
+/**
+ * 会议对用户只有「进行中 / 已结束」两态（服务端下发 displayState）；
+ * 仍在排队等槽位的会议额外标注「等待中」（同一时刻只允许一个会议进行）。
+ */
+function meetingStateZh(mt) {
+  if (!mt) return ''
+  return `${stateZh(mt.displayState ?? mt.state)}${mt.waiting ? ' · 等待中' : ''}`
 }
 
 /** 会话头部小按钮（会议操作）。 */
@@ -1225,6 +1627,8 @@ function handleTaskPush(e) {
   if (state === 'done') toast(`任务「${p.title}」已完成（${p.assignee}）${tail}`)
   else if (state === 'blocked') toast(`任务「${p.title}」受阻（${p.assignee}）${tail ? tail : '，可在任务栏查看'}`)
   else if (state === 'terminated') toast(`任务「${p.title}」已终止（${p.assignee}）`)
+  // 项目记录页开着时，终态任务要即时变成卡片（会议完成同理，经 scheduleRefreshPanels）
+  if (state === 'done' || state === 'terminated') void refreshRecordsIfOpen()
   scheduleRefreshPanels()
 }
 
@@ -1911,6 +2315,8 @@ async function refreshPanels() {
     current.meetings = m.meetings ?? []
     renderMeetings()
     renderMeetingsNav()
+    // 会议结束 → 项目记录页多一张卡片（开着才刷）
+    if ((current.meetings ?? []).some((x) => x.state === 'closed')) void refreshRecordsIfOpen()
   }
   if (tk) {
     current.tasks = tk.tasks ?? []
@@ -2231,8 +2637,8 @@ function renderMeetings() {
     li.className = 'meeting-item'
     const state = mt.state
     const hostName = current.team.find((t) => t.instanceId === mt.meeting?.host)?.displayName
-    li.innerHTML = `<b>${mt.meeting?.topic ?? mt.id}</b> <span class="badge state-${state}">${stateZh(
-      state,
+    li.innerHTML = `<b>${mt.meeting?.topic ?? mt.id}</b> <span class="badge state-${state}">${meetingStateZh(
+      mt,
     )}</span><br/>
       <span class="who">主持人 ${hostName ?? mt.meeting?.host ?? mt.host}</span>`
     if (state === 'proposed' && current.team.length) {

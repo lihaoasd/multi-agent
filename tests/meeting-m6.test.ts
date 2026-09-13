@@ -20,6 +20,9 @@ beforeEach(async () => {
   await mkdir(workdir, { recursive: true })
   const config = loadConfig({ dataDir: join(base, 'data') }, base)
   config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]
+  // 本文件验证**手动推进**的会议状态机（proposed → accept → open → 决策点 → close）：
+  // 关掉自动开始/自动收尾，避免受邀成员到位后平台立刻把会议跑完（端到端链路见 meeting-queue-m8z）。
+  config.meeting = { autoStart: false, autoClose: false }
   const svc = composeServices(config, join(base, 'roles'))
   app = await buildApp(svc)
 })

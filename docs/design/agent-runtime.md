@@ -83,7 +83,7 @@ loop 通用参数：`maxIterations`、`stepModelOverride`、`toolBudget`、`inte
 
 组装顺序固定，可配置 `contextLimits`。检索到的旧会话片段按需注入（tag 为引用片段）。
 
-**contextLimits MVP 默认值**（config.yaml 集中配置，可全局/实例覆盖，M11 定稿）：
+**contextLimits MVP 默认值**（`.env` 集中配置，键名如 `CONTEXT__SESSION__RAW_WINDOW`，可全局/实例覆盖，M11 定稿）：
 
 | 配置键 | 默认 | 含义 |
 | --- | --- | --- |
@@ -99,10 +99,10 @@ loop 通用参数：`maxIterations`、`stepModelOverride`、`toolBudget`、`inte
 ## 5. 模型路由（D4/D5）
 
 - Provider 注册表：`openai-compatible`（DeepSeek 等）/ `ollama` / `mock`。
-- 路由规则（config.yaml 全局默认 + 实例覆盖）：
+- 路由规则（`.env` 的 `MODELS__DEFAULT` 全局默认 + 实例覆盖）：
   1. 实例 `model` 优先；
   2. 未配置则用模板 `defaultModel`；
-  3. 再退回 config `models.default`；
+  3. 再退回 `.env` 的 `MODELS__DEFAULT`；
   4. loop 步骤可 `stepModelOverride`（如反思用更强模型）。
 - 口径（B8 定稿）：实例/模板的 `model` 字段值一律引用 **provider id**（`config.models.providers[].id`，如 `deepseek-chat`/`ollama-qwen`/`mock`），具体模型名由 provider 内部指定；避免"provider/模型名"二义。
 - 流式：模型网关统一返回增量，chunk 落 log(合并为 message 事件)并推送；中断/超时重试策略见架构 §7。

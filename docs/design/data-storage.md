@@ -16,8 +16,9 @@
 
 ```
 agent_haness/                    # 平台仓库
-├── config.yaml                  # 平台配置：port/模型/数据根目录/角色库目录/审批策略默认值
-├── data/                        # 运行时数据根（不入库；config.dataDir 可改）
+├── .env                         # 平台配置（2026-09-13 起；此前为 config.yaml）：host/port/模型/数据根/角色库/审批策略默认值
+│                                #   命名约定：`__` 分层、数组用 JSON；模板见入库的 .env.example
+├── data/                        # 运行时数据根（不入库；DATA_DIR 可改）
 │   ├── roles/                   # 【系统角色库】用户自建/修改的模板（内置模板随仓库 src/shared/roles）
 │   │   └── <roleId>.yaml
 │   └── projects/

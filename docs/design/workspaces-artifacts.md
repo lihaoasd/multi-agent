@@ -97,6 +97,6 @@ approved ──回退──▶ reverted
 | 高危命令 | **需审批**（见 agent-runtime §6） |
 
 > 自 2026-09-12 起产出**直接写进项目工作目录并署名**（§2），产出物登记只是"再给它一个版本快照"；
-> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json/config.yaml 中保留（项目数据模型），但当前**不读该策略**。
+> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json 与 `.env` 的 `APPROVAL__*` 中保留（项目数据模型），但当前**不读该策略**。
 
 P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合（如某评审节点）锁定为基线，后续改动需先解锁/评审。

@@ -7,7 +7,7 @@ import websocket from '@fastify/websocket'
 import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
 
-import { ErrorCodes, isAppError } from '../shared/errors.js'
+import { AppError, ErrorCodes, isAppError } from '../shared/errors.js'
 import {
   browseDirectory,
   getHomeAndDrives,
@@ -19,6 +19,9 @@ import type { RoleTemplate } from '../shared/types/role.js'
 import type { Services } from '../application/composition.js'
 import { composeToolEnv } from '../application/composition.js'
 import { QuestionService } from '../application/question/question-service.js'
+import { withDisplay } from '../application/meeting/meeting-service.js'
+import { deriveAgentState } from '../application/runtime-state.js'
+import { describeToolAvailability } from '../application/tools/tool-selection.js'
 import type { TeamAddInput, TeamPatchInput } from '../application/team/team-service.js'
 
 /** 组装应用（不监听端口，便于测试注入）。webDir 提供时一并托管前端静态资源。 */
@@ -88,6 +91,14 @@ function registerProjectRoutes(app: FastifyInstance, svc: Services): void {
 
   app.get('/api/projects', async () => ({ projects: await projectService.list() }))
 
+  /**
+   * 平台能力开关（前端据此隐藏入口）：会议关闭时不显示会议区与「＋发起」。
+   * 前端只做展示，真正的拒绝在服务端（会议 REST / 工具均被拦）。
+   */
+  app.get('/api/capabilities', async () => ({
+    capabilities: { meeting: svc.config.meeting.enabled !== false },
+  }))
+
   app.post<{ Body: CreateProjectBody }>('/api/projects', async (req, reply) => {
     const body = req.body ?? {}
     if (typeof body.name !== 'string' || typeof body.workdir !== 'string') {
@@ -134,19 +145,17 @@ function registerProjectRoutes(app: FastifyInstance, svc: Services): void {
 }
 
 function registerTeamRoutes(app: FastifyInstance, svc: Services): void {
-  const { teamService, occupancy, tasks, approvals, questions } = svc
+  const { teamService, occupancy, tasks, approvals, questions, roleService } = svc
 
   app.get<{ Params: { pid: string } }>('/api/projects/:pid/team', async (req) => ({
     team: await teamService.list(req.params.pid),
   }))
 
   /**
-   * 团队实时状态（左栏团队列表用）：
-   * disabled（停用）/ meeting（会议中）/ working（工作中）/ waiting（等你处理审批或提问）/ idle（空闲），
-   * 并附当前进行中任务，便于一眼看出每个角色在干什么。
+   * 团队行投影（**列表与角色详情共用**）：实例配置 + 实时状态 + 当前任务。
+   * 状态推导走单点 deriveAgentState（与 WS agent.state 完全一致）。
    */
-  app.get<{ Params: { pid: string } }>('/api/projects/:pid/agents', async (req) => {
-    const pid = req.params.pid
+  async function teamRows(pid: string) {
     const [team, occ, taskList, pendingApprovals, pendingQuestions] = await Promise.all([
       teamService.list(pid),
       occupancy.read(pid),
@@ -154,34 +163,93 @@ function registerTeamRoutes(app: FastifyInstance, svc: Services): void {
       approvals.list(pid, 'pending'),
       questions.list(pid, { status: 'pending' }),
     ])
-    const agents = team.map((m) => {
-      const o = occ.occupancy[m.instanceId] ?? null
-      const waiting =
-        pendingApprovals.some((a) => a.actor === m.instanceId) ||
-        pendingQuestions.some((q) => q.asker === m.instanceId)
-      const state = !m.enabled
-        ? 'disabled'
-        : o?.activity === 'meeting'
-          ? 'meeting'
-          : o?.activity === 'working'
-            ? 'working'
-            : waiting
-              ? 'waiting'
-              : 'idle'
-      const current = taskList.find((t) => t.assignee === m.instanceId && t.state === 'in_progress')
+    return team.map((member) => {
+      const o = occ.occupancy[member.instanceId] ?? null
+      // 有待答提问/待批审批 → waiting，优先于 working
+      const state = deriveAgentState({
+        enabled: member.enabled,
+        occupancy: o,
+        hasPendingApproval: pendingApprovals.some((a) => a.actor === member.instanceId),
+        hasPendingQuestion: pendingQuestions.some((q) => q.asker === member.instanceId),
+      })
+      const current = taskList.find(
+        (t) => t.assignee === member.instanceId && t.state === 'in_progress',
+      )
       return {
-        instanceId: m.instanceId,
-        displayName: m.displayName,
-        roleTemplateId: m.roleTemplateId,
-        enabled: m.enabled,
-        state,
-        sessionId: o?.sessionId ?? null,
-        since: o?.since ?? null,
-        currentTask: current ? { id: current.id, title: current.title } : null,
+        member,
+        row: {
+          instanceId: member.instanceId,
+          displayName: member.displayName,
+          roleTemplateId: member.roleTemplateId,
+          enabled: member.enabled,
+          state,
+          sessionId: o?.sessionId ?? null,
+          since: o?.since ?? null,
+          currentTask: current ? { id: current.id, title: current.title } : null,
+        },
       }
     })
-    return { agents }
-  })
+  }
+
+  /**
+   * 团队实时状态（左栏团队列表用）：
+   * disabled（停用）/ meeting（会议中）/ working（工作中）/ waiting（等你处理审批或提问）/ idle（空闲），
+   * 并附当前进行中任务，便于一眼看出每个角色在干什么。
+   */
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/agents', async (req) => ({
+    agents: (await teamRows(req.params.pid)).map((r) => r.row),
+  }))
+
+  /**
+   * 角色详情（只读，2026-09-13）：身份/模型/agent loop/提示词/工具 + 实时状态。
+   * 工具按**运行期口径**给出（tool-selection 单点）：生效清单（含来源）+ 白名单里用不上的，
+   * 避免"看白名单快照"被已下线工具/平台工具误导。
+   */
+  app.get<{ Params: { pid: string; iid: string } }>(
+    '/api/projects/:pid/agents/:iid',
+    async (req) => {
+      const { pid, iid } = req.params
+      const found = (await teamRows(pid)).find((r) => r.member.instanceId === iid)
+      if (!found) throw new AppError(ErrorCodes.NOT_FOUND, `实例不存在: ${iid}`)
+      const { member, row } = found
+      // 模板可能已被删除（自建模板）：只影响名称展示，不影响角色本身
+      const tpl = await roleService.get(member.roleTemplateId).catch(() => null)
+      return {
+        agent: {
+          ...row,
+          createdAt: member.createdAt,
+          model: member.model,
+          loop: {
+            strategy: member.loop?.strategy ?? 'direct',
+            params: member.loop?.params ?? {},
+          },
+          // 运行期读的就是 member.prompt ?? ''（loop-runner buildSystemPrompt）：
+          // 这里不做模板兜底，避免"看到的"和"跑起来的"不一致。
+          prompt: member.prompt ?? '',
+          promptSource: member.prompt == null ? 'none' : 'instance',
+          tools: describeToolAvailability(member, 'user'),
+          template: tpl
+            ? { roleId: tpl.roleId, name: tpl.name, category: tpl.category, source: tpl.source }
+            : null,
+        },
+      }
+    },
+  )
+
+  /**
+   * 「完整系统提示词」预览（只读，2026-09-13）：按 user 会话实时拼装角色实际收到的系统提示词，
+   * 逐段给出 blocks（origin=role-config/platform）与拼好的 text——说明"配置里的提示词只是第 1 段"。
+   * 与运行期同源（application/agent-loop/system-prompt.ts），不落盘、不缓存。
+   */
+  app.get<{ Params: { pid: string; iid: string } }>(
+    '/api/projects/:pid/agents/:iid/system-prompt',
+    async (req) => {
+      const { pid, iid } = req.params
+      const preview = await svc.previewSystemPrompt(pid, iid)
+      if (!preview) throw new AppError(ErrorCodes.NOT_FOUND, `实例不存在: ${iid}`)
+      return { preview }
+    },
+  )
 
   app.post<{ Params: { pid: string }; Body: TeamAddInput }>(
     '/api/projects/:pid/team',
@@ -405,8 +473,26 @@ function registerMemorySearchRoutes(app: FastifyInstance, svc: Services): void {
 function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
   const { meetings } = svc
 
+  // 会议功能总开关关闭时：会议 REST 一律拒绝（GET 返回空列表，让前端自然地清空会议区），
+  // 已落盘的会议数据保留、重新打开即可继续看到。
+  if (svc.config.meeting.enabled === false) {
+    app.get<{ Params: { pid: string } }>('/api/projects/:pid/meetings', async () => ({
+      meetings: [],
+      disabled: true,
+    }))
+    app.post('/api/projects/:pid/meetings', async (_req, reply) =>
+      reply.code(409).send({ code: 'ERR_MEETING_DISABLED', message: '会议功能已关闭' }),
+    )
+    app.all('/api/projects/:pid/meetings/*', async (_req, reply) =>
+      reply.code(409).send({ code: 'ERR_MEETING_DISABLED', message: '会议功能已关闭' }),
+    )
+    return
+  }
+
   app.get<{ Params: { pid: string } }>('/api/projects/:pid/meetings', async (req) => ({
-    meetings: await meetings.list(req.params.pid),
+    // displayState（进行中/已结束）+ waiting（排队等槽位）由服务端统一给出，
+    // 保证"会议只有进行中和结束两态"的口径在记录页、左栏、右栏一致。
+    meetings: await meetings.listForUi(req.params.pid),
   }))
 
   app.post<{
@@ -425,7 +511,8 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       agenda: b.agenda ?? [],
       members: b.members,
     })
-    return reply.code(201).send({ meeting })
+    // 同一时刻只允许一个会议进行；已有占槽会议时本条落 queued（displayState 仍是"进行中"，waiting=true）
+    return reply.code(201).send({ meeting: withDisplay(meeting) })
   })
 
   app.post<{
@@ -442,7 +529,7 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
       b.member,
       b.decision as never,
     )
-    return { meeting }
+    return { meeting: withDisplay(meeting) }
   })
 
   app.post<{
@@ -541,6 +628,14 @@ function registerMeetingRoutes(app: FastifyInstance, svc: Services): void {
     })
     return { task }
   })
+
+  /**
+   * 项目全局记录（项目记录页）：任务完成 + 会议完成的卡片流（时间倒序）。
+   * 只读投影，事实源仍是 tasks.jsonl 与会议 meta；不新增状态。
+   */
+  app.get<{ Params: { pid: string } }>('/api/projects/:pid/records', async (req) => ({
+    records: await svc.records.list(req.params.pid),
+  }))
 }
 
 function registerQuestionRoutes(app: FastifyInstance, svc: Services): void {

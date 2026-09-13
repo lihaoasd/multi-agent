@@ -105,6 +105,55 @@ describe('前端静态托管（真实请求路径）', () => {
     expect(String(mod.body)).toContain('BOARD_COLUMNS')
   })
 
+  it('角色详情：左栏「详情」入口 + 只读弹窗（提示词/loop/工具）接线没断', async () => {
+    const index = await ready().inject({ method: 'GET', url: '/' })
+    const html = String(index.body)
+    expect(html).toContain('agent-modal')
+    expect(html).toContain('agent-detail-body')
+    expect(html).toContain('btn-agent-close')
+
+    const js = await ready().inject({ method: 'GET', url: '/app.js' })
+    const body = String(js.body)
+    expect(body).toContain('openAgentDetail')
+    expect(body).toContain('renderAgentDetail')
+    expect(body).toContain('/agents/')
+    expect(body).toContain('AGENT_LOOP_ZH')
+    // 完整系统提示词预览：懒加载入口 + 逐段渲染 + 来源徽标
+    expect(body).toContain('loadFullSystemPrompt')
+    expect(body).toContain('agent-full-prompt')
+    expect(body).toContain('/system-prompt')
+
+    const css = String((await ready().inject({ method: 'GET', url: '/style.css' })).body)
+    expect(css).toContain('.agent-detail-box')
+    expect(css).toContain('.tool-chip')
+    expect(css).toContain('.full-prompt-sec')
+    expect(css).toContain('.origin-platform')
+  })
+
+  it('项目记录页：顶栏入口 + 记录视图 + 卡片渲染与一键跳源', async () => {
+    const index = await ready().inject({ method: 'GET', url: '/' })
+    const html = String(index.body)
+    expect(html).toContain('btn-records')
+    expect(html).toContain('records-view')
+    expect(html).toContain('records-list')
+    // 返回入口：页头「← 返回工作台」
+    expect(html).toContain('btn-records-back')
+
+    const js = await ready().inject({ method: 'GET', url: '/app.js' })
+    const body = String(js.body)
+    expect(body).toContain('showRecordsView')
+    expect(body).toContain('showWorkbenchView')
+    expect(body).toContain('btn-records-back')
+    expect(body).toContain('refreshRecords')
+    expect(body).toContain('renderRecords')
+    expect(body).toContain('/records')
+    expect(body).toContain('openRecordSource')
+    // 会议完成 → 记录页刷新；任务终态 → 记录页刷新
+    expect(body).toContain('refreshRecordsIfOpen')
+    const css = String((await ready().inject({ method: 'GET', url: '/style.css' })).body)
+    expect(css).toContain('.record-card')
+  })
+
   it('未提供 webDir 时不注册静态托管（测试注入用），API 仍可用', async () => {
     const config = loadConfig({ dataDir: join(base, 'data2') }, base)
     config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]

@@ -25,6 +25,9 @@
 | GET | /api/roles | 模板列表（内置+自定义，含 artifactTypes/tools 元信息）|
 | POST/PATCH/DELETE | /api/roles/:roleId | 自建/编辑/删除模板；**内置模板只读、不可原地改/删**——需变更时 UI「基于内置复制新建」（B12/D16-⑤）|
 | GET | /api/projects/:pid/team | 实例列表+状态 |
+| GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏团队行用）|
+| GET | /api/projects/:pid/agents/:iid | **角色详情**（只读，2026-09-13）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
+| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读，2026-09-13）：按 user 会话实时拼装 → `{ preview: { sessionType:'user', blocks:[{id,origin,title,text}], text } }`；`origin=role-config` 仅第 1 段（实例提示词），其余为平台注入段；与运行期同源、不落盘；实例不存在 → 404 |
 | POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）|
 | PATCH | /api/projects/:pid/team/:iid | 改实例（改名/提示词/模型/loop/工具集/**enabled 停用启用**）|
 | DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/工作区/记忆，可重新启用，D14-9）；彻底删除数据为后续版本 |

@@ -20,6 +20,8 @@ beforeEach(async () => {
   await mkdir(workdir, { recursive: true })
   const config = loadConfig({ dataDir: join(base, 'data') }, base)
   config.roleDirs = [BUILTIN_DIR, join(base, 'roles')]
+  // 本文件手动推进会议（造阻塞决策点）→ 关掉自动开始/自动收尾，避免会议被平台自动跑完
+  config.meeting = { autoStart: false, autoClose: false }
   const svc = composeServices(config, join(base, 'roles'))
   app = await buildApp(svc)
 })

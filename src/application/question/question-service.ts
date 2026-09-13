@@ -317,6 +317,43 @@ export class QuestionService {
     return all.filter((q) => q.sessionId === sessionId && q.status === 'queued').length
   }
 
+  /**
+   * **作废**该会话里所有未处理的提问（pending/queued → cancelled，2026-09-12）。
+   *
+   * 用途：角色被拉进会议（`meeting_start`）时，它手头"等待你处理"的提问要先放下——
+   * 否则会出现"卡片还在等用户，角色却已入会"的状态叠加。作废后推 `question.answered`
+   * （前端据此撤下卡片，复用既有事件，无需新协议），并写明原因。
+   *
+   * @returns 被作废的提问（供开会前记录"搁置事项"，散会后回注给角色）
+   */
+  async cancelPending(
+    projectId: string,
+    sessionId: string,
+    reason: string,
+  ): Promise<Array<{ id: string; question: string }>> {
+    const all = await this.readAll(projectId)
+    const hit = all.filter(
+      (q) => q.sessionId === sessionId && (q.status === 'pending' || q.status === 'queued'),
+    )
+    if (!hit.length) return []
+    const cancelled = new Set(hit.map((q) => q.id))
+    const next = all.map((q) =>
+      cancelled.has(q.id) ? { ...q, status: 'cancelled' as const, answeredAt: nowIso() } : q,
+    )
+    await this.writeAll(projectId, next)
+    // 先盘后推：逐条推 answered（带作废原因），前端撤卡片、待办条随之消失
+    for (const q of hit) {
+      this.bus?.emit('question.answered', q.projectId, q.sessionId, {
+        questionId: q.id,
+        asker: q.asker,
+        answer: null,
+        cancelled: true,
+        reason,
+      })
+    }
+    return hit.map((q) => ({ id: q.id, question: q.question }))
+  }
+
   /** 答复的可读文本（写回会话的用户消息）：问题列表逐条列出。 */
   static answerText(rec: QuestionRecord): string {
     const lines = rec.items.map((it, i) => {

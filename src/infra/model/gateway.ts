@@ -36,8 +36,21 @@ export class ModelGateway {
     signal?: AbortSignal
   }): AsyncIterable<ChatStreamItem> {
     const providerId = opts.providerId && opts.providerId !== 'mock' ? opts.providerId : null
-    const targetId =
-      providerId ?? (this.opts.models.default !== 'mock' ? this.opts.models.default : 'mock')
+    const fallbackId =
+      this.opts.models.default !== 'mock' && this.opts.models.default.trim() !== ''
+        ? this.opts.models.default
+        : null
+    // 路由（agent-runtime §5）：实例 model → 平台默认。实例的 model 是**创建时快照**的 provider id，
+    // provider 改名/删除后它会变成孤儿；此时回退到 models.default（再不行才报错），
+    // 避免"改了一个 provider id 就让所有存量角色都调不动模型"。
+    let targetId = providerId ?? fallbackId ?? 'mock'
+    if (targetId !== 'mock' && !this.findProvider(targetId)) {
+      if (fallbackId && fallbackId !== targetId && this.findProvider(fallbackId)) {
+        targetId = fallbackId
+      } else {
+        throw new AppError(ErrorCodes.MODEL, `模型 provider 未配置: ${targetId}`)
+      }
+    }
 
     if (targetId === 'mock') {
       const mock = createMockProvider('mock')

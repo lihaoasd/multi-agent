@@ -15,6 +15,21 @@ import type { OccupancyStore } from '../dispatcher/occupancy-store.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 import type { ChatMessage, ChatToolCall, ToolSchema } from '../../infra/model/provider.js'
 import type { ToolResult } from '../../infra/tools/executor.js'
+import type { AgentRuntimeState } from '../runtime-state.js'
+import {
+  buildSystemPrompt,
+  isDispatchEligible,
+  type ActiveTask,
+  type BoardTask,
+  type FileOwnership,
+  type PendingTask,
+} from './system-prompt.js'
+
+/**
+ * 提示词拼装与相关类型已抽到 `./system-prompt.ts`（2026-09-13，单点真相）：
+ * 运行期（本文件）与「完整系统提示词预览」共用，这里按既有 import 路径 re-export。
+ */
+export type { ActiveTask, PendingTask, BoardTask, FileOwnership } from './system-prompt.js'
 
 export interface TurnContext {
   projectId: string
@@ -24,36 +39,6 @@ export interface TurnContext {
   scenario: string
   /** 团队名册（所有角色都注入；由上层按项目团队提供） */
   assignableMembers?: Array<{ instanceId: string; displayName: string; roleTemplateId?: string }>
-}
-
-/** 当前激活任务（注入提示 + workdir_edit 聚合锚点）。 */
-export interface ActiveTask {
-  id: string
-  title: string
-  desc: string
-}
-
-/** 待领取任务（任务栏上派给我、尚未领取）。 */
-export interface PendingTask {
-  id: string
-  title: string
-  desc: string
-  creator: string
-}
-
-/** 任务栏活跃任务（给 pm/product 的共享视野）。 */
-export interface BoardTask {
-  id: string
-  title: string
-  assignee: string
-  creator: string
-  state: string
-}
-
-/** 产出物归属（署名 + 只读约束）。 */
-export interface FileOwnership {
-  mine: Array<{ relPath: string; lastAt: string; lastTaskId: string | null }>
-  others: Array<{ relPath: string; owner: string; ownerName: string; lastAt: string }>
 }
 
 /** 工具运行时钩子（由组合根注入；缺省则回合不启用工具）。 */
@@ -93,6 +78,18 @@ export interface ToolRuntimeHook {
    * 目的是让"提问卡片出现"与"角色进入等待你处理"发生在同一时刻。
    */
   flushDeferred?: (ctx: TurnContext) => Promise<void>
+  /**
+   * 角色当前运行态（单点推导，application/runtime-state.ts）：由组合根读取 pending 提问/审批后计算。
+   * 用途：① 回合开始前判断角色是否在「等待你处理」——是则**不开工**，避免出现"工作中 + 待答卡片"；
+   *       ② 回合结束广播 `agent.state` 时给出与 `GET /agents` 完全一致的状态。
+   */
+  runtimeState?: (ctx: TurnContext) => Promise<AgentRuntimeState>
+  /**
+   * step 边界闸门（2026-09-13）：每执行完一步工具后询问"是否该停下当前工作"。
+   * 返回非空字符串 = 停止本回合、不跑收尾，并把该文本作为**系统消息落盘**（角色下一轮可见原因）。
+   * 首个使用者：被会议邀请（平台已记报到）→ 角色把当前 step 跑完就停手、去开会。
+   */
+  shouldYield?: (ctx: TurnContext) => Promise<string | null>
 }
 
 /**
@@ -119,9 +116,7 @@ export interface AgentLoopRunnerOptions {
 const MAX_REASONING_CHARS = 20000
 /** 工具结果回注模型的上限 */
 const MAX_TOOL_RESULT_CHARS = 8000
-/** 允许直接派发任务的角色（项目经理/产品经理） */
-const DISPATCH_ROLES = new Set(['pm', 'product'])
-/** 步数用尽后的收尾回合只允许这些"结项/沟通"工具（不再开新工作） */
+/** 收尾回合只暴露的收尾三件套工具（不再开新工作）。 */
 const CLOSURE_TOOLS = new Set(['task_update', 'task_claim', 'artifact_submit', 'ask_user'])
 /** 收尾回合的提示（步数用尽/模型空手停下/检测到空转时注入，确保任务状态与用户总结不会丢） */
 const WRAPUP_PROMPT =
@@ -130,6 +125,17 @@ const WRAPUP_PROMPT =
   '② 用一段话给出**面向用户的完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。'
 /** 无进展保护：同一工具+入参+结果连续重复这么多次 → 判定空转并收尾（无限轮时的安全阀） */
 const REPEAT_STALL_LIMIT = 3
+/**
+ * 角色在「等待你处理」期间被唤醒时返回的占位事件：本回合**没有开工**（不占 occupancy、不调模型），
+ * 唤醒消息已落盘，等用户答复后由下一回合带着它继续。回执调用方不使用该返回值。
+ */
+const SKIPPED_TURN: SessionLogEvent = {
+  seq: 0,
+  ts: new Date(0).toISOString(),
+  sessionId: '',
+  kind: 'turn_end',
+  payload: { skipped: 'waiting_user' },
+}
 
 export class AgentLoopRunner {
   constructor(private readonly opts: AgentLoopRunnerOptions) {}
@@ -138,32 +144,51 @@ export class AgentLoopRunner {
   async runDirectTurn(ctx: TurnContext): Promise<SessionLogEvent> {
     const { occupancy } = this.opts
     const iid = ctx.member.instanceId
-    if (occupancy) {
+    // 角色是否在「等待你处理」（有待答提问/待批审批）：
+    // 这种状态下**不开工**——它只能再问一次用户，硬跑一轮只会让左栏显示"工作中"而卡片还在等用户。
+    const runtime = await this.opts.toolRuntime?.runtimeState?.(ctx)
+    const onStandby = runtime === 'waiting'
+    if (occupancy && !onStandby) {
       await occupancy.acquire(ctx.projectId, iid, ctx.sessionId, 'working')
       this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
         instanceId: iid,
         state: 'working',
         sessionId: ctx.sessionId,
       })
+    } else if (occupancy) {
+      // 等待用户期间也广播一次：前端即时把该角色显示成「等待你处理」
+      this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
+        instanceId: iid,
+        state: 'waiting',
+        sessionId: ctx.sessionId,
+      })
     }
     try {
+      if (onStandby) return SKIPPED_TURN
       return await this.runTurnCore(ctx)
     } finally {
       if (occupancy) {
         // 只释放本回合会话的占用：回合中若已入会，会议占用不能被清掉
         await occupancy.release(ctx.projectId, iid, ctx.sessionId)
-        // 会议会话内的发言回合结束后，恢复到「会议中」（成员仍在会）
-        if (ctx.sessionId.startsWith('m_')) {
-          await occupancy
-            .acquire(ctx.projectId, iid, ctx.sessionId, 'meeting')
-            .catch(() => undefined)
+        if (!onStandby) {
+          // 会议会话内的发言回合结束后，恢复到「会议中」（成员仍在会）
+          if (ctx.sessionId.startsWith('m_')) {
+            await occupancy
+              .acquire(ctx.projectId, iid, ctx.sessionId, 'meeting')
+              .catch(() => undefined)
+          }
+          // 状态单点推导：有待答提问/待批审批 → waiting（不能只按 occupancy 广播，
+          // 否则会出现"左栏工作中、卡片却在等用户"的错位）
+          const state =
+            (await this.opts.toolRuntime?.runtimeState?.(ctx).catch(() => undefined)) ??
+            (await occupancy.get(ctx.projectId, iid).catch(() => null))?.activity ??
+            'idle'
+          this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
+            instanceId: iid,
+            state,
+            sessionId: ctx.sessionId,
+          })
         }
-        const left = await occupancy.get(ctx.projectId, iid).catch(() => null)
-        this.opts.bus.emit('agent.state', ctx.projectId, ctx.sessionId, {
-          instanceId: iid,
-          state: left ? left.activity : 'idle',
-          sessionId: left?.sessionId ?? null,
-        })
       }
       // 回合结束、占用已释放 → 再广播本回合积压的提问（ask_user）：
       // 顺序 = 角色消息落盘 → 状态转「等待你处理」→ 提问卡片出现，前端不会再看到时间错位。
@@ -183,15 +208,18 @@ export class AgentLoopRunner {
     const boardTasks = await this.opts.toolRuntime?.boardTasks?.(ctx).catch(() => null)
     const ownership = await this.opts.toolRuntime?.fileOwnership?.(ctx).catch(() => null)
     const tools = this.opts.toolRuntime?.listTools(ctx, sessionType) ?? []
-    const system = this.buildSystemPrompt(
-      ctx,
+    const system = buildSystemPrompt({
+      member: ctx.member,
+      scenario: ctx.scenario,
       sessionType,
-      activeTask ?? null,
-      pendingTasks ?? [],
-      boardTasks ?? [],
-      ownership ?? null,
-      tools,
-    )
+      assignableMembers: ctx.assignableMembers ?? [],
+      activeTask: activeTask ?? null,
+      pendingTasks: pendingTasks ?? [],
+      boardTasks: boardTasks ?? [],
+      ownership: ownership ?? null,
+      toolNames: tools.map((t) => t.name),
+      dispatchEligible: this.dispatchEligible(ctx, sessionType),
+    })
     const history = await this.buildHistory(ctx)
     const turnStartEvt = await store.appendEvent(meta, {
       kind: 'turn_start',
@@ -244,6 +272,8 @@ export class AgentLoopRunner {
     let silentStop = false
     /** 角色因提问进入「等待用户决策」→ 本回合到此为止（不跑收尾、不催任务状态） */
     let suspendedForUser = false
+    /** step 边界闸门要求停下（如被拉进会议）→ 结束本回合、不跑收尾 */
+    let yieldedForMeeting = false
     let wrappedUp = false
     /** 只出思考/预算被截断时，允许一次"少推理、直接输出"的重试（每回合至多一次） */
     let nudged = false
@@ -328,11 +358,29 @@ export class AgentLoopRunner {
           break
         }
         if (Number.isFinite(stepLimit) && step === stepLimit - 1) exhausted = true
+        // step 边界闸门（2026-09-13）：本步工具已执行、结果已回注 → 再问"是否该停手"。
+        // 被会议邀请时在此停下：**不跑收尾**（任务是被会议打断，不是完成），
+        // 并把停手原因写成系统消息，角色下一轮/会议会话里能看到"我已入会、等主持人发话"。
+        if (!exhausted) {
+          const yieldReason = await this.opts.toolRuntime?.shouldYield?.(ctx).catch(() => null)
+          if (yieldReason) {
+            yieldedForMeeting = true
+            const note = await this.opts.store.appendEvent(meta, {
+              kind: 'message',
+              role: 'user',
+              sender: 'system',
+              content: { text: yieldReason, blocks: [] },
+              payload: { turnId, system: true },
+            })
+            this.opts.bus.emitLogEvent(ctx.projectId, note)
+            break
+          }
+        }
       }
 
       // 步数用尽 / 模型空手停下 / 检测到空转 → 收尾回合：只允许"结项/沟通"工具，确保任务状态与用户总结不丢。
       // 注意：因提问而挂起（等待用户决策）时**不**跑收尾——任务是被暂停，不是完成。
-      if ((exhausted || silentStop || stalled) && !suspendedForUser && this.opts.toolRuntime && !wrappedUp) {
+      if ((exhausted || silentStop || stalled) && !suspendedForUser && !yieldedForMeeting && this.opts.toolRuntime && !wrappedUp) {
         wrappedUp = true
         const wrap = await this.runWrapUp(ctx, meta, turnId, sessionType, convo, tools, calledTools)
         toolCallCount += wrap.toolCalls
@@ -409,7 +457,8 @@ export class AgentLoopRunner {
       toolCallCount,
       Boolean(tailText.trim()),
       // 因提问而挂起时不催"任务仍为进行中"——角色本来就在等用户决策
-      suspendedForUser,
+      // 因提问挂起、或因会议叫走 → 都算"暂停"，不催"任务仍为进行中"
+      suspendedForUser || yieldedForMeeting,
     )
 
     const turnEndEvt = await store.appendEvent(meta, {
@@ -735,13 +784,13 @@ export class AgentLoopRunner {
     this.opts.bus.emitLogEvent(ctx.projectId, evt)
   }
 
-  /** 是否可执行甲模式分派：启用钩子 + user 会话 + 管理/产品角色。 */
+  /** 是否可执行甲模式分派：启用钩子 + user 会话 + 管理/产品角色（条件单点在 system-prompt）。 */
   private dispatchEligible(ctx: TurnContext, sessionType: string): boolean {
-    return (
-      !!this.opts.taskDispatch &&
-      sessionType === 'user' &&
-      DISPATCH_ROLES.has(ctx.member.roleTemplateId)
-    )
+    return isDispatchEligible({
+      taskDispatchEnabled: !!this.opts.taskDispatch,
+      sessionType,
+      roleTemplateId: ctx.member.roleTemplateId,
+    })
   }
 
   private async nextTurn(projectId: string, sessionId: string): Promise<number> {
@@ -749,180 +798,6 @@ export class AgentLoopRunner {
     let max = 0
     for (const e of all) if (typeof e.turn === 'number' && e.turn > max) max = e.turn
     return max + 1
-  }
-
-  private buildSystemPrompt(
-    ctx: TurnContext,
-    sessionType: string,
-    activeTask: ActiveTask | null,
-    pendingTasks: PendingTask[],
-    boardTasks: BoardTask[],
-    ownership: FileOwnership | null,
-    tools: ToolSchema[],
-  ): string {
-    const m = ctx.member
-    const strategy = m.loop?.strategy ?? 'direct'
-    const strategyHint: Record<string, string> = {
-      direct: '采用直接作答方式。',
-      reflective: '先给出初稿，再自查一遍（覆盖边界与漏洞）后输出修订版结论。',
-      'plan-execute': '先给出简短执行计划，再按计划逐步说明并输出结论。',
-    }
-    const parts = [
-      m.prompt ?? '',
-      '',
-      `[场景设定] 你是「${m.displayName}」（项目：${ctx.scenario}）。用户是你的老板与最终决策者。`,
-      `[执行模式] ${strategyHint[strategy] ?? strategyHint.direct}`,
-      '回复要求：中文、简洁、直接给结论；涉及需要用户拍板/审批的事项必须明确说明，不替用户做决定。',
-    ]
-    if (tools.length) {
-      const hasAsk = tools.some((t) => t.name === 'ask_user')
-      const hasWrite = tools.some((t) => t.name === 'workdir_edit')
-      const hasSubmit = tools.some((t) => t.name === 'artifact_submit')
-      parts.push(
-        `[可用工具] ${tools.map((t) => t.name).join('、')}。` +
-          '需要查看/修改工作目录或检索信息时请直接调用工具，不要凭空猜测文件内容；' +
-          (hasWrite
-            ? '**所有产出直接写进项目工作目录**（workdir_edit，路径用 workdir://）：项目目录是唯一交付地，没有私有草稿区；' +
-              '你只能改自己名下的文件（见 [我的产出物]），别人的产出物只能读、不能改，需要新版本请另建新文件。'
-            : '') +
-          '运行命令用 cmd_run（高危命令会转用户审批）；完成后汇报改了什么、验证结果。' +
-          (hasSubmit
-            ? '需要把某些文件登记成一条产出物（版本快照 + 署名）时用 artifact_submit。'
-            : '') +
-          (hasAsk
-            ? '需要用户拍板、确认或做选择时，用 ask_user 提问（confirm 确认 / single 单选 / multi 多选 / text 文本），' +
-              '**一次要问多件事就用一次调用传 questions 数组（问题列表，1~6 题）**——用户在**同一张卡片里逐题作答、一次提交**；' +
-              '不要并发多次调用 ask_user，也不要分多轮追问。' +
-              '**需要用户拍板/批准的事要先问再做**：ask_user 与需要审批的命令都会**立即挂起本回合**（你进入「等待你处理」），' +
-              '所以不要先把活干完再来问——先拿到答复再动手，避免方向错了白做。'
-            : '') +
-          '\n需要审批的命令（高危/未放行的命令）提交后会**立即挂起本回合**，等用户批准；' +
-          '批准后平台会把执行结果回给你，你再继续，不要重复申请、也不要试图绕过。' +
-          '\n步数不设上限：请高效推进并把事情做完（不要为了凑步数而反复调用同一工具——' +
-          '同一工具+同一入参+同一结果连续 3 次会被平台判定为原地空转并停止本回合）。',
-      )
-    }
-    // 产出物署名与归属：告诉角色"自己的产出物在哪、别人的只读"（2026-09-12）
-    if (ownership && (ownership.mine.length || ownership.others.length)) {
-      const lines: string[] = []
-      if (ownership.mine.length) {
-        lines.push('[我的产出物（可改）]')
-        for (const f of ownership.mine) {
-          lines.push(
-            `- ${f.relPath}（最近修改 ${f.lastAt.slice(11, 16)}${f.lastTaskId ? `，任务 ${f.lastTaskId}` : ''}）`,
-          )
-        }
-      }
-      if (ownership.others.length) {
-        lines.push('[他人产出物（只读，不可改；需要新版本请另建文件）]')
-        for (const f of ownership.others) {
-          lines.push(`- ${f.relPath} —— 属 ${f.ownerName}（${f.owner}）`)
-        }
-      }
-      parts.push(lines.join('\n'))
-    }
-    if (activeTask) {
-      parts.push(
-        `[当前任务] ${activeTask.id}「${activeTask.title}」（in_progress）` +
-          (activeTask.desc ? `：${activeTask.desc}` : '') +
-          '\n纪律（收尾三件套，务必在任务做完时一次做完）：' +
-          '① 需要交付文件时用 artifact_submit 登记；' +
-          '② 调用 task_update（state=done，**note=一句话完成总结**）上报状态——平台据此更新任务栏并**通知委派人**；' +
-          '③ 在回复里给用户一段**完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。' +
-          '\n受阻时置 blocked 并说明原因；不要只在聊天里口头说完成，也不要做到一半就结束回合。',
-      )
-    }
-    if (pendingTasks.length) {
-      const hasClaim = tools.some((t) => t.name === 'task_claim')
-      const lines = [
-        `[待领取任务] 任务栏上有 ${pendingTasks.length} 条派给你的任务（待领取）：`,
-        ...pendingTasks.map(
-          (t) =>
-            `- ${t.id}「${t.title}」（委派人 ${t.creator}）${t.desc ? `：${t.desc.slice(0, 200)}` : ''}`,
-        ),
-      ]
-      lines.push(
-        hasClaim
-          ? '领取方式：调用 task_claim（可带 taskId；缺省领取最早的一条）——领取后状态变为进行中，你才开始执行。' +
-              '完成后必须 task_update（state=done，note=完成总结）并在回复里给用户一段完成总结。' +
-              '若手上还有进行中的任务或暂时接不了，请用 task_update 置 blocked 并说明原因，不要默默忽略。'
-          : '如需领取请告知用户，由用户协调。',
-      )
-      parts.push(lines.join('\n'))
-    }
-    // 共享视野（pm/product）：两人都能看到任务栏上已有的活跃任务，避免重复派同一件事
-    if (boardTasks.length && this.dispatchEligible(ctx, sessionType)) {
-      const lines = [
-        `[任务栏现状] 当前活跃任务（待领取/进行中）共 ${boardTasks.length} 条：`,
-        ...boardTasks.map(
-          (t) => `- ${t.id}「${t.title}」→ ${t.assignee}（发布者 ${t.creator}，${t.state}）`,
-        ),
-        '发布前请先对照本清单：同一受派人的同一件事**不要重复发布**（平台会自动去重并回执提示）；',
-        '需要补充说明时，在已有任务上对齐或在会议里沟通，不要另发一条同名任务。',
-      ]
-      parts.push(lines.join('\n'))
-    }
-    const roster = this.buildTeamRoster(ctx, tools)
-    if (roster) parts.push(roster)
-    const hint = this.buildDispatchHint(ctx, sessionType, tools)
-    if (hint) parts.push(hint)
-    return parts.join('\n')
-  }
-
-  /** 团队名册：让每个角色都知道队伍里有哪些成员（可直接用实例 id 协作/开会/派单）。 */
-  private buildTeamRoster(ctx: TurnContext, tools: ToolSchema[]): string | null {
-    const all = ctx.assignableMembers ?? []
-    const peers = all.filter((x) => x.instanceId !== ctx.member.instanceId)
-    if (!peers.length) return null
-    const me = `我：${ctx.member.instanceId}（${ctx.member.displayName}）`
-    const others = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
-    const hasMeeting = tools.some((t) => t.name === 'meeting_start')
-    return (
-      `[团队成员] ${me}｜其他成员：${others}。` +
-      '需要协作、派活或对齐时直接用这些实例 id；' +
-      (hasMeeting
-        ? '需要评审/对齐时调用 meeting_start 发起会议（自行定主题、描述与参会人）。'
-        : '需要开会时请让用户发起会议。')
-    )
-  }
-
-  /** 甲模式分派说明（pm/product 的 user 会话且提供了可派对象时注入）。 */
-  private buildDispatchHint(
-    ctx: TurnContext,
-    sessionType: string,
-    tools: ToolSchema[],
-  ): string | null {
-    if (!this.dispatchEligible(ctx, sessionType)) return null
-    const peers = (ctx.assignableMembers ?? []).filter(
-      (x) => x.instanceId !== ctx.member.instanceId,
-    )
-    if (!peers.length) return null
-    const list = peers.map((p) => `${p.instanceId}（${p.displayName}）`).join('、')
-    const hasTool = tools.some((t) => t.name === 'task_assign')
-    const lines = [
-      '[任务栏（甲模式已开启）] 当用户要求你拆解/安排/指派开发任务时：',
-      '1. 先用自然语言说明你的安排（做什么、交给谁、为什么）；',
-    ]
-    if (hasTool) {
-      lines.push(
-        '2. 然后调用 task_assign 工具逐个**发布任务到任务栏**（assignee/title/desc），一次一个任务，可连续调用多个。',
-      )
-    } else {
-      lines.push(
-        '2. 然后在回复末尾输出 JSON 数组（仅当无法调用工具时）：',
-        '```json',
-        '[{"assignee":"dev_1","title":"实现登录接口","desc":"补充边界与验收说明"}]',
-        '```',
-      )
-    }
-    lines.push(
-      `3. 约束：assignee 必须来自可指派对象——${list}；不可捏造实例 id，也不要派给自己。`,
-      '4. 发布前先看上面的 [任务栏现状]：同一受派人的同一件事不要重复发布（平台自动去重并回执）；',
-      '5. 发布后平台会**通知受派人来领取**，对方 task_claim 领取后才开工——你不要承诺"已经开工"；',
-      '   对方完成/受阻时平台会通知你，届时你再安排后续（验收、派新任务、发起会议）。',
-      '6. 平台会给出真实登记结果，你无需虚构"已发布成功"。',
-    )
-    return lines.join('\n')
   }
 
   private async buildHistory(ctx: TurnContext): Promise<ChatMessage[]> {

@@ -12,6 +12,31 @@ import { MemoryStore } from '../memory/memory-store.js'
 
 export type MeetingState = 'queued' | 'proposed' | 'open' | 'blocked_waiting_user' | 'closed'
 
+/**
+ * 会议对用户呈现的状态（2026-09-12 定稿）：**只有「进行中」和「已结束」两态**。
+ *
+ * 内部的 queued(排队) / proposed(征询) / open / blocked_waiting_user(等你拍板) 都是"进行中"的细分子态，
+ * 不进 UI 文案；queued 另外标注"等待中"（同一个时刻只允许一个会议进行，其余排队——见 activeCount）。
+ */
+export const MEETING_ACTIVE_LABEL = '进行中'
+export const MEETING_CLOSED_LABEL = '已结束'
+
+export function meetingDisplayState(state: string): string {
+  return state === 'closed' ? MEETING_CLOSED_LABEL : MEETING_ACTIVE_LABEL
+}
+
+/** 带呈现态的会议记录（REST 下发用）：state=内部子态，displayState=进行中/已结束。 */
+export type MeetingWithDisplay = MeetingRecord & {
+  displayState: string
+  /** 是否在排队等槽位（已发起但当前有别的会议在进行） */
+  waiting: boolean
+}
+
+/** 给单条会议记录补上呈现态（进行中/已结束 + 是否排队等待）。 */
+export function withDisplay(rec: MeetingRecord): MeetingWithDisplay {
+  return { ...rec, displayState: meetingDisplayState(rec.state), waiting: rec.state === 'queued' }
+}
+
 export interface MeetingAgendaItem {
   title: string
   status: 'pending' | 'discussed' | 'concluded'
@@ -40,7 +65,14 @@ export interface MeetingRecord extends SessionMeta {
     memberDecisions: Record<string, 'accept' | 'later' | 'decline'>
     decisionPoints: DecisionPoint[]
     minutesPending: boolean
+    /**
+     * 已入会成员（2026-09-13）：平台在角色被拉入会议时记录（不依赖模型自述）。
+     * 主持人"等全员入会"的等待条件就查这里；queued 排队期间成员 accept 但尚未入会，故不写入。
+     */
+    memberJoined?: Record<string, { at: string }>
     closedAt?: string
+    /** 取消时间（2026-09-12）：**取消不算"完成"**，项目记录只收录真正结束（close）的会议 */
+    canceledAt?: string
   }
 }
 
@@ -70,7 +102,77 @@ export class MeetingService {
       projectId: string,
       input: { title: string; desc: string; assignee: string; sessionId: string },
     ) => Promise<{ id: string }>,
+    /**
+     * 入会搁置（2026-09-12）：成员接受邀请时，把它"等待你处理"的提问/审批作废（见 question/approval service），
+     * 否则会出现"卡片还在等用户、角色却已入会"的状态叠加。由组合根注入。
+     */
+    private readonly onShed?: (
+      projectId: string,
+      meetingId: string,
+      instanceId: string,
+    ) => Promise<void>,
+    /**
+     * 散会回注（2026-09-12）：会议关闭、纪要生成后，把「纪要 + 被搁置事项」回注各参会者并唤醒一轮，
+     * 让它们带着会议结论继续推进任务（用户选择的"自动续跑"）。
+     */
+    private readonly onClosed?: (
+      projectId: string,
+      meetingId: string,
+      minutes: string,
+      participants: string[],
+    ) => Promise<void>,
+    /**
+     * 排队会议被提升（2026-09-12）：槽位空出、queued → proposed 时触发。
+     * 用于"等当前会议结束再自动开始"——由组合根接着跑该会议的讨论链（开场/发言/收尾）。
+     */
+    private readonly onPromoted?: (projectId: string, meeting: MeetingRecord) => Promise<void>,
+    /**
+     * 入会通知（2026-09-12）：成员接受邀请后，在**它自己的 user 会话**写一条系统消息，
+     * 告知"你被拉进了哪场会、主题/描述是什么、本轮不用动手（等会议点名）"。
+     * `opened` = 该会议是否已 open（false 表示还在排队等槽位）。
+     */
+    private readonly onInvited?: (
+      projectId: string,
+      meeting: MeetingRecord,
+      member: string,
+      /** 'invited' = 刚被邀请（会议已开始或在排队）；'started' = 排队的会议轮到、正式开始 */
+      kind: 'invited' | 'started',
+    ) => Promise<void>,
+    /**
+     * 报到（2026-09-13）：某成员**真正入会**（占用已置 meeting）时触发。
+     * `allJoined=true` 表示受邀成员已全部报到 → 组合根据此唤醒主持人开场（主持人自己不轮询）。
+     */
+    private readonly onJoined?: (
+      projectId: string,
+      meetingId: string,
+      member: string,
+      allJoined: boolean,
+    ) => Promise<void>,
   ) {}
+
+  /**
+   * 记录报到并返回是否全员到齐（主持人等待条件，2026-09-13）。
+   * 主持人视为已到（它是发起方）；受邀成员看 `meeting.memberJoined`。
+   */
+  async markJoined(
+    projectId: string,
+    meetingId: string,
+    instanceId: string,
+  ): Promise<{ allJoined: boolean; joined: string[]; waiting: string[] }> {
+    const rec = await this.get(projectId, meetingId)
+    const joined = { ...(rec.meeting.memberJoined ?? {}) }
+    if (!joined[instanceId]) joined[instanceId] = { at: nowIso() }
+    rec.meeting.memberJoined = joined
+    rec.updatedAt = nowIso()
+    await this.store.writeMeta(rec)
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'join', member: instanceId },
+    })
+    const waiting = rec.meeting.members.filter((m) => !joined[m])
+    return { allJoined: waiting.length === 0, joined: Object.keys(joined), waiting }
+  }
 
   async list(projectId: string): Promise<MeetingRecord[]> {
     const ids = await this.store.listSessionIds(projectId)
@@ -81,6 +183,19 @@ export class MeetingService {
       if (meta?.type === 'meeting') out.push(meta as unknown as MeetingRecord)
     }
     return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+  }
+
+  /** 会议槽位是否已被占用（proposed/open/blocked_waiting_user 都占槽，queued 不占）。 */
+  async hasActiveMeeting(projectId: string): Promise<boolean> {
+    return (await this.activeCount(projectId)) > 0
+  }
+
+  /**
+   * 列表 + 呈现态（REST / UI 用）：`displayState` 只有「进行中/已结束」，
+   * `waiting=true` 表示已发起但在排队等槽位（当前有别的会议在进行）。
+   */
+  async listForUi(projectId: string): Promise<MeetingWithDisplay[]> {
+    return (await this.list(projectId)).map(withDisplay)
   }
 
   private async get(projectId: string, meetingId: string): Promise<MeetingRecord> {
@@ -119,6 +234,11 @@ export class MeetingService {
       role: 'system',
       payload: { action: 'promote_queued' },
     })
+    // 排队等待结束 → 真正开始：平台接着跑讨论链（主持人开场/成员发言/收尾）。
+    // 发起人发起时是排队态、并没有开场过，所以这里才是它的"开始"。
+    // **不 await**：链里有模型回合（秒级~分钟级），而本方法在 close()/cancel() 的调用栈里，
+    // 阻塞它会让"结束会议"这个 HTTP 请求一直挂着（与 meeting_start 的后台链保持一致）。
+    if (this.onPromoted) void this.onPromoted(projectId, rec).catch(() => undefined)
   }
 
   /** 阵容聚合消息（D14-⑤/D17-②）：成员决定汇总推给用户（谁在会/稍后/拒绝）。 */
@@ -189,6 +309,19 @@ export class MeetingService {
     return rec
   }
 
+  /**
+   * 记一条"会议挂起/等待"事件（开场门用，2026-09-12）：
+   * 主持人开场前若仍有受邀成员未就绪（未入会/仍有待处理事项），落到会议日志里可追溯。
+   */
+  async recordHold(projectId: string, meetingId: string, waiting: string[]): Promise<void> {
+    const rec = await this.get(projectId, meetingId)
+    await this.append(rec, {
+      kind: 'meeting_event',
+      role: 'system',
+      payload: { action: 'hold', waiting },
+    })
+  }
+
   /** 成员回应邀请（接受/稍后/拒绝）。≥1 接受 → open。 */
   async respond(
     projectId: string,
@@ -197,12 +330,15 @@ export class MeetingService {
     decision: 'accept' | 'later' | 'decline',
   ): Promise<MeetingRecord> {
     const rec = await this.get(projectId, meetingId)
-    // 会议已 open 时仍允许**未回应过的成员**补回应（接受→入会占用；稍后/拒绝→记录）
+    // 可回应的状态（2026-09-12）：proposed / open / **queued**。
+    // queued = 已有会议在进行、本场排队等待——受邀成员此时就该回应"我参加"，
+    // 只是**不占会议槽**（占用等 open 时才给），否则排队会议永远没人接受、轮到后没人通知。
     const alreadyOpen = rec.state === 'open'
-    if (rec.state !== 'proposed' && !alreadyOpen) {
+    const queued = rec.state === 'queued'
+    if (rec.state !== 'proposed' && !alreadyOpen && !queued) {
       throw new AppError(
         ErrorCodes.CONFLICT,
-        `仅 proposed/open 会议可回应邀请（当前 ${rec.state}）`,
+        `仅 proposed/open/queued 会议可回应邀请（当前 ${rec.state}）`,
       )
     }
     if (!rec.meeting.members.includes(member) && member !== rec.meeting.host) {
@@ -217,9 +353,27 @@ export class MeetingService {
       role: 'system',
       payload: { action: 'respond', member, decision },
     })
+    // 接受入会 = 放下"等待你处理"（搁置提问/审批），避免卡片与"会议中"叠加；
+    // 在占用（onOpen）之前完成，保证入会那一刻角色已经没有待处理项。
+    if (decision === 'accept') {
+      await this.onShed?.(projectId, rec.id, member).catch(() => undefined)
+      // 入会通知（2026-09-12）：被邀请者此前**收不到任何"你要开会"的通知**——
+      // 它只在会议会话被点名时才知道。这里在它自己的 user 会话写一条系统消息（不唤醒回合，
+      // 避免它在会议还没开场时按自己的旧上下文开工）。
+      if (this.onInvited) {
+        void this.onInvited(projectId, rec, member, 'invited').catch(() => undefined)
+      }
+    }
     const accepts = Object.entries(rec.meeting.memberDecisions)
       .filter(([, d]) => d === 'accept')
       .map(([m]) => m)
+    if (queued) {
+      // 排队等待中：只记录"我参加"，**不占会议槽、不改 open、不入会占用**
+      rec.updatedAt = nowIso()
+      await this.store.writeMeta(rec)
+      await this.emitLineup(rec, decision)
+      return rec
+    }
     if (decision === 'accept') {
       if (!alreadyOpen) {
         rec.state = 'open'
@@ -235,6 +389,12 @@ export class MeetingService {
       await this.emitLineup(rec, decision)
       // 已 open 时只为"新入会成员"补占用（onOpen 内部对主持人幂等）
       await this.onOpen?.(projectId, rec.meeting.host, alreadyOpen ? [member] : accepts)
+      // 报到（2026-09-13）：该成员此刻**真正入会**（占用已置 meeting）→ 平台记录并落 join 事件。
+      // 主持人"等全员入会"的等待条件由此推进；全员到齐时 onJoined 会回报 allJoined=true，
+      // 由组合根注入系统消息唤醒主持人开场（主持人自己**不在回合里轮询**，避免单工队列死锁）。
+      await this.markJoined(projectId, rec.id, member)
+        .then(({ allJoined }) => this.onJoined?.(projectId, rec.id, member, allJoined))
+        .catch(() => undefined)
     } else {
       rec.updatedAt = nowIso()
       await this.store.writeMeta(rec)
@@ -320,6 +480,8 @@ export class MeetingService {
     }
     rec.state = 'closed'
     rec.closedAt = nowIso()
+    // 取消 ≠ 完成：记 canceledAt，项目记录据此把"取消的会议"排除在完成记录之外
+    rec.meeting.canceledAt = rec.closedAt
     rec.updatedAt = nowIso()
     await this.store.writeMeta(rec)
     await this.append(rec, {
@@ -471,6 +633,11 @@ export class MeetingService {
       .catch(() => undefined)
     void summaryId
     await this.onClose?.(projectId, meetingId)
+    // 散会回注（2026-09-12）：带着「纪要 + 入会时被搁置的提问/审批」把参会者唤醒，继续推进任务。
+    // 放在 onClose（会议内发言/收尾）之后：回注内容基于最终纪要。
+    await this.onClosed?.(projectId, meetingId, minutes.text, [
+      ...new Set([rec.meeting.host, ...rec.participants.agents]),
+    ]).catch(() => undefined)
     // 槽位空出：排队中的最早 queued 自动转 proposed（D16-①）
     await this.promoteQueuedIfFree(projectId)
     return rec

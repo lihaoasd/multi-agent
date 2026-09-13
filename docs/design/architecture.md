@@ -22,7 +22,7 @@
 | 模型 Provider | openai-compatible / ollama / mock（**自研轻量网关，不引重型 SDK 依赖**，便于换后端） |
 | 存储 | 纯文件系统 + 手写 JSONL/JSON/Markdown 读写层 + 自建关键词倒排索引 |
 | 测试 | Vitest（单元+集成，Mock 模型可重复） |
-| 配置 | config.yaml（平台级）+ project.json（项目级）+ role 模板文件 |
+| 配置 | `.env`（平台级，2026-09-13 起替代 config.yaml；模板 `.env.example`）+ project.json（项目级）+ role 模板文件 |
 
 ## 3. 进程与部署形态
 
