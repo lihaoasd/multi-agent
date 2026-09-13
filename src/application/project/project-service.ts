@@ -3,13 +3,13 @@
  * 运行时位置：dataDir/projects/<projectId>/（data-storage.md §2）；本阶段仅落 project.json，
  * workspaces/sessions 等由 M1 创建。绝不触碰用户工作目录。
  */
-import { join } from 'node:path'
 import { promises as fs } from 'node:fs'
 import type { Dirent } from 'node:fs'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { nowIso, genId } from '../../infra/util/id.js'
-import { atomicWriteJson, dirExists, readJson } from '../../infra/file-store/fs-utils.js'
+import { nowIso, genId } from '../../shared/util/id.js'
+import { dirExists } from '../../infra/file-store/fs-utils.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 import type { ProjectConfig } from '../../shared/types/project.js'
 import { buildUserSessionMeta } from '../session/session-store.js'
 
@@ -33,19 +33,16 @@ const RUNTIME_VERSION = 1
 
 export class ProjectService {
   constructor(
-    private readonly projectsRoot: string, // dataDir/projects
+    private readonly store: ProjectStore,
     private readonly projectDefaults: {
       artifactPolicy: ProjectConfig['artifactPolicy']
       approvalPolicy: ProjectConfig['approvalPolicy']
     },
   ) {}
 
-  private runtimeDir(projectId: string): string {
-    return join(this.projectsRoot, projectId)
-  }
-
-  private projectFile(projectId: string): string {
-    return join(this.runtimeDir(projectId), 'project.json')
+  /** 读 project.json（不存在 → null）。 */
+  private async readProject(projectId: string): Promise<ProjectDto | null> {
+    return this.store.readJson<ProjectDto>(projectId, 'project.json')
   }
 
   async create(input: CreateProjectInput): Promise<ProjectDto> {
@@ -76,24 +73,15 @@ export class ProjectService {
       approvalPolicy: { ...this.projectDefaults.approvalPolicy },
     }
 
-    const runtimeDir = this.runtimeDir(id)
-    await fs.mkdir(runtimeDir, { recursive: true })
-    await atomicWriteJson(this.projectFile(id), project)
+    await this.store.writeJson(id, 'project.json', project)
     return project
   }
 
   async list(): Promise<ProjectDto[]> {
-    let names: string[]
-    try {
-      names = await fs.readdir(this.projectsRoot)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw err
-    }
     const dtos: ProjectDto[] = []
-    for (const name of names) {
+    for (const name of await this.store.list('')) {
       if (!name.startsWith(PROJECT_ID_PREFIX)) continue
-      const dto = await readJson<ProjectDto>(this.projectFile(name))
+      const dto = await this.readProject(name)
       if (dto && dto.id === name) dtos.push(dto)
     }
     return dtos.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
@@ -107,7 +95,7 @@ export class ProjectService {
 
   private async tryGet(projectId: string): Promise<ProjectDto | null> {
     if (!projectId.startsWith(PROJECT_ID_PREFIX)) return null
-    return readJson<ProjectDto>(this.projectFile(projectId))
+    return this.readProject(projectId)
   }
 
   async patch(projectId: string, input: PatchProjectInput): Promise<ProjectDto> {
@@ -126,7 +114,7 @@ export class ProjectService {
       next.description = input.description.trim()
     }
     next.updatedAt = nowIso()
-    await atomicWriteJson(this.projectFile(projectId), next)
+    await this.store.writeJson(projectId, 'project.json', next)
     return next
   }
 
@@ -134,7 +122,7 @@ export class ProjectService {
   async remove(projectId: string): Promise<void> {
     const dto = await this.get(projectId)
     void dto // M0 无运行中状态需要拦截；M1+ 按 architecture §7 增加占用校验
-    await fs.rm(this.runtimeDir(projectId), { recursive: true, force: true })
+    await this.store.removeDir(projectId)
   }
 
   // ---- 团队（实例）管理：team 数组是 project.json 的一部分，所有写经本项目服务串行落盘 ----
@@ -154,12 +142,10 @@ export class ProjectService {
     const dup = dto.team.some((m) => m.instanceId === member.instanceId)
     if (dup) throw new AppError(ErrorCodes.CONFLICT, `实例已存在: ${member.instanceId}`)
     const next: ProjectConfig = { ...dto, team: [...dto.team, member], updatedAt: nowIso() }
-    await atomicWriteJson(this.projectFile(projectId), next)
-    // 实例运行时目录骨架：workspaces/<iid>/ 与 sessions/u_<iid>.meta.json（M1；log 由会话服务写入）
-    const wsDir = join(this.runtimeDir(projectId), 'workspaces', member.instanceId)
-    await fs.mkdir(wsDir, { recursive: true })
-    const sessionsDir = join(this.runtimeDir(projectId), 'sessions')
-    await fs.mkdir(sessionsDir, { recursive: true })
+    await this.store.writeJson(projectId, 'project.json', next)
+    // 实例运行时目录骨架：workspaces/<iid>/ 与 sessions/（M1；log 由会话服务写入）
+    await this.store.ensureDir(projectId, `workspaces/${member.instanceId}`)
+    await this.store.ensureDir(projectId, 'sessions')
     await this.ensureUserSessionMeta(projectId, member.instanceId, member.displayName)
     return member
   }
@@ -186,7 +172,7 @@ export class ProjectService {
     }
     const team = [...dto.team]
     team[idx] = merged
-    await atomicWriteJson(this.projectFile(projectId), { ...dto, team, updatedAt: nowIso() })
+    await this.store.writeJson(projectId, 'project.json', { ...dto, team, updatedAt: nowIso() })
     return merged
   }
 
@@ -200,13 +186,11 @@ export class ProjectService {
     instanceId: string,
     displayName: string,
   ): Promise<void> {
-    const sessionsDir = join(this.runtimeDir(projectId), 'sessions')
-    await fs.mkdir(sessionsDir, { recursive: true })
+    await this.store.ensureDir(projectId, 'sessions')
     const sid = `u_${instanceId}`
-    const metaFile = join(sessionsDir, `${sid}.meta.json`)
-    const existing = await readJson<{ id: string }>(metaFile)
-    if (existing) return
-    await atomicWriteJson(metaFile, buildUserSessionMeta(projectId, instanceId, displayName))
+    const relPath = `sessions/${sid}.meta.json`
+    if (await this.store.exists(projectId, relPath)) return
+    await this.store.writeJson(projectId, relPath, buildUserSessionMeta(projectId, instanceId, displayName))
   }
 }
 

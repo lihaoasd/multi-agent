@@ -7,14 +7,13 @@
  *  - owner = 自己 → 可写（更新 lastAt/edits）；
  *  - owner = 他人 → **拒绝**（ERR_FORBIDDEN，消息点名 owner，并提示另建新文件）；
  *  - 不做转交（用户选择"只读 + 新建文件"）；用户本人始终可写（不经本表校验）。
+ *
+ * 重构 P1（2026-09-14）：持久化改走 `ProjectStore` 门面（`infra/store`），
+ * 手工 `KeyedLock + 拼行 + atomicWriteFile` 由门面的 `mutate` 承担（锁归实现层）。
  */
-import { join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { nowIso } from '../../infra/util/id.js'
-import { KeyedLock } from '../../infra/util/keyed-lock.js'
-import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import { nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 
 export type OwnershipVia = 'workdir_edit' | 'artifact_submit'
 
@@ -42,32 +41,14 @@ export interface ClaimInput {
   via: OwnershipVia
 }
 
+const FILE = 'file-owners.jsonl'
+
 export class FileOwnerStore {
-  private readonly lock = new KeyedLock()
+  constructor(private readonly store: ProjectStore) {}
 
-  constructor(private readonly projectsRoot: string) {}
-
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'file-owners.jsonl')
-  }
-
+  /** 全部归属记录（原始顺序）。 */
   async readAll(projectId: string): Promise<FileOwnerRecord[]> {
-    let raw: string
-    try {
-      raw = await fs.readFile(this.file(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: FileOwnerRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as FileOwnerRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<FileOwnerRecord>(projectId, FILE)
   }
 
   /** 全部归属记录（按最近修改倒序）。 */
@@ -78,16 +59,6 @@ export class FileOwnerStore {
 
   async get(projectId: string, relPath: string): Promise<FileOwnerRecord | null> {
     return (await this.readAll(projectId)).find((r) => r.relPath === relPath) ?? null
-  }
-
-  /** 我名下的产出物。 */
-  async mine(projectId: string, owner: string): Promise<FileOwnerRecord[]> {
-    return (await this.list(projectId)).filter((r) => r.owner === owner)
-  }
-
-  /** 他人名下的产出物（只读）。 */
-  async others(projectId: string, owner: string): Promise<FileOwnerRecord[]> {
-    return (await this.list(projectId)).filter((r) => r.owner !== owner)
   }
 
   /**
@@ -107,12 +78,12 @@ export class FileOwnerStore {
 
   /** 登记/更新归属（写入成功后调用）：首次认领或续写计数。 */
   async claim(projectId: string, input: ClaimInput): Promise<FileOwnerRecord> {
-    return this.lock.run(projectId, async () => {
-      const all = await this.readAll(projectId)
+    const ts = nowIso()
+    let claimed!: FileOwnerRecord
+    await this.store.mutate<FileOwnerRecord>(projectId, FILE, (all) => {
       const idx = all.findIndex((r) => r.relPath === input.relPath)
-      const ts = nowIso()
       const prev = idx >= 0 ? all[idx]! : null
-      const rec: FileOwnerRecord = {
+      claimed = {
         relPath: input.relPath,
         owner: input.owner,
         ownerName: input.ownerName ?? prev?.ownerName ?? '',
@@ -122,14 +93,10 @@ export class FileOwnerStore {
         lastTaskId: input.taskId ?? null,
         via: input.via,
       }
-      if (idx >= 0) all[idx] = rec
-      else all.push(rec)
-      await fs.mkdir(join(this.projectsRoot, projectId), { recursive: true })
-      await atomicWriteFile(
-        this.file(projectId),
-        all.map((x) => JSON.stringify(x)).join('\n') + '\n',
-      )
-      return rec
+      if (idx >= 0) all[idx] = claimed
+      else all.push(claimed)
+      return all
     })
+    return claimed
   }
 }

@@ -6,7 +6,7 @@
 import { isAbsolute, join, resolve } from 'node:path'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { isPathInside } from '../../infra/file-store/fs-utils.js'
+import { isPathInside } from './path-boundary.js'
 
 export type VirtualScheme = 'ws' | 'workdir' | 'ro' | 'runtime'
 

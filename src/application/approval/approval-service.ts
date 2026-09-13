@@ -3,12 +3,10 @@
  * 业务记录文件先原子写（事实生效），再向会话 log 追加投影（D18-⑤a）。
  * 用户决定只落盘不回放执行原动作（agent-runtime §7：跨重启不自动执行）。
  */
-import { join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { genId, nowIso } from '../../infra/util/id.js'
-import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import { genId, nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
+import { approvalDecideError, type ApprovalStatus } from '../../domain/fsm/approval-state.js'
 import type { SessionLogEvent } from '../../shared/types/session.js'
 
 export interface ApprovalRecord {
@@ -20,14 +18,16 @@ export interface ApprovalRecord {
   summary: string
   detail: string
   ruleId?: string
-  status: 'pending' | 'approved' | 'rejected' | 'expired'
+  status: ApprovalStatus
   requestedAt: string
   decidedAt: string | null
 }
 
+const FILE = 'approvals.jsonl'
+
 export class ApprovalService {
   constructor(
-    private readonly projectsRoot: string,
+    private readonly store: ProjectStore,
     private readonly appendLog: (
       projectId: string,
       sessionId: string,
@@ -36,27 +36,8 @@ export class ApprovalService {
     private readonly onStateChange?: (projectId: string, record: ApprovalRecord) => void,
   ) {}
 
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'approvals.jsonl')
-  }
-
   private async readAll(projectId: string): Promise<ApprovalRecord[]> {
-    let raw: string
-    try {
-      raw = await fs.readFile(this.file(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: ApprovalRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as ApprovalRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<ApprovalRecord>(projectId, FILE)
   }
 
   async list(projectId: string, status?: string): Promise<ApprovalRecord[]> {
@@ -107,9 +88,9 @@ export class ApprovalService {
     reason?: string,
   ): Promise<ApprovalRecord> {
     const rec = await this.get(projectId, approvalId)
-    if (rec.status !== 'pending') {
-      throw new AppError(ErrorCodes.CONFLICT, `审批已处理（${rec.status}）: ${approvalId}`)
-    }
+    // 判定规则在 domain/fsm/approval-state.ts（只有 pending 可被决定）
+    const err = approvalDecideError(rec.status, approvalId)
+    if (err) throw new AppError(ErrorCodes.CONFLICT, err)
     const next: ApprovalRecord = { ...rec, status: decision, decidedAt: nowIso() }
     await this.append(next)
     // 审计投影 → 会话 log
@@ -133,16 +114,15 @@ export class ApprovalService {
     actor: string,
     reason: string,
   ): Promise<Array<{ id: string; summary: string }>> {
-    const all = await this.readAll(projectId)
-    const hit = all.filter((a) => a.actor === actor && a.status === 'pending')
-    if (!hit.length) return []
     const decidedAt = nowIso()
-    const ids = new Set(hit.map((a) => a.id))
-    const next = all.map((a) =>
-      ids.has(a.id) ? { ...a, status: 'expired' as const, decidedAt } : a,
-    )
-    const lines = next.map((a) => JSON.stringify(a)).join('\n') + '\n'
-    await atomicWriteFile(this.file(projectId), lines)
+    const hit: ApprovalRecord[] = []
+    await this.store.mutate<ApprovalRecord>(projectId, FILE, (all) => {
+      const targets = all.filter((a) => a.actor === actor && a.status === 'pending')
+      if (!targets.length) return null
+      hit.push(...targets)
+      const ids = new Set(targets.map((a) => a.id))
+      return all.map((a) => (ids.has(a.id) ? { ...a, status: 'expired' as const, decidedAt } : a))
+    })
     for (const a of hit) {
       if (a.sessionId) {
         await this.appendLog(projectId, a.sessionId, {
@@ -162,14 +142,13 @@ export class ApprovalService {
     return hit.map((a) => ({ id: a.id, summary: a.summary }))
   }
 
-  /** append 单条（pending 追加 / 决定重写同 id 行）。MVP：重写全表以保简单正确。 */
+  /** 写入（pending 追加 / 决定重写同 id 行）。整表重写以保简单正确。 */
   private async append(rec: ApprovalRecord): Promise<void> {
-    const all = await this.readAll(rec.projectId)
-    const idx = all.findIndex((a) => a.id === rec.id)
-    if (idx >= 0) all[idx] = rec
-    else all.push(rec)
-    const lines = all.map((a) => JSON.stringify(a)).join('\n') + '\n'
-    await fs.mkdir(join(this.projectsRoot, rec.projectId), { recursive: true })
-    await atomicWriteFile(this.file(rec.projectId), lines)
+    await this.store.mutate<ApprovalRecord>(rec.projectId, FILE, (all) => {
+      const idx = all.findIndex((a) => a.id === rec.id)
+      if (idx >= 0) all[idx] = rec
+      else all.push(rec)
+      return all
+    })
   }
 }

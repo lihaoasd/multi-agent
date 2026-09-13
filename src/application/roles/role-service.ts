@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { nowIso } from '../../infra/util/id.js'
+import { nowIso } from '../../shared/util/id.js'
 import { dirExists } from '../../infra/file-store/fs-utils.js'
 import type { RoleTemplate } from '../../shared/types/role.js'
 

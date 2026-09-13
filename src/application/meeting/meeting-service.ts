@@ -5,36 +5,45 @@
  * 用户恒为成员；决策点至多 1 个 pending；纪要 = L1 可重放派生视图（D18-⑤b），close 时生成写参与者记忆。
  */
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { genId, nowIso } from '../../infra/util/id.js'
+import { genId, nowIso } from '../../shared/util/id.js'
 import type { SessionMeta, SessionLogEvent } from '../../shared/types/session.js'
 import { SessionStore } from '../session/session-store.js'
 import { MemoryStore } from '../memory/memory-store.js'
 
-export type MeetingState = 'queued' | 'proposed' | 'open' | 'blocked_waiting_user' | 'closed'
+/**
+ * 把 domain 守卫结果包成 AppError（守卫通过时无操作）。
+ * 规则与错误码/文案都在 `domain/fsm/meeting-state.ts`，本文件只负责"读 → 判 → 写"。
+ */
+function assertGuard(err: MeetingGuardError | null): void {
+  if (err) throw new AppError(err.code as never, err.message)
+}
+
+/** 状态词汇与呈现规则已归位 domain（`domain/fsm/meeting-state.ts`）。 */
+import {
+  canAnswerDecision,
+  canAskUser,
+  canCancel,
+  canClose,
+  canMemberRespond,
+  canSpeakTurn,
+  canUserInterject,
+  isOccupyingMeetingState,
+  withMeetingDisplay,
+  type MeetingGuardError,
+  type WithDisplay,
+} from '../../domain/fsm/meeting-state.js'
+import { renderMeetingMinutes } from './minutes-renderer.js'
 
 /**
- * 会议对用户呈现的状态（2026-09-12 定稿）：**只有「进行中」和「已结束」两态**。
- *
- * 内部的 queued(排队) / proposed(征询) / open / blocked_waiting_user(等你拍板) 都是"进行中"的细分子态，
- * 不进 UI 文案；queued 另外标注"等待中"（同一个时刻只允许一个会议进行，其余排队——见 activeCount）。
+ * 带呈现态的会议记录（REST 下发用）：state=内部子态，displayState=进行中/已结束。
+ * 呈现规则本身在 domain（`withMeetingDisplay`）；此处只保留对外类型别名与薄委托，
+ * 既有调用方（REST 路由、record-service）无需改动。
  */
-export const MEETING_ACTIVE_LABEL = '进行中'
-export const MEETING_CLOSED_LABEL = '已结束'
-
-export function meetingDisplayState(state: string): string {
-  return state === 'closed' ? MEETING_CLOSED_LABEL : MEETING_ACTIVE_LABEL
-}
-
-/** 带呈现态的会议记录（REST 下发用）：state=内部子态，displayState=进行中/已结束。 */
-export type MeetingWithDisplay = MeetingRecord & {
-  displayState: string
-  /** 是否在排队等槽位（已发起但当前有别的会议在进行） */
-  waiting: boolean
-}
+export type MeetingWithDisplay = WithDisplay<MeetingRecord>
 
 /** 给单条会议记录补上呈现态（进行中/已结束 + 是否排队等待）。 */
 export function withDisplay(rec: MeetingRecord): MeetingWithDisplay {
-  return { ...rec, displayState: meetingDisplayState(rec.state), waiting: rec.state === 'queued' }
+  return withMeetingDisplay(rec)
 }
 
 export interface MeetingAgendaItem {
@@ -206,11 +215,10 @@ export class MeetingService {
     return meta as unknown as MeetingRecord
   }
 
+  /** 占槽会议数（proposed/open/blocked_waiting_user 都占槽，queued 不占；判定规则在 domain）。 */
   private async activeCount(projectId: string): Promise<number> {
     const all = await this.list(projectId)
-    return all.filter((m) =>
-      ['proposed', 'open', 'blocked_waiting_user'].includes(m.state as string),
-    ).length
+    return all.filter((m) => isOccupyingMeetingState(m.state as string)).length
   }
 
   /**
@@ -335,18 +343,15 @@ export class MeetingService {
     // 只是**不占会议槽**（占用等 open 时才给），否则排队会议永远没人接受、轮到后没人通知。
     const alreadyOpen = rec.state === 'open'
     const queued = rec.state === 'queued'
-    if (rec.state !== 'proposed' && !alreadyOpen && !queued) {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `仅 proposed/open/queued 会议可回应邀请（当前 ${rec.state}）`,
-      )
-    }
-    if (!rec.meeting.members.includes(member) && member !== rec.meeting.host) {
-      throw new AppError(ErrorCodes.VALIDATION, `成员不在本会议: ${member}`)
-    }
-    if (rec.meeting.memberDecisions[member]) {
-      throw new AppError(ErrorCodes.CONFLICT, `成员已回应: ${member}`)
-    }
+    assertGuard(
+      canMemberRespond({
+        state: rec.state,
+        member,
+        host: rec.meeting.host,
+        members: rec.meeting.members,
+        decided: Boolean(rec.meeting.memberDecisions[member]),
+      }),
+    )
     rec.meeting.memberDecisions[member] = decision
     await this.append(rec, {
       kind: 'meeting_event',
@@ -412,12 +417,14 @@ export class MeetingService {
     options: string[] = [],
   ): Promise<DecisionPoint> {
     const rec = await this.get(projectId, meetingId)
-    if (asker !== rec.meeting.host)
-      throw new AppError(ErrorCodes.FORBIDDEN_PATH, '仅主持人可请求用户拍板')
-    if (rec.state !== 'open')
-      throw new AppError(ErrorCodes.CONFLICT, `仅 open 会议可发起决策点（当前 ${rec.state}）`)
-    const pending = rec.meeting.decisionPoints.find((d) => d.status === 'pending')
-    if (pending) throw new AppError(ErrorCodes.CONFLICT, '已有待答复决策点，先答复再发起下一个')
+    assertGuard(
+      canAskUser({
+        state: rec.state,
+        asker,
+        host: rec.meeting.host,
+        hasPendingDecision: rec.meeting.decisionPoints.some((d) => d.status === 'pending'),
+      }),
+    )
     const dp: DecisionPoint = {
       id: genId('q_'),
       question,
@@ -446,9 +453,7 @@ export class MeetingService {
     answer: { choice?: string; text?: string },
   ): Promise<MeetingRecord> {
     const rec = await this.get(projectId, meetingId)
-    if (rec.state !== 'blocked_waiting_user') {
-      throw new AppError(ErrorCodes.CONFLICT, `当前非阻塞等待状态: ${rec.state}`)
-    }
+    assertGuard(canAnswerDecision(rec.state))
     const dp = rec.meeting.decisionPoints.find((d) => d.id === questionId && d.status === 'pending')
     if (!dp) throw new AppError(ErrorCodes.NOT_FOUND, `待答复决策点不存在: ${questionId}`)
     dp.status = 'answered'
@@ -472,12 +477,7 @@ export class MeetingService {
   /** 取消 queued/proposed 会议。 */
   async cancel(projectId: string, meetingId: string, actor: string): Promise<void> {
     const rec = await this.get(projectId, meetingId)
-    if (!['queued', 'proposed'].includes(rec.state as string)) {
-      throw new AppError(ErrorCodes.CONFLICT, `仅 queued/proposed 可取消（当前 ${rec.state}）`)
-    }
-    if (actor !== 'user' && actor !== rec.meeting.host) {
-      throw new AppError(ErrorCodes.FORBIDDEN_PATH, '仅发起者或用户可取消')
-    }
+    assertGuard(canCancel({ state: rec.state, actor, host: rec.meeting.host }))
     rec.state = 'closed'
     rec.closedAt = nowIso()
     // 取消 ≠ 完成：记 canceledAt，项目记录据此把"取消的会议"排除在完成记录之外
@@ -505,13 +505,15 @@ export class MeetingService {
     question?: string,
   ): Promise<void> {
     const rec = await this.get(projectId, meetingId)
-    if (host !== rec.meeting.host)
-      throw new AppError(ErrorCodes.FORBIDDEN_PATH, '仅主持人可点名发言')
-    if (rec.state !== 'open') {
-      throw new AppError(ErrorCodes.CONFLICT, `仅 open 会议可推进轮次（当前 ${rec.state}）`)
-    }
-    const isMember = rec.participants.agents.includes(member) && member !== rec.meeting.host
-    if (!isMember) throw new AppError(ErrorCodes.VALIDATION, `非参会成员或为主持人: ${member}`)
+    assertGuard(
+      canSpeakTurn({
+        state: rec.state,
+        host: rec.meeting.host,
+        caller: host,
+        member,
+        agents: rec.participants.agents,
+      }),
+    )
     const pending = rec.meeting.agenda.find((a) => a.status === 'pending')
     const prompt =
       question ??
@@ -530,9 +532,7 @@ export class MeetingService {
   /** 用户插话（meetings.md §4：open 与 blocked 均可插话，不打断生成）。 */
   async userInterject(projectId: string, meetingId: string, text: string): Promise<void> {
     const rec = await this.get(projectId, meetingId)
-    if (!['open', 'blocked_waiting_user'].includes(rec.state as string)) {
-      throw new AppError(ErrorCodes.CONFLICT, `会议未进行（当前 ${rec.state}）`)
-    }
+    assertGuard(canUserInterject(rec.state))
     const t = text.trim()
     if (!t) throw new AppError(ErrorCodes.VALIDATION, '内容不能为空')
     const evt = await this.append(rec, {
@@ -583,9 +583,7 @@ export class MeetingService {
   /** 结束会议：置 minutesPending → 生成纪要（可重放派生视图）→ 回写记忆。 */
   async close(projectId: string, meetingId: string, actor: string): Promise<MeetingRecord> {
     const rec = await this.get(projectId, meetingId)
-    if (!['open', 'blocked_waiting_user'].includes(rec.state as string)) {
-      throw new AppError(ErrorCodes.CONFLICT, `仅 open/blocked 会议可结束（当前 ${rec.state}）`)
-    }
+    assertGuard(canClose(rec.state))
     rec.state = 'closed'
     rec.closedAt = nowIso()
     rec.updatedAt = nowIso()
@@ -663,22 +661,8 @@ export class MeetingService {
   private async renderMinutes(projectId: string, meetingId: string): Promise<string> {
     const rec = await this.get(projectId, meetingId)
     const events = await this.store.readWindow(projectId, meetingId, { limit: 100000 })
-    const lines = events
-      .filter((e) => e.kind === 'meeting_event')
-      .map((e) => {
-        const p = (e.payload ?? {}) as Record<string, unknown>
-        return `${p.action ?? e.kind}: ${JSON.stringify(p).slice(0, 160)}`
-      })
-    const answers = rec.meeting.decisionPoints
-      .filter((d) => d.status === 'answered')
-      .map((d) => `决策「${d.question}」→ ${d.answer?.text ?? d.answer?.choice ?? '(答复)'}`)
-    return [
-      `会议纪要：${rec.meeting.topic}`,
-      `主持人: ${rec.meeting.host}；成员: ${rec.meeting.members.join(', ')}`,
-      ...lines.slice(-12),
-      ...(answers.length ? ['用户决策:', ...answers] : []),
-      '(规则式纪要 MVP，真实生成 M8)',
-    ].join('\n')
+    // 纯渲染在 ./minutes-renderer.ts（规则式纪要，文案逐字一致）
+    return renderMeetingMinutes(rec, events)
   }
 
   private async append(

@@ -12,11 +12,8 @@
  *  1) loop 的 step 边界闸门 `hasPendingInvite()` —— 被邀请但还没入会 → 结束当前工作、去开会；
  *  2) 主持人的等待条件 `inMeeting()` —— 全员入会才开场。
  */
-import { join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
-import { nowIso } from '../../infra/util/id.js'
-import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import { nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 
 export interface MeetingInviteRecord {
   projectId: string
@@ -27,35 +24,21 @@ export interface MeetingInviteRecord {
   leftAt: string | null
 }
 
-export class MeetingInviteStore {
-  constructor(private readonly projectsRoot: string) {}
+const FILE = 'meeting-invites.jsonl'
 
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'meeting-invites.jsonl')
-  }
+export class MeetingInviteStore {
+  constructor(private readonly store: ProjectStore) {}
 
   private async readAll(projectId: string): Promise<MeetingInviteRecord[]> {
-    let raw: string
-    try {
-      raw = await fs.readFile(this.file(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: MeetingInviteRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as MeetingInviteRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<MeetingInviteRecord>(projectId, FILE)
   }
 
-  private async writeAll(projectId: string, all: MeetingInviteRecord[]): Promise<void> {
-    await fs.mkdir(join(this.projectsRoot, projectId), { recursive: true })
-    await atomicWriteFile(this.file(projectId), all.map((x) => JSON.stringify(x)).join('\n') + '\n')
+  /**
+   * 覆盖写（仅在确有变更时调用）。
+   * 保持迁移前语义：无变更 → 不写盘（避免无谓的 mkdir/rename，也让"未触碰"可观测）。
+   */
+  private async writeChanged(projectId: string, all: MeetingInviteRecord[]): Promise<void> {
+    await this.store.mutate<MeetingInviteRecord>(projectId, FILE, () => all)
   }
 
   /** 发邀请（同会同人去重：已有未离会记录则不重复发）。 */
@@ -78,7 +61,7 @@ export class MeetingInviteStore {
       leftAt: null,
     }
     all.push(rec)
-    await this.writeAll(projectId, all)
+    await this.writeChanged(projectId, all)
     return rec
   }
 
@@ -92,7 +75,7 @@ export class MeetingInviteStore {
     const rec = all.find((r) => r.meetingId === meetingId && r.instanceId === instanceId && !r.leftAt)
     if (!rec || rec.joinedAt) return rec ?? null
     rec.joinedAt = nowIso()
-    await this.writeAll(projectId, all)
+    await this.writeChanged(projectId, all)
     return rec
   }
 
@@ -107,7 +90,7 @@ export class MeetingInviteStore {
         touched = true
       }
     }
-    if (touched) await this.writeAll(projectId, all)
+    if (touched) await this.writeChanged(projectId, all)
   }
 
   /** 该角色是否有**未入会**的会议邀请（loop step 边界闸门用）。 */
@@ -115,12 +98,5 @@ export class MeetingInviteStore {
     return (await this.readAll(projectId)).some(
       (r) => r.instanceId === instanceId && !r.leftAt && !r.joinedAt,
     )
-  }
-
-  /** 某场会议里已报到的角色（主持人等待条件用）。 */
-  async joinedOf(projectId: string, meetingId: string): Promise<string[]> {
-    return (await this.readAll(projectId))
-      .filter((r) => r.meetingId === meetingId && r.joinedAt && !r.leftAt)
-      .map((r) => r.instanceId)
   }
 }

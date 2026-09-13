@@ -21,15 +21,24 @@ import { SummaryEngine } from './memory/summary-engine.js'
 import { SearchService } from './search/search-service.js'
 import { MeetingService } from './meeting/meeting-service.js'
 import type { MeetingRecord } from './meeting/meeting-service.js'
+import {
+  meetingHostOpenPrompt,
+  meetingHostWrapPrompt,
+  meetingInviteText as meetingInviteTextOf,
+  meetingMemberSpeakPrompt,
+  meetingWrapUpText,
+} from './meeting/meeting-prompts.js'
+import { createMeetingReadyCheck } from './meeting/meeting-attendance.js'
+import { taskClaimNotice, taskDelegatorNotice } from './task/task-notices.js'
 import { TaskService } from './task/task-service.js'
 import { dispatchTasksFromText } from './task/task-dispatch.js'
 import { QuestionService } from './question/question-service.js'
-import { MeetingShedStore, type ShedRecord } from './meeting/shed-store.js'
+import { MeetingShedStore } from './meeting/shed-store.js'
 import { MeetingInviteStore } from './meeting/invite-store.js'
 import { FileOwnerStore } from './artifact/file-owner-store.js'
 import { CodeEditStore } from './code-edit/code-edit-store.js'
 import { AttentionService } from './attention/attention-service.js'
-import { deriveAgentState } from './runtime-state.js'
+import { deriveAgentState } from '../domain/fsm/agent-state.js'
 import { RecordService } from './record/record-service.js'
 import { registerServiceTools } from './tools/service-tools.js'
 import { selectToolDefs } from './tools/tool-selection.js'
@@ -42,6 +51,9 @@ import { ModelGateway } from '../infra/model/gateway.js'
 import { EventBus } from '../infra/bus/event-bus.js'
 import type { ToolEnv } from '../infra/tools/executor.js'
 import { executeTool } from '../infra/tools/executor.js'
+import { createFileStorage } from '../infra/store/file-store.js'
+import { StorageFacade } from '../infra/store/project-store.js'
+import { LocalFileOps } from '../infra/store/local-file-ops.js'
 
 export interface Services {
   config: PlatformConfig
@@ -77,14 +89,55 @@ export interface Services {
   ) => Promise<{ sessionType: string; blocks: PromptBlock[]; text: string } | null>
 }
 
+// ── server 门面（P4，2026-09-14）────────────────────────────────────────────
+//
+// 分层规则要求"server 只能依赖 application 的门面，不得深入内部模块"。
+// server 原先直接 import 了若干 application 内部模块（fs-browse / export / meeting / question），
+// 这些不是服务实例、无法放进 `Services`，所以在组合根统一**转出**：
+// server 从此只 import `../application/composition.js`，方向清晰且可机器校验。
+//
+// 判断依据不变：应用层内部模块之间照常互相 import；只有**跨层**访问必须走门面。
+
+/** 目录浏览（目录选择器）：按定义作用于用户任意目录。 */
+export {
+  browseDirectory,
+  getHomeAndDrives,
+  mkdirUnder,
+} from './fs-browse/fs-browse-service.js'
+/** 项目导出：整目录递归收集（zip 打包用）。 */
+export { collectProjectFiles } from './export/export-service.js'
+/** 会议呈现派生（进行中/已结束 + 是否排队）——规则在 domain，这里转出给 REST 层。 */
+export { withDisplay, type MeetingWithDisplay } from './meeting/meeting-service.js'
+/** 提问记录的最小类型 + 答复文案（REST 回答问题时需要）。 */
+import type { QuestionRecord } from './question/question-service.js'
+export type { QuestionRecord }
+/** 工具可用性口径（角色详情用）：运行期与详情查询同源。 */
+export { describeToolAvailability } from './tools/tool-selection.js'
+
+/**
+ * 提问答复文案（`QuestionService.answerText` 的门面包装）。
+ * 包一层是为了让 server 不直接 import 具体服务类（分层规则的直接后果）。
+ */
+export async function questionAnswerText(rec: QuestionRecord): Promise<string> {
+  return QuestionService.answerText(rec)
+}
+
 /** 组合全部服务。customRoleDir 缺省 = dataDir/roles。 */
 export function composeServices(config: PlatformConfig, customRoleDir?: string): Services {
   const projectsRoot = join(config.dataDir, 'projects')
   const builtinRoleDir = config.roleDirs[0] ?? join(config.dataDir, 'src/shared/roles')
   const roleCustomDir = customRoleDir ?? config.roleDirs[1] ?? join(config.dataDir, 'roles')
 
+  // 存储端口（重构 P1，2026-09-14）：项目作用域门面是 application 层唯一的 IO 边界。
+  // 两种作用域：
+  //   · forProjectsRoot —— "各项目目录位于该根之下"，等价于迁移前的 `new XStore(projectsRoot)`
+  //   · forProject(pid) —— 单个项目的运行时目录
+  const fileStorage = createFileStorage(projectsRoot)
+  const storage = new StorageFacade(fileStorage, fileStorage.root)
+  const projectsStore = storage.forProjectsRoot(projectsRoot)
+
   const bus = new EventBus()
-  const projectService = new ProjectService(projectsRoot, {
+  const projectService = new ProjectService(projectsStore, {
     artifactPolicy: {
       codeSubmitApproval: config.approval.codeSubmitApproval,
       docSubmitApproval: config.approval.docSubmitApproval,
@@ -93,14 +146,14 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   })
   const roleService = new RoleService(builtinRoleDir, roleCustomDir)
   const teamService = new TeamService(projectService, roleService, config.models.default)
-  const sessionStore = new SessionStore(projectsRoot)
-  const occupancy = new OccupancyStore(projectsRoot)
+  const sessionStore = new SessionStore(projectsStore)
+  const occupancy = new OccupancyStore(projectsStore)
   const gateway = new ModelGateway({ models: config.models })
-  const memory = new MemoryStore(projectsRoot)
+  const memory = new MemoryStore(projectsStore)
   const summary = new SummaryEngine(sessionStore)
-  const questions = new QuestionService(projectsRoot, bus)
+  const questions = new QuestionService(projectsStore, bus)
   // 产出物署名与归属（2026-09-12：所有产出落项目目录、署名、他人不可改）
-  const fileOwners = new FileOwnerStore(projectsRoot)
+  const fileOwners = new FileOwnerStore(projectsStore)
   // loop opts 可变：taskDispatch 依赖 tasks（后建），组合尾部再绑定（运行期读取）
   const loopOpts: ConstructorParameters<typeof AgentLoopRunner>[0] = {
     store: sessionStore,
@@ -125,11 +178,11 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     summary,
     async (pid) => teamService.list(pid),
   )
-  const search = new SearchService(projectsRoot, sessionStore)
-  const codeEdits = new CodeEditStore(projectsRoot)
+  const search = new SearchService(projectsStore, sessionStore)
+  const codeEdits = new CodeEditStore(projectsStore)
   // 审批与工具协调器先建：会议入会时要作废该角色待批审批（onShed）
   const approvals = new ApprovalService(
-    projectsRoot,
+    projectsStore,
     async (pid, sid, evt) => {
       const meta = await sessionStore.tryReadMeta(pid, sid)
       if (!meta) {
@@ -145,9 +198,9 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
   )
   const tools = new ToolCoordinator(approvals)
   // 会议搁置清单：入会时被作废的提问/审批留档，散会后回注给角色
-  const meetingShed = new MeetingShedStore(projectsRoot)
+  const meetingShed = new MeetingShedStore(projectsStore)
   // 会议邀请/报到台账：主持人"等全员入会"的等待条件 + loop 的 step 边界闸门
-  const meetingInvites = new MeetingInviteStore(projectsRoot)
+  const meetingInvites = new MeetingInviteStore(projectsStore)
   // 会议讨论链：主持人开场 → 各成员发言 → 主持人收尾 → 结束会议（生成纪要）。
   // 触发点：① meeting_start 时槽位空闲（立即开始）；② 受邀成员**全部报到**（onJoined）。
   // `config.meeting.autoStart` 关掉时本链不跑（留出手动推进/单测中间态的余地）。
@@ -167,20 +220,12 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     if (notReady.length) {
       await meetings.recordHold(pid, meeting.id, notReady).catch(() => undefined)
     }
-    const hostOpen =
-      `【会议开场】你是主持人（${host}）。会议主题「${topic}」` +
-      (desc ? `，描述：${desc}` : '') +
-      `，参会：${members.join('、')} 与用户。请先开场：说明议题与期望产出；` +
-      '然后可用 meeting_talk 逐个点名成员发言（他们的发言会写进会议会话）。'
-    const hostWrap =
-      `【会议收尾】会议「${topic}」的成员发言已写入会议会话。请阅读后给出：结论、待办（谁做什么）、` +
-      '仍需用户拍板的事项；如需结束会议可调用 meeting_close。'
+    // 文案构建已抽到 ./meeting/meeting-prompts.ts（纯函数，逐字一致）
+    const hostOpen = meetingHostOpenPrompt({ host, topic, desc, members })
+    const hostWrap = meetingHostWrapPrompt({ topic })
     await sessionService.runAgentTurn(pid, meeting.id, host, { prompt: hostOpen }).catch(() => undefined)
     for (const m of members) {
-      const p =
-        `【会议邀请】${host} 邀请你参加「${topic}」` +
-        (desc ? `（${desc}）` : '') +
-        '。请在会议中发表意见：结论 + 理由 + 需要谁配合（简明，不要复述别人）。'
+      const p = meetingMemberSpeakPrompt({ host, topic, desc })
       await sessionService.runAgentTurn(pid, meeting.id, m, { prompt: p }).catch(() => undefined)
     }
     await sessionService.runAgentTurn(pid, meeting.id, host, { prompt: hostWrap }).catch(() => undefined)
@@ -191,45 +236,14 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
       await meetings.close(pid, meeting.id, host).catch(() => undefined)
     }
   }
-  /** 开场门判定：受邀成员是否都已入会且无待处理事项（未就绪的返回）。 */
-  const meetingReadyFor = async (pid: string, mid: string, members: string[]): Promise<string[]> => {
-    const meta = await sessionStore.tryReadMeta(pid, mid).catch(() => null)
-    const decisions = (meta as { meeting?: { memberDecisions?: Record<string, string> } } | null)
-      ?.meeting?.memberDecisions
-    const notReady: string[] = []
-    for (const m of members) {
-      if (decisions && decisions[m] !== 'accept') {
-        notReady.push(m)
-        continue
-      }
-      const [approval, question] = await Promise.all([
-        approvals.list(pid, 'pending').then((l) => l.some((a) => a.actor === m)),
-        questions.pendingOf(pid, `u_${m}`).then((q) => q !== null),
-      ])
-      if (approval || question) notReady.push(m)
-    }
-    return notReady
-  }
-  /** 入会通知文本：刚被邀请（`invited`）与排队轮到正式开始（`started`）两种。 */
-  const meetingInviteText = (meeting: MeetingRecord, kind: 'invited' | 'started'): string => {
-    const topic = meeting.meeting.topic
-    const desc = meeting.meeting.desc?.trim()
-    if (kind === 'started') {
-      return (
-        `【会议开始】${meeting.meeting.host} 邀请的会议「${topic}」现在开始` +
-        `${desc ? `：${desc}` : ''}。\n会议已开始，你的团队状态已是「会议中」。` +
-        '你**本轮不用动手**：等主持人开场后点名发言即可（发言写进会议会话）。'
-      )
-    }
-    const queued = meeting.state === 'queued'
-    return (
-      `【会议邀请】${meeting.meeting.host} 拉你参加「${topic}」${desc ? `：${desc}` : ''}。\n` +
-      (queued
-        ? '当前有别的会议在进行，本场**排队等待**中，轮到时平台会自动开始并在这里通知你。'
-        : '会议已开始，你的团队状态已是「会议中」。') +
-      '你**本轮不用动手**：等主持人开场后点名发言即可（发言写进会议会话）。'
+  /** 开场门判定：受邀成员是否都已入会且无待处理事项（未就绪的返回）。实现见 ./meeting/meeting-attendance.ts */
+  const meetingReadyFor = createMeetingReadyCheck({ sessionStore, approvals, questions })
+  /** 入会通知文本：刚被邀请（`invited`）与排队轮到正式开始（`started`）两种。（文案在 meeting-prompts） */
+  const meetingInviteText = (meeting: MeetingRecord, kind: 'invited' | 'started'): string =>
+    meetingInviteTextOf(
+      { topic: meeting.meeting.topic, desc: meeting.meeting.desc, host: meeting.meeting.host, state: meeting.state },
+      kind,
     )
-  }
   const meetings = new MeetingService(
     sessionStore,
     memory,
@@ -324,42 +338,26 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     },
   )
 
-  const artifacts = new ArtifactService(projectsRoot, approvals, async (pid, sid, evt) => {
+  const artifacts = new ArtifactService(projectsStore, new LocalFileOps(), approvals, async (pid, sid, evt) => {
     const meta = await sessionStore.tryReadMeta(pid, sid)
     if (!meta) throw new Error(`会话不存在: ${sid}`)
     return sessionStore.appendEvent(meta, evt)
   })
   // 任务栏（2026-09-12：发布 → 通知领取 → 完成回通知委派人）
-  const tasks = new TaskService(projectsRoot, config.task.assignByAgent, {
+  const tasks = new TaskService(projectsStore, config.task.assignByAgent, {
     // 发布/排队 → 通知受派人领取（写系统消息 + 唤醒一轮；会话不存在时静默跳过）
     notifyClaim: async (pid, assignee, task) => {
       await sessionService
-        .sendUserMessage(
-          pid,
-          `u_${assignee}`,
-          `【系统】任务栏有任务待你领取 ${task.id}「${task.title}」` +
-            (task.desc ? `：${task.desc.slice(0, 300)}` : '') +
-            `（委派人：${task.creator}）。请调用 task_claim 领取并开工；` +
-            '完成后必须调用 task_update(state=done, note=一句话完成总结)，并在回复里给用户一段完成总结' +
-            '（做了什么/产出文件/验证结果/遗留）。若暂时不能接，请用 task_update 置 blocked 并说明原因。',
-          { system: true },
-        )
+        .sendUserMessage(pid, `u_${assignee}`, taskClaimNotice(task), { system: true })
         .catch(() => undefined)
     },
     // 完成/受阻/终止 → 通知委派人安排后续（creator=user 时由任务栏/前端提示，不唤醒 Agent）
     notifyDelegator: async (pid, task, event, by) => {
       if (task.creator === 'user' || task.creator === task.assignee) return
-      const zh = event === 'done' ? '已完成' : event === 'blocked' ? '受阻' : '已终止'
-      const note = task.resultNote?.trim()
       await sessionService
-        .sendUserMessage(
-          pid,
-          `u_${task.creator}`,
-          `【系统】你委派的任务 ${task.id}「${task.title}」${zh}（受派人 ${by}）。` +
-            (note ? `\n受派人总结：${note.slice(0, 500)}` : '') +
-            '\n请据此安排后续：验收产出、派发下一步任务，或发起会议对齐。',
-          { system: true },
-        )
+        .sendUserMessage(pid, `u_${task.creator}`, taskDelegatorNotice({ task, event, by }), {
+          system: true,
+        })
         .catch(() => undefined)
     },
     // D17-① done/terminated 前结算未结算 code 改动 → code artifact
@@ -646,34 +644,6 @@ export function composeServices(config: PlatformConfig, customRoleDir?: string):
     fileOwners,
     previewSystemPrompt,
   }
-}
-
-/**
- * 散会回注文本（2026-09-12）：会议关闭后写回每个参会者 user 会话的系统消息。
- * 内容 = 会议纪要 + 该角色入会时被搁置（作废）的提问/审批清单 + "据此继续推进任务"的指令。
- * 角色看到它就会被唤醒续跑一轮，带着会议结论继续做（用户选择的"自动续跑"）。
- */
-function meetingWrapUpText(meetingId: string, minutes: string, shed: ShedRecord[]): string {
-  const droppedQ = shed.flatMap((s) => s.questions)
-  const droppedA = shed.flatMap((s) => s.approvals)
-  const lines = [
-    `【会议结论】会议 ${meetingId} 已结束，纪要如下：`,
-    minutes,
-    '',
-  ]
-  if (droppedQ.length || droppedA.length) {
-    lines.push('【入会时被搁置的事项】你开会前正在等用户处理，现已被搁置（提问作废、审批作废）：')
-    for (const q of droppedQ) lines.push(`- 询问用户「${q.question}」（提问 ${q.id}，已作废）`)
-    for (const a of droppedA) lines.push(`- 待批操作「${a.summary}」（审批 ${a.id}，已作废）`)
-    lines.push('这些事项**不会再有用户答复**：请结合上面的会议结论重新判断，不要等待原答复。')
-  }
-  lines.push(
-    '',
-    '请据此**继续推进你手上的任务**：若会议结论已覆盖原疑问，直接按结论执行；' +
-      '若仍需用户拍板，重新用 ask_user 提问（可带上会议结论作为背景）；' +
-      '若任务状态有变化，用 task_update 上报。',
-  )
-  return lines.join('\n')
 }
 
 /** 组装 ToolEnv（路径根 + 项目策略）供工具执行/审批续跑使用。 */

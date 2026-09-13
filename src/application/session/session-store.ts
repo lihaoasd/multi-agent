@@ -2,12 +2,9 @@
  * 会话存储：meta.json + log.jsonl 的读写与恢复。
  * data-storage.md §4：meta 单 JSON、log append-only JSONL（先盘后推，事件模型 seq/turn/kind）。
  */
-import { dirname, join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { nowIso } from '../../infra/util/id.js'
-import { atomicWriteJson, readJson } from '../../infra/file-store/fs-utils.js'
+import { nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 import type {
   MeetingSessionState,
   SessionLogEvent,
@@ -54,7 +51,7 @@ export class SessionStore {
   /** 每会话写入串行队列：并发追加（回合/审批/产出物投影）不重号、meta 不回退。 */
   private readonly writeLocks = new Map<string, Promise<unknown>>()
 
-  constructor(private readonly projectsRoot: string) {}
+  constructor(private readonly store: ProjectStore) {}
 
   private lockKey(projectId: string, sessionId: string): string {
     return `${projectId}:${sessionId}`
@@ -75,26 +72,24 @@ export class SessionStore {
     }
   }
 
-  private runtimeDir(projectId: string): string {
-    return join(this.projectsRoot, projectId)
+  /** 会话 meta 的项目相对路径。 */
+  private metaRel(sessionId: string): string {
+    return `sessions/${sessionId}.meta.json`
   }
 
-  private metaFile(projectId: string, sessionId: string): string {
-    return join(this.runtimeDir(projectId), 'sessions', `${sessionId}.meta.json`)
-  }
-
-  private logFile(projectId: string, sessionId: string): string {
-    return join(this.runtimeDir(projectId), 'sessions', `${sessionId}.log.jsonl`)
+  /** 会话日志的项目相对路径。 */
+  private logRel(sessionId: string): string {
+    return `sessions/${sessionId}.log.jsonl`
   }
 
   async readMeta(projectId: string, sessionId: string): Promise<SessionMeta> {
-    const meta = await readJson<SessionMeta>(this.metaFile(projectId, sessionId))
+    const meta = await this.tryReadMeta(projectId, sessionId)
     if (!meta) throw new AppError(ErrorCodes.NOT_FOUND, `会话不存在: ${sessionId}`)
     return meta
   }
 
   async tryReadMeta(projectId: string, sessionId: string): Promise<SessionMeta | null> {
-    return readJson<SessionMeta>(this.metaFile(projectId, sessionId))
+    return this.store.readJson<SessionMeta>(projectId, this.metaRel(sessionId))
   }
 
   /**
@@ -111,36 +106,14 @@ export class SessionStore {
   }
 
   private async writeMetaUnlocked(meta: SessionMeta): Promise<void> {
-    const file = this.metaFile(meta.projectId, meta.id)
-    await fs.mkdir(dirname(file), { recursive: true })
-    await atomicWriteJson(file, meta)
-  }
-
-  /** 创建 user 会话 meta 骨架（幂等；已存在则直接返回）。供团队/向导使用。 */
-  async ensureUserMeta(
-    projectId: string,
-    instanceId: string,
-    agentName: string,
-  ): Promise<SessionMeta> {
-    const sessionId = `u_${instanceId}`
-    const existing = await this.tryReadMeta(projectId, sessionId)
-    if (existing) return existing
-    const meta = buildUserSessionMeta(projectId, instanceId, agentName)
-    await fs.mkdir(join(this.runtimeDir(projectId), 'sessions'), { recursive: true })
-    await atomicWriteJson(this.metaFile(projectId, sessionId), meta)
-    return meta
+    await this.store.writeJson(meta.projectId, this.metaRel(meta.id), meta)
   }
 
   async listSessionIds(projectId: string): Promise<string[]> {
-    const dir = join(this.runtimeDir(projectId), 'sessions')
-    try {
-      const names = await fs.readdir(dir)
-      return names
-        .filter((n) => n.endsWith('.meta.json'))
-        .map((n) => n.slice(0, -'.meta.json'.length))
-    } catch {
-      return []
-    }
+    const names = await this.store.list(projectId, 'sessions')
+    return names
+      .filter((n) => n.endsWith('.meta.json'))
+      .map((n) => n.slice(0, -'.meta.json'.length))
   }
 
   /**
@@ -163,11 +136,7 @@ export class SessionStore {
         ts: nowIso(),
         sessionId: meta.id,
       }
-      await fs.appendFile(
-        this.logFile(meta.projectId, meta.id),
-        JSON.stringify(full) + '\n',
-        'utf8',
-      )
+      await this.store.append(meta.projectId, this.logRel(meta.id), full)
       Object.assign(base, { lastSeq: seq, updatedAt: full.ts })
       Object.assign(meta, base)
       // meta 投影写失败不阻断（重启对账）；已在锁内 → 用不加锁版本，避免自锁
@@ -197,36 +166,7 @@ export class SessionStore {
 
   /** 容错逐行读 log（坏行跳过，data-storage §9）。 */
   private async readLogLines(projectId: string, sessionId: string): Promise<SessionLogEvent[]> {
-    const file = this.logFile(projectId, sessionId)
-    let raw: string
-    try {
-      raw = await fs.readFile(file, 'utf8')
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw err
-    }
-    const out: SessionLogEvent[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as SessionLogEvent)
-      } catch {
-        // 坏行跳过（损坏容错），M3 记 error 事件
-      }
-    }
-    return out
-  }
-
-  /** 重建：meta.lastSeq 与 log 尾部对齐（缺失日志/meta 的恢复兜底）。 */
-  async reconcileLastSeq(meta: SessionMeta): Promise<SessionMeta> {
-    const all = await this.readLogLines(meta.projectId, meta.id)
-    const maxSeq = all.length > 0 ? all[all.length - 1]!.seq : 0
-    if (maxSeq !== meta.lastSeq) {
-      const next = { ...meta, lastSeq: Math.max(maxSeq, meta.lastSeq) }
-      await this.writeMeta(next)
-      return next
-    }
-    return meta
+    return this.store.readAll<SessionLogEvent>(projectId, this.logRel(sessionId))
   }
 }
 

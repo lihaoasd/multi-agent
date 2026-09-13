@@ -1,30 +1,18 @@
 /**
  * 文件存储地基：原子写 / 路径边界。
  * 规则对齐 data-storage.md §1：原子写=临时文件+rename；路径边界=所有对外引用先校验再解析。
+ *
+ * 路径边界判定的**权威定义在 domain**（`domain/rules/path-boundary.ts`），此处 re-export 保持
+ * 既有调用方不变（P2：原先定义在这里，导致 domain 反向依赖 infra）。
  */
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promises as fs } from 'node:fs'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
+import { ensureInside, isPathInside } from '../../domain/rules/path-boundary.js'
 
-/** 判断 target 是否位于 root 内（或等于 root）。两者均需为绝对路径。 */
-export function isPathInside(root: string, target: string): boolean {
-  const rel = relative(resolve(root), resolve(target))
-  return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))
-}
-
-/**
- * 将候选路径约束在 root 之内；越界抛 ERR_FORBIDDEN_PATH。
- * root 可为文件或目录。用于 file-store 一切写路径，防止目录穿越/越界写。
- */
-export function ensureInside(root: string, candidate: string, what = 'path'): string {
-  const absRoot = resolve(root)
-  const absTarget = resolve(candidate)
-  if (!isPathInside(absRoot, absTarget)) {
-    throw new AppError(ErrorCodes.FORBIDDEN_PATH, `路径越界：${what} 不在允许范围内 (${absTarget})`)
-  }
-  return absTarget
-}
+// 路径边界判定的权威定义已归位 domain（P2）；此处 re-export，既有调用方无需改动。
+export { ensureInside, isPathInside }
 
 /** 原子写文本文件：写临时文件 → rename（Windows 上目标被并发读时 rename 可能 EPERM/EBUSY，短暂重试）。 */
 export async function atomicWriteFile(filePath: string, data: string | Uint8Array): Promise<void> {

@@ -4,12 +4,11 @@
  * 角色被拉进会议时，它手头"等待你处理"的提问与待批审批会被**作废**（卡片消失、角色得以入会）。
  * 但那些事项不能凭空蒸发：散会后要把「会议结论 + 被作废的事项」回注给该角色，
  * 让它带着会议上下文继续推进任务。本文件就是这份"搁置清单"的落盘依据（纯文件、可重建）。
+ *
+ * 重构 P1（2026-09-14）：持久化改走 `ProjectStore` 门面（`infra/store`），本文件不再直接触碰 fs。
  */
-import { join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
-import { genId, nowIso } from '../../infra/util/id.js'
-import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import { genId, nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 
 export interface ShedRecord {
   id: string
@@ -24,30 +23,13 @@ export interface ShedRecord {
   approvals: Array<{ id: string; summary: string }>
 }
 
-export class MeetingShedStore {
-  constructor(private readonly projectsRoot: string) {}
+const FILE = 'meeting-shed.jsonl'
 
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'meeting-shed.jsonl')
-  }
+export class MeetingShedStore {
+  constructor(private readonly store: ProjectStore) {}
 
   private async readAll(projectId: string): Promise<ShedRecord[]> {
-    let raw: string
-    try {
-      raw = await fs.readFile(this.file(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: ShedRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as ShedRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<ShedRecord>(projectId, FILE)
   }
 
   /** 追加一条搁置记录（同一角色重复入会时保留多条，回注按会议取）。 */
@@ -68,10 +50,7 @@ export class MeetingShedStore {
       questions: input.questions,
       approvals: input.approvals,
     }
-    const all = await this.readAll(input.projectId)
-    all.push(rec)
-    await fs.mkdir(join(this.projectsRoot, input.projectId), { recursive: true })
-    await atomicWriteFile(this.file(input.projectId), all.map((x) => JSON.stringify(x)).join('\n') + '\n')
+    await this.store.mutate<ShedRecord>(input.projectId, FILE, (all) => [...all, rec])
     return rec
   }
 

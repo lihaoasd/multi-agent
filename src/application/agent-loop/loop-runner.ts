@@ -15,7 +15,7 @@ import type { OccupancyStore } from '../dispatcher/occupancy-store.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 import type { ChatMessage, ChatToolCall, ToolSchema } from '../../infra/model/provider.js'
 import type { ToolResult } from '../../infra/tools/executor.js'
-import type { AgentRuntimeState } from '../runtime-state.js'
+import type { AgentRuntimeState } from '../../domain/fsm/agent-state.js'
 import {
   buildSystemPrompt,
   isDispatchEligible,
@@ -112,30 +112,19 @@ export interface AgentLoopRunnerOptions {
   toolRuntime?: ToolRuntimeHook
 }
 
-/** 思考/推理文本落盘上限（超长截断，防 log 膨胀） */
-const MAX_REASONING_CHARS = 20000
-/** 工具结果回注模型的上限 */
-const MAX_TOOL_RESULT_CHARS = 8000
-/** 收尾回合只暴露的收尾三件套工具（不再开新工作）。 */
-const CLOSURE_TOOLS = new Set(['task_update', 'task_claim', 'artifact_submit', 'ask_user'])
-/** 收尾回合的提示（步数用尽/模型空手停下/检测到空转时注入，确保任务状态与用户总结不会丢） */
-const WRAPUP_PROMPT =
-  '【平台】现在进入**收尾**：不要开始新工作。请立刻完成两件事：' +
-  '① 若你有进行中的任务且本轮已完成，调用 task_update（taskId 可省略，state=done，note=一句话完成总结）；' +
-  '② 用一段话给出**面向用户的完成总结**：做了什么、产出文件（工作目录相对路径）、验证结果、遗留问题与建议。'
-/** 无进展保护：同一工具+入参+结果连续重复这么多次 → 判定空转并收尾（无限轮时的安全阀） */
-const REPEAT_STALL_LIMIT = 3
-/**
- * 角色在「等待你处理」期间被唤醒时返回的占位事件：本回合**没有开工**（不占 occupancy、不调模型），
- * 唤醒消息已落盘，等用户答复后由下一回合带着它继续。回执调用方不使用该返回值。
- */
-const SKIPPED_TURN: SessionLogEvent = {
-  seq: 0,
-  ts: new Date(0).toISOString(),
-  sessionId: '',
-  kind: 'turn_end',
-  payload: { skipped: 'waiting_user' },
-}
+/** 常量与纯工具已抽到 ./loop-helpers.ts（P3g，2026-09-14） */
+import {
+  CLOSURE_TOOLS,
+  MAX_REASONING_CHARS,
+  REPEAT_STALL_LIMIT,
+  SKIPPED_TURN,
+  WRAPUP_PROMPT,
+  cut,
+} from './loop-helpers.js'
+import { streamStep } from './step-streamer.js'
+import { execToolCalls } from './tool-exec.js'
+import { buildTurnEndReminders } from './turn-reminders.js'
+import { buildHistory } from './history-builder.js'
 
 export class AgentLoopRunner {
   constructor(private readonly opts: AgentLoopRunnerOptions) {}
@@ -483,6 +472,7 @@ export class AgentLoopRunner {
   }
 
   /** 单步模型流：累积正文/思考/工具调用，并实时推 chunk（返回后由调用方落盘）。 */
+  /** 单步模型流（实现见 ./step-streamer.ts）：累积正文/思考/工具调用并实时推送。 */
   private async streamStep(
     ctx: TurnContext,
     convo: ChatMessage[],
@@ -494,46 +484,22 @@ export class AgentLoopRunner {
     calls: Map<number, { id?: string; name?: string; args: string }>
     finishReason?: string
   }> {
-    let stepText = ''
-    let stepReasoning = ''
-    let finishReason: string | undefined
-    const calls = new Map<number, { id?: string; name?: string; args: string }>()
-    for await (const item of this.opts.gateway.streamChat({
+    return streamStep({
+      gateway: this.opts.gateway,
+      bus: this.opts.bus,
+      projectId: ctx.projectId,
+      sessionId: ctx.sessionId,
+      turnId,
+      sender: ctx.member.instanceId,
       providerId: ctx.member.model,
       messages: convo,
-      tools: tools.length ? tools : undefined,
-    })) {
-      if (item.finishReason) finishReason = item.finishReason
-      if (item.content) {
-        stepText += item.content
-        this.opts.bus.emitChunk(ctx.projectId, ctx.sessionId, {
-          turnId,
-          delta: item.content,
-          sender: ctx.member.instanceId,
-        })
-      }
-      if (item.reasoning) {
-        stepReasoning += item.reasoning
-        this.opts.bus.emitThoughtChunk(ctx.projectId, ctx.sessionId, {
-          turnId,
-          delta: item.reasoning,
-          sender: ctx.member.instanceId,
-        })
-      }
-      if (item.toolCall) {
-        const cur = calls.get(item.toolCall.index) ?? { args: '' }
-        if (item.toolCall.id) cur.id = item.toolCall.id
-        if (item.toolCall.name) cur.name = item.toolCall.name
-        if (item.toolCall.argumentsDelta) cur.args += item.toolCall.argumentsDelta
-        calls.set(item.toolCall.index, cur)
-      }
-    }
-    return { stepText, stepReasoning, calls, finishReason }
+      tools,
+    })
   }
 
   /**
-   * 执行一步里的工具调用（审计 + 审批桥 + 结果回注），并登记调用过的工具名。
-   * 同时做**无进展检测**：同一「工具+入参+结果」连续重复 REPEAT_STALL_LIMIT 次 → 返回 stalled（由调用方收尾）。
+   * 执行一步里的工具调用（实现见 ./tool-exec.ts）。
+   * 该模块含三件产品语义：审批阻塞、挂起语义、无进展（空转）检测。
    */
   private async execToolCalls(
     ctx: TurnContext,
@@ -550,93 +516,16 @@ export class AgentLoopRunner {
     /** 有工具要求挂起（ask_user）→ 调用方立即结束本回合 */
     suspended: boolean
   }> {
-    const toolCalls: ChatToolCall[] = []
-    const toolMessages: ChatMessage[] = []
-    let stalled = false
-    let suspended = false
-    for (const [index, cur] of ordered) {
-      // 同一步里若模型并发给了多个 ask_user：第一个挂起后**不再执行后续调用**
-      // （否则会多出 "已有待回答的问题" 的失败行，用户看到像是报了两次错）
-      if (suspended) break
-      const name = cur.name ?? ''
-      const id = cur.id ?? `call_${String(turn)}_${index}`
-      toolCalls.push({ id, name, arguments: cur.args || '{}' })
-      calledTools.add(name)
-      const args = parseToolArgs(cur.args)
-      await this.appendAudit(ctx, meta, 'tool_call', {
-        callId: id,
-        tool: name,
-        input: summarizeValue(args),
-      })
-      let result: ToolResult
-      if (!args) {
-        result = { ok: false, code: ErrorCodes.VALIDATION, reason: '工具参数不是合法 JSON' }
-      } else {
-        try {
-          result = await this.opts.toolRuntime!.exec(ctx, sessionType, name, args)
-        } catch (e) {
-          result = {
-            ok: false,
-            code: e instanceof AppError ? e.code : ErrorCodes.INTERNAL,
-            reason: String(e instanceof Error ? e.message : e),
-          }
-        }
-      }
-      if (
-        !result.ok &&
-        result.code === 'CMD_APPROVAL_REQUIRED' &&
-        this.opts.toolRuntime?.requestApproval
-      ) {
-        const approvalId = await this.opts.toolRuntime
-          .requestApproval(ctx, name, args ?? {}, result)
-          .catch(() => null)
-        if (approvalId) {
-          // **审批是阻塞式的**（2026-09-12）：提交审批后本回合立即结束，角色进入「等待你处理」；
-          // 用户批准/拒绝后由 API 层把结果回注会话并唤醒角色继续（不再"边等边干"）。
-          result = {
-            ok: false,
-            code: 'APPROVAL_PENDING',
-            reason:
-              `已提交审批 ${approvalId}，**本轮到此结束**：你现在在等用户批准这个动作。` +
-              '不要重复申请、也不要改用其他方式绕过；用户批准后平台会执行并把结果回给你，然后你继续。',
-            approvalId,
-          }
-        }
-      }
-      await this.appendAudit(ctx, meta, 'tool_result', {
-        callId: id,
-        tool: name,
-        ...(result.ok
-          ? { ok: true, summary: cut(String(result.summary ?? ''), 500) }
-          : {
-              ok: false,
-              code: result.code,
-              reason: cut(result.reason, 300),
-              ...(result.approvalId ? { approvalId: result.approvalId } : {}),
-            }),
-      })
-      // 无进展检测：同工具 + 同入参 + 同结果 → 计数；出现新签名则清空旧计数（要求"连续"重复）
-      if (repeatCounts) {
-        const sig = `${name}|${cur.args || '{}'}|${JSON.stringify(result).slice(0, 300)}`
-        for (const key of [...repeatCounts.keys()]) if (key !== sig) repeatCounts.delete(key)
-        const n = (repeatCounts.get(sig) ?? 0) + 1
-        repeatCounts.set(sig, n)
-        if (n >= REPEAT_STALL_LIMIT) stalled = true
-      }
-      toolMessages.push({
-        role: 'tool',
-        toolCallId: id,
-        content: cut(JSON.stringify(result), MAX_TOOL_RESULT_CHARS),
-      })
-      // 挂起类：ask_user（等待用户决策）与审批待批（等待用户批准）都结束本回合
-      if (
-        (result.ok && result.suspend === true) ||
-        (!result.ok && result.code === 'APPROVAL_PENDING')
-      ) {
-        suspended = true
-      }
-    }
-    return { toolCalls, toolMessages, stalled, suspended }
+    return execToolCalls(
+      {
+        exec: (c, st, name, args) => this.opts.toolRuntime!.exec(c, st, name, args),
+        requestApproval: this.opts.toolRuntime?.requestApproval
+          ? (c, name, args, result) => this.opts.toolRuntime!.requestApproval!(c, name, args, result)
+          : undefined,
+        appendAudit: (c, m, kind, payload) => this.appendAudit(c, m, kind, payload),
+      },
+      { ctx, meta, turn, ordered, sessionType, calledTools, repeatCounts },
+    )
   }
 
   /**
@@ -693,34 +582,20 @@ export class AgentLoopRunner {
     /** 因提问挂起（等待用户决策）→ 不催任务状态 */
     suspendedForUser = false,
   ): Promise<void> {
-    if (toolCallCount === 0) return
     if (suspendedForUser) return
     const freshActive =
       (await this.opts.toolRuntime?.activeTask?.(ctx).catch(() => null)) ?? activeTask
     const freshPending =
       (await this.opts.toolRuntime?.pendingTasks?.(ctx).catch(() => null)) ?? pendingTasks
-    const reported = calledTools.has('task_update')
-    const notes: string[] = []
-    if (!reported && freshActive) {
-      notes.push(
-        `【系统】任务 ${freshActive.id}「${freshActive.title}」仍为进行中。若本轮已完成，` +
-          '请调用 task_update(state=done, note=一句话完成总结) 上报——平台会更新任务栏并通知委派人；' +
-          '若仍在进行，可忽略本提示。',
-      )
-    }
-    if (!reported && !calledTools.has('task_claim') && freshPending.length) {
-      const first = freshPending[0]!
-      notes.push(
-        `【系统】任务栏上还有待你领取的任务 ${first.id}「${first.title}」。` +
-          '如果你已经做完了这件事，请先 task_claim 领取，再 task_update(state=done, note=完成总结)。',
-      )
-    }
-    if (!replied) {
-      notes.push(
-        '【系统】本轮只执行了工具、没有输出任何正文与总结。请补一条面向用户的完成总结' +
-          '（做了什么、产出文件、验证结果、遗留），并在任务完成时用 task_update(state=done, note=总结) 上报。',
-      )
-    }
+    // 文案构建是纯函数（./turn-reminders.ts）；本方法只负责取数、判断与落盘
+    const notes = buildTurnEndReminders({
+      toolCallCount,
+      suspendedForUser,
+      freshActive,
+      freshPending,
+      calledTools,
+      replied,
+    })
     if (!notes.length) return
     const evt = await this.opts.store.appendEvent(meta, {
       kind: 'message',
@@ -800,76 +675,17 @@ export class AgentLoopRunner {
     return max + 1
   }
 
+  /** 会话历史构建（实现见 ./history-builder.ts）：日志窗口 → 发给模型的对话消息。 */
   private async buildHistory(ctx: TurnContext): Promise<ChatMessage[]> {
     const window = await this.opts.store.readTail(
       ctx.projectId,
       ctx.sessionId,
       this.opts.windowSize ?? 60,
     )
-    // 会议/多角色场景：**别人的发言也要看到**（否则会议里互相听不见，主持人会说"没能读到成员发言"）
-    const otherSpeakers = new Set(
-      window
-        .filter(
-          (e) => e.kind === 'message' && e.role === 'agent' && e.sender !== ctx.member.instanceId,
-        )
-        .map((e) => String(e.sender)),
-    )
-    const names = new Map<string, string>()
-    for (const m of ctx.assignableMembers ?? []) names.set(m.instanceId, m.displayName)
-    const out: ChatMessage[] = []
-    for (const e of window) {
-      if (e.kind !== 'message') continue
-      if (e.role === 'user' && e.content) {
-        // 平台注入的系统消息（会议开场/邀请/唤醒）标注来源，避免被当成用户本人的话
-        const system = e.payload?.system === true || e.sender === 'system'
-        out.push({ role: 'user', content: system ? `【系统】${e.content.text}` : e.content.text })
-      } else if (e.role === 'agent' && e.content) {
-        if (e.sender === ctx.member.instanceId) {
-          out.push({ role: 'assistant', content: e.content.text })
-        } else if (otherSpeakers.has(String(e.sender))) {
-          const who = names.get(String(e.sender)) ?? String(e.sender)
-          out.push({
-            role: 'user',
-            content: `【${who}（${String(e.sender)}）发言】${e.content.text}`,
-          })
-        }
-      }
-    }
-    return out
+    return buildHistory({
+      window,
+      selfInstanceId: ctx.member.instanceId,
+      assignableMembers: ctx.assignableMembers ?? [],
+    })
   }
-}
-
-/** 解析工具参数 JSON；非法返回 null（调用方回注错误）。 */
-function parseToolArgs(raw: string): Record<string, unknown> | null {
-  const text = raw.trim()
-  if (!text) return {}
-  try {
-    const parsed = JSON.parse(text) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null
-  } catch {
-    return null
-  }
-}
-
-/** 截断文本（可选自定义后缀）。 */
-function cut(text: string, max: number, suffix = '…(已截断)'): string {
-  return text.length > max ? text.slice(0, max) + suffix : text
-}
-
-/** 审计用参数摘要：长字符串截断，避免把整份文件写进事件。 */
-function summarizeValue(value: unknown): unknown {
-  if (typeof value === 'string') {
-    return value.length > 200 ? `${value.slice(0, 200)}…(${value.length}字)` : value
-  }
-  if (Array.isArray(value)) return value.slice(0, 20).map(summarizeValue)
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = summarizeValue(v)
-    }
-    return out
-  }
-  return value
 }

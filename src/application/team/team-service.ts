@@ -4,7 +4,7 @@
  * 实例更新与停用/启用（D14-9）。实例数组存于 project.json，由 ProjectService 串行落盘。
  */
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { nowIso } from '../../infra/util/id.js'
+import { nowIso } from '../../shared/util/id.js'
 import type { TeamMemberConfig } from '../../shared/types/project.js'
 import type { RoleTemplate } from '../../shared/types/role.js'
 import { ProjectService } from '../project/project-service.js'

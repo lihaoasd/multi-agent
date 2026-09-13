@@ -2,7 +2,7 @@
  * Mock 模型 Provider：无网络、确定性，供开发/测试/首次体验（deploy.md §1）。
  * 行为：把最后一条 user 消息回显包装为"角色应答"风格文本，逐段流式输出。
  */
-import type { ChatMessage, ModelProvider } from './provider.js'
+import type { ModelProvider } from './provider.js'
 
 export function createMockProvider(id = 'mock'): ModelProvider {
   return {
@@ -32,11 +32,4 @@ function extractRoleName(systemPrompt: string): string {
 
 function trim(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s
-}
-
-export function asChatText(messages: ChatMessage[]): string {
-  return messages
-    .map((m) => `${m.role}: ${m.content}`)
-    .join('\n')
-    .slice(0, 2000)
 }

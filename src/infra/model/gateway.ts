@@ -88,18 +88,4 @@ export class ModelGateway {
       yield chunk
     }
   }
-
-  /** 非流式便利：聚合正文（忽略 reasoning）为完整文本。 */
-  async complete(opts: {
-    providerId?: string
-    messages: ChatMessage[]
-    tools?: ToolSchema[]
-    signal?: AbortSignal
-  }): Promise<string> {
-    let out = ''
-    for await (const item of this.streamChat(opts)) {
-      if (item.content) out += item.content
-    }
-    return out
-  }
 }

@@ -3,7 +3,7 @@
  * MVP 规则式（Mock 阶段无模型文本）：窗口消息 → 抽取要点文本 → 写 summary 事件并登记 meta.summaryRefs。
  * 真实模型生成留 M8；事件/字段契约与设计一致（digest 结构化字段）。
  */
-import { nowIso } from '../../infra/util/id.js'
+import { nowIso } from '../../shared/util/id.js'
 import type { SessionMeta, SessionLogEvent } from '../../shared/types/session.js'
 import { SessionStore } from '../session/session-store.js'
 

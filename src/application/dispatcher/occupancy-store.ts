@@ -1,10 +1,10 @@
 /**
  * dispatcher occupancy（D18-④ 单工运行期占用唯一真相）。
  * 落盘 runtime.state.json；user 会话 suspended 由它派生；启动时按 log/meta 重建基线后以本文件为准。
+ *
+ * 重构 P1（2026-09-14）：持久化改走 `ProjectStore` 门面（`infra/store`），本文件不再直接触碰 fs。
  */
-import { join } from 'node:path'
-
-import { atomicWriteJson, readJson } from '../../infra/file-store/fs-utils.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 
 export type AgentActivityType = 'working' | 'meeting' | 'waiting'
 
@@ -20,15 +20,13 @@ export interface RuntimeState {
   occupancy: Record<string, AgentOccupancy>
 }
 
-export class OccupancyStore {
-  constructor(private readonly projectsRoot: string) {}
+const FILE = 'runtime.state.json'
 
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'runtime.state.json')
-  }
+export class OccupancyStore {
+  constructor(private readonly store: ProjectStore) {}
 
   async read(projectId: string): Promise<RuntimeState> {
-    const st = await readJson<RuntimeState>(this.file(projectId))
+    const st = await this.store.readJson<RuntimeState>(projectId, FILE)
     if (st && st.schemaVersion === 1 && st.occupancy) return st
     return { schemaVersion: 1, occupancy: {} }
   }
@@ -41,7 +39,7 @@ export class OccupancyStore {
   ): Promise<void> {
     const st = await this.read(projectId)
     st.occupancy[instanceId] = { sessionId, activity, since: new Date().toISOString() }
-    await atomicWriteJson(this.file(projectId), st)
+    await this.store.writeJson(projectId, FILE, st)
   }
 
   /**
@@ -53,7 +51,7 @@ export class OccupancyStore {
     const cur = st.occupancy[instanceId]
     if (sessionId !== undefined && cur && cur.sessionId !== sessionId) return
     delete st.occupancy[instanceId]
-    await atomicWriteJson(this.file(projectId), st)
+    await this.store.writeJson(projectId, FILE, st)
   }
 
   async get(projectId: string, instanceId: string): Promise<AgentOccupancy | null> {

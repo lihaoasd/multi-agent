@@ -4,16 +4,19 @@
  * 回退=按前序版本快照恢复（内容依据=versionDir，H2，不依赖 git）。
  * doc 门（docSubmitApproval=true）→ 先落 submitted+审批（detail 存文件清单+首文件预览），approved 后 finalize 写入。
  */
-import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
-import { createHash } from 'node:crypto'
+import { join, resolve } from 'node:path'
 
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { genId, nowIso } from '../../infra/util/id.js'
-import { atomicWriteFile, ensureInside } from '../../infra/file-store/fs-utils.js'
+import { genId, nowIso } from '../../shared/util/id.js'
+import { ensureInside } from '../../domain/rules/path-boundary.js'
+import type { FileOps } from '../../ports/file-ops.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 import { resolveVirtual } from '../../domain/rules/path-resolver.js'
 import { ApprovalService } from '../approval/approval-service.js'
 import type { SessionLogEvent } from '../../shared/types/session.js'
+
+/** manifest 的项目相对路径。 */
+const MANIFEST_FILE = 'artifacts.jsonl'
 
 export const ARTIFACT_TYPES = ['doc', 'code', 'config', 'test', 'deploy'] as const
 export type ArtifactType = (typeof ARTIFACT_TYPES)[number]
@@ -70,7 +73,8 @@ interface Ctx {
 
 export class ArtifactService {
   constructor(
-    private readonly projectsRoot: string,
+    private readonly store: ProjectStore,
+    private readonly files: FileOps,
     private readonly approvals: ApprovalService,
     private readonly appendLog: (
       projectId: string,
@@ -79,27 +83,8 @@ export class ArtifactService {
     ) => Promise<SessionLogEvent>,
   ) {}
 
-  private manifestFile(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'artifacts.jsonl')
-  }
-
   async readAll(projectId: string): Promise<ArtifactRecord[]> {
-    let raw: string
-    try {
-      raw = await readFile(this.manifestFile(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: ArtifactRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as ArtifactRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<ArtifactRecord>(projectId, MANIFEST_FILE)
   }
 
   async list(projectId: string): Promise<ArtifactRecord[]> {
@@ -114,13 +99,12 @@ export class ArtifactService {
 
   /** 由项目 runtime 目录组装提交上下文（读 project.json 的 workdir）。 */
   private async ctxOf(projectId: string, actor: string): Promise<Ctx> {
-    const proj = await readFile(join(this.projectsRoot, projectId, 'project.json'), 'utf8').then(
-      (s) => JSON.parse(s) as { workdir: string },
-    )
+    const proj = await this.store.readJson<{ workdir: string }>(projectId, 'project.json')
+    if (!proj) throw new AppError(ErrorCodes.NOT_FOUND, `项目不存在: ${projectId}`)
     return {
       workdirRoot: proj.workdir,
-      wsRoot: join(this.projectsRoot, projectId, 'workspaces', actor),
-      runtimeRoot: join(this.projectsRoot, projectId),
+      wsRoot: this.store.abs(projectId, `workspaces/${actor}`),
+      runtimeRoot: this.store.abs(projectId),
     }
   }
 
@@ -143,7 +127,7 @@ export class ArtifactService {
     if (input.files.length === 0) throw new AppError(ErrorCodes.VALIDATION, 'files 不能为空')
     const ctx = await this.ctxOf(input.projectId, input.actor)
     for (const f of input.files) {
-      await readFile(this.resolveSource(f, ctx)).catch(() => {
+      await this.files.read(this.resolveSource(f, ctx)).catch(() => {
         throw new AppError(ErrorCodes.NOT_FOUND, `源文件不存在: ${f.fromWsRel ?? f.relPath}`)
       })
     }
@@ -174,7 +158,8 @@ export class ArtifactService {
 
     if (input.needsApproval) {
       // 只读预览（D16-⑥）：首文件前 4000 字符
-      const preview = await readFile(this.resolveSource(input.files[0]!, ctx), 'utf8')
+      const preview = await this.files
+        .readText(this.resolveSource(input.files[0]!, ctx))
         .then((s) => s.slice(0, 4000))
         .catch(() => '(无法预览：非文本或不存在)')
       const approval = await this.approvals.request({
@@ -228,8 +213,8 @@ export class ArtifactService {
 
   /** 拷贝到 workdir + 快照到 versionDir + 计算明细。 */
   private async execute(rec: ArtifactRecord, files: SubmitFile[], ctx: Ctx): Promise<void> {
-    const vdir = join(this.projectsRoot, rec.projectId, rec.versionDir)
-    await mkdir(vdir, { recursive: true })
+    const vdir = this.store.abs(rec.projectId, rec.versionDir)
+    await this.files.ensureDir(vdir)
     const entries: ArtifactFileEntry[] = []
     let add = 0
     for (const f of files) {
@@ -237,21 +222,19 @@ export class ArtifactService {
       const dest = ensureInside(ctx.workdirRoot, join(ctx.workdirRoot, f.relPath), 'relPath')
       // 2026-09-12 取消私有区后，产出物本来就在项目目录里（src === dest）→ 只做快照，不做拷贝
       if (resolve(src) !== resolve(dest)) {
-        await mkdir(dirname(dest), { recursive: true })
-        await copyFile(src, dest)
+        await this.files.copy(src, dest)
       }
       const snap = ensureInside(vdir, join(vdir, f.relPath))
-      await mkdir(dirname(snap), { recursive: true })
-      await copyFile(src, snap)
-      const content = await readFile(src)
+      await this.files.copy(src, snap)
+      const { hash, size } = await this.files.fingerprint(src)
       entries.push({
         relPath: f.relPath,
         fromWsRel: f.fromWsRel,
         action: 'add',
-        hash: createHash('sha256').update(content).digest('hex'),
-        size: content.length,
+        hash,
+        size,
       })
-      add += content.length
+      add += size
     }
     rec.files = entries
     rec.diffSummary = { add, del: 0 }
@@ -267,22 +250,12 @@ export class ArtifactService {
     const target = toVersion ?? Math.max(1, rec.version - 1)
     const ctx = await this.ctxOf(projectId, rec.submitter)
     for (const f of rec.files) {
-      const snap = join(
-        this.projectsRoot,
-        projectId,
-        'artifact-versions',
-        artifactId,
-        `v${target}`,
-        f.relPath,
-      )
-      try {
-        await readFile(snap)
-      } catch {
+      const snap = this.store.abs(projectId, `artifact-versions/${artifactId}/v${target}/${f.relPath}`)
+      if (!(await this.files.exists(snap))) {
         throw new AppError(ErrorCodes.NOT_FOUND, `版本 ${target} 无快照: ${f.relPath}`)
       }
       const dest = ensureInside(ctx.workdirRoot, join(ctx.workdirRoot, f.relPath), 'relPath')
-      await mkdir(dirname(dest), { recursive: true })
-      await copyFile(snap, dest)
+      await this.files.copy(snap, dest)
     }
     const reverted = { ...rec, state: 'reverted' as const, ts: nowIso() }
     await this.saveManifest(reverted)
@@ -296,22 +269,18 @@ export class ArtifactService {
   }
 
   private async saveManifest(rec: ArtifactRecord): Promise<void> {
-    const all = await this.readAll(rec.projectId)
-    const idx = all.findIndex((a) => a.id === rec.id)
-    if (idx >= 0) all[idx] = rec
-    else all.push(rec)
-    await mkdir(join(this.projectsRoot, rec.projectId), { recursive: true })
-    await atomicWriteFile(
-      this.manifestFile(rec.projectId),
-      all.map((a) => JSON.stringify(a)).join('\n') + '\n',
-    )
+    await this.store.mutate<ArtifactRecord>(rec.projectId, MANIFEST_FILE, (all) => {
+      const idx = all.findIndex((a) => a.id === rec.id)
+      if (idx >= 0) all[idx] = rec
+      else all.push(rec)
+      return all
+    })
   }
 
   /** 列出版本目录（供回退选择）。 */
   async listVersions(projectId: string, artifactId: string): Promise<number[]> {
     await this.get(projectId, artifactId)
-    const dir = join(this.projectsRoot, projectId, 'artifact-versions', artifactId)
-    const names = await readdir(dir).catch(() => [])
+    const names = await this.store.list(projectId, `artifact-versions/${artifactId}`)
     return names
       .map((n) => Number(n.replace(/^v/, '')))
       .filter((n) => Number.isFinite(n))
@@ -345,24 +314,18 @@ export class ArtifactService {
       )
       .sort((a, b) => b.version - a.version)[0]
     const version = (prev?.version ?? 0) + 1
-    const vdir = join(this.projectsRoot, opts.projectId, 'artifact-versions', id, `v${version}`)
+    const vdir = this.store.abs(opts.projectId, `artifact-versions/${id}/v${version}`)
     const files: ArtifactRecord['files'] = []
     let add = 0
-    await mkdir(vdir, { recursive: true })
+    await this.files.ensureDir(vdir)
     for (const rel of relPaths) {
       const src = ensureInside(ctx.workdirRoot, join(ctx.workdirRoot, rel), 'relPath')
-      const content = await readFile(src).catch(() => null)
-      if (content === null) continue
+      if (!(await this.files.exists(src))) continue
       const snap = ensureInside(vdir, join(vdir, rel))
-      await mkdir(dirname(snap), { recursive: true })
-      await copyFile(src, snap)
-      files.push({
-        relPath: rel,
-        action: 'add',
-        hash: createHash('sha256').update(content).digest('hex'),
-        size: content.length,
-      })
-      add += content.length
+      await this.files.copy(src, snap)
+      const { hash, size } = await this.files.fingerprint(src)
+      files.push({ relPath: rel, action: 'add', hash, size })
+      add += size
     }
     if (files.length === 0) {
       await opts.edits.clear(opts.projectId, opts.taskId)

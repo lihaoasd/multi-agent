@@ -12,23 +12,27 @@
  *    槽位释放只**通知**下一位待领取任务，不再自动开工。
  *  - 状态变更经 EventBus 推 `task.updated`，任务栏实时刷新。
  */
-import { join } from 'node:path'
-import { promises as fs } from 'node:fs'
-
 import { AppError, ErrorCodes } from '../../shared/errors.js'
-import { genId, nowIso } from '../../infra/util/id.js'
-import { KeyedLock } from '../../infra/util/keyed-lock.js'
-import { atomicWriteFile } from '../../infra/file-store/fs-utils.js'
+import { genId, nowIso } from '../../shared/util/id.js'
+import type { ProjectStore } from '../../infra/store/project-store.js'
 import type { EventBus } from '../../infra/bus/event-bus.js'
+import {
+  findBusySlot,
+  findDuplicateTask,
+  isCoordinator,
+  normalizeTaskTitle,
+  pickDefaultClaim,
+  taskTransitionError,
+  TASK_STATES,
+  type TaskState,
+} from '../../domain/fsm/task-state.js'
 
-export const TASK_STATES = ['todo', 'in_progress', 'done', 'blocked', 'terminated'] as const
-export type TaskState = (typeof TASK_STATES)[number]
+/** 任务记录文件的项目相对路径。 */
+const FILE = 'tasks.jsonl'
 
-/** 协调者角色前缀（甲模式下可干预任务；与 loop-runner DISPATCH_ROLES 一致），实例 id 形如 pm_1。 */
-const COORDINATOR_PREFIXES = ['pm', 'product']
-
-/** 参与同题去重的活跃状态（终态任务不拦：做完可再派）。 */
-const ACTIVE_STATES: TaskState[] = ['todo', 'in_progress']
+// 状态常量与判定规则已归位 domain（P2）；这里 re-export 保持既有调用方（工具层/前端契约）不变。
+export { TASK_STATES }
+export type { TaskState }
 
 export interface TaskRecord {
   id: string
@@ -86,37 +90,15 @@ export interface TaskServiceHooks {
 }
 
 export class TaskService {
-  /** 单项目串行锁（异步 promise 链）：保护 tasks.jsonl 的读-改-写。 */
-  private readonly lock = new KeyedLock()
-
   constructor(
-    private readonly projectsRoot: string,
+    private readonly store: ProjectStore,
     /** assignByAgent=false（乙模式）：非 user 创建一律拒绝 */
     private readonly assignByAgent: boolean,
     private readonly hooks: TaskServiceHooks = {},
   ) {}
 
-  private file(projectId: string): string {
-    return join(this.projectsRoot, projectId, 'tasks.jsonl')
-  }
-
   private async readAll(projectId: string): Promise<TaskRecord[]> {
-    let raw: string
-    try {
-      raw = await fs.readFile(this.file(projectId), 'utf8')
-    } catch {
-      return []
-    }
-    const out: TaskRecord[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as TaskRecord)
-      } catch {
-        // 坏行跳过
-      }
-    }
-    return out
+    return this.store.readAll<TaskRecord>(projectId, FILE)
   }
 
   async list(
@@ -154,15 +136,14 @@ export class TaskService {
       )
     }
     // 去重检查 + 写入必须在同一把锁内，否则两位管理者并发发布会各写一次（其中一条会被覆盖丢失）
-    const result = await this.withLock(input.projectId, async () => {
+    let result!: CreateTaskResult
+    await this.store.mutate<TaskRecord>(input.projectId, FILE, (all) => {
       if (!opts.force) {
-        const dup = (await this.readAll(input.projectId)).find(
-          (t) =>
-            t.assignee === input.assignee &&
-            ACTIVE_STATES.includes(t.state) &&
-            normalizeTitle(t.title) === normalizeTitle(title),
-        )
-        if (dup) return { task: dup, duplicate: true } satisfies CreateTaskResult
+        const dup = findDuplicateTask(all, input.assignee, title)
+        if (dup) {
+          result = { task: dup, duplicate: true }
+          return null // 命中重复：不写盘
+        }
       }
       const ts = nowIso()
       const rec: TaskRecord = {
@@ -177,8 +158,9 @@ export class TaskService {
         ts,
         updatedAt: ts,
       }
-      await this.rewrite(input.projectId, rec)
-      return { task: rec, duplicate: false } satisfies CreateTaskResult
+      all.push(rec)
+      result = { task: rec, duplicate: false }
+      return all
     })
     if (result.duplicate) return result
     // 锁外：广播 + 通知受派人领取
@@ -194,16 +176,15 @@ export class TaskService {
    * 检查与写入在同一把锁内（防并发重复领取/丢写）。
    */
   async claim(projectId: string, actor: string, taskId?: string): Promise<TaskRecord> {
-    const result = await this.withLock(projectId, async () => {
-      const all = await this.readAll(projectId)
+    let changed = false
+    let next!: TaskRecord
+    await this.store.mutate<TaskRecord>(projectId, FILE, (all) => {
       let rec: TaskRecord | undefined
       if (taskId) {
         rec = all.find((x) => x.id === taskId)
         if (!rec) throw new AppError(ErrorCodes.NOT_FOUND, `任务不存在: ${taskId}`)
       } else {
-        rec = all
-          .filter((t) => t.assignee === actor && t.state === 'todo')
-          .sort((a, b) => (a.ts < b.ts ? -1 : 1))[0]
+        rec = pickDefaultClaim(all, actor)
         if (!rec) {
           throw new AppError(
             ErrorCodes.NOT_FOUND,
@@ -217,26 +198,33 @@ export class TaskService {
           `任务 ${rec.id} 指派给 ${rec.assignee}，你（${actor}）不能领取；如需调整请让委派人（${rec.creator}）重新安排`,
         )
       }
-      if (rec.state === 'in_progress') return { next: rec, changed: false } // 幂等：已领取
+      // 幂等：已领取 → 不改写、不广播
+      if (rec.state === 'in_progress') {
+        next = rec
+        return null
+      }
       if (rec.state !== 'todo' && rec.state !== 'blocked') {
         throw new AppError(
           ErrorCodes.CONFLICT,
           `任务 ${rec.id} 当前状态 ${rec.state}，无法领取（已终态或未发布）`,
         )
       }
-      const occupied = all.find((t) => t.id !== rec.id && t.assignee === actor && t.state === 'in_progress')
+      const occupied = findBusySlot(all, actor, rec.id)
       if (occupied) {
         throw new AppError(
           ErrorCodes.CONFLICT,
           `你已有进行中任务 ${occupied.id}「${occupied.title}」；请先完成/终止它，或让委派人调整优先级`,
         )
       }
-      const next: TaskRecord = { ...rec, state: 'in_progress', updatedAt: nowIso() }
-      await this.rewrite(projectId, next)
-      return { next, changed: true }
+      const updated: TaskRecord = { ...rec, state: 'in_progress', updatedAt: nowIso() }
+      const idx = all.findIndex((x) => x.id === rec.id)
+      all[idx] = updated
+      next = updated
+      changed = true
+      return all
     })
-    if (result.changed) this.emitUpdated(projectId, result.next, 'claimed')
-    return result.next
+    if (changed) this.emitUpdated(projectId, next, 'claimed')
+    return next
   }
 
   /**
@@ -252,17 +240,17 @@ export class TaskService {
     /** 受派人/用户的说明：done=完成总结，blocked=受阻原因（落库并随通知带给委派人） */
     note?: string,
   ): Promise<TaskRecord> {
-    const next = await this.withLock(projectId, async () => {
-      const all = await this.readAll(projectId)
-      const cur = all.find((x) => x.id === taskId)
-      if (!cur) throw new AppError(ErrorCodes.NOT_FOUND, `任务不存在: ${taskId}`)
+    let cur!: TaskRecord
+    let updated!: TaskRecord
+    await this.store.mutate<TaskRecord>(projectId, FILE, (all) => {
+      const found = all.find((x) => x.id === taskId)
+      if (!found) throw new AppError(ErrorCodes.NOT_FOUND, `任务不存在: ${taskId}`)
+      cur = found
       this.assertActor(cur, actor)
       this.assertTransition(cur, to)
       // 置 in_progress 前检查单工槽位（每 Agent 至多 1）
       if (to === 'in_progress') {
-        const occupied = all.find(
-          (t) => t.id !== taskId && t.assignee === cur.assignee && t.state === 'in_progress',
-        )
+        const occupied = findBusySlot(all, cur.assignee, taskId)
         if (occupied) {
           throw new AppError(
             ErrorCodes.CONFLICT,
@@ -271,24 +259,26 @@ export class TaskService {
         }
       }
       const trimmed = note?.trim()
-      const updated: TaskRecord = {
+      updated = {
         ...cur,
         state: to,
         updatedAt: nowIso(),
         ...(trimmed ? { resultNote: trimmed } : {}),
       }
-      await this.rewrite(projectId, updated)
-      return { cur, next: updated }
+      const idx = all.findIndex((x) => x.id === taskId)
+      all[idx] = updated
+      return all
     })
-    const { cur } = next
+    const next = { cur, next: updated }
+    const { cur: prev } = next
     this.emitUpdated(projectId, next.next, to)
     // D17-① 置终态前先结算未结算 code 改动（结算内部会回调 linkArtifact，故必须在锁外）
     if ((to === 'done' || to === 'terminated') && this.hooks.settle) {
-      await this.hooks.settle(projectId, cur).catch(() => undefined)
+      await this.hooks.settle(projectId, prev).catch(() => undefined)
     }
     // 激活即唤醒（D18-③）：只有"别人替我开工"才需要唤醒；受派者自己置位说明它已在干活
-    if (to === 'in_progress' && actor !== cur.assignee) {
-      await this.hooks.notifyClaim?.(projectId, cur.assignee, next.next).catch(() => undefined)
+    if (to === 'in_progress' && actor !== prev.assignee) {
+      await this.hooks.notifyClaim?.(projectId, prev.assignee, next.next).catch(() => undefined)
     }
     // 完成/受阻/终止 → 通知委派人安排后续
     if (to === 'done' || to === 'blocked' || to === 'terminated') {
@@ -298,7 +288,7 @@ export class TaskService {
     }
     // 槽位释放 → 通知下一位待领取任务的受派人（不再自动开工）
     if (to === 'done' || to === 'terminated') {
-      await this.notifyNextQueued(projectId, cur.assignee)
+      await this.notifyNextQueued(projectId, prev.assignee)
     }
     return next.next
   }
@@ -323,36 +313,24 @@ export class TaskService {
     )
   }
 
+  /** 流转合法性判定（规则在 `domain/fsm/task-state.ts`；错误码与文案保持既有口径）。 */
   private assertTransition(cur: TaskRecord, to: TaskState): void {
-    const from = cur.state
-    const allow: Record<string, TaskState[]> = {
-      todo: ['in_progress', 'blocked'],
-      blocked: ['todo', 'in_progress'],
-      in_progress: ['done', 'terminated', 'blocked'],
-      done: [],
-      terminated: [],
-    }
-    const ok = (allow[from] ?? []).includes(to)
-    if (!ok) {
-      throw new AppError(
-        ErrorCodes.CONFLICT,
-        `非法状态流转 ${from} → ${to}（允许: ${(allow[from] ?? []).join(', ') || '无（终态）'}）`,
-      )
-    }
+    const err = taskTransitionError(cur.state, to)
+    if (err) throw new AppError(ErrorCodes.CONFLICT, err)
   }
 
   /** 记 artifact 关联（code 聚合产物结算时由 ArtifactService 调用）。 */
   async linkArtifact(projectId: string, taskId: string, artifactId: string): Promise<void> {
-    await this.withLock(projectId, async () => {
-      const all = await this.readAll(projectId)
-      const cur = all.find((x) => x.id === taskId)
-      if (!cur) return
-      const next = {
+    await this.store.mutate<TaskRecord>(projectId, FILE, (all) => {
+      const idx = all.findIndex((x) => x.id === taskId)
+      if (idx < 0) return null
+      const cur = all[idx]!
+      all[idx] = {
         ...cur,
         artifactIds: [...new Set([...cur.artifactIds, artifactId])],
         updatedAt: nowIso(),
       }
-      await this.rewrite(projectId, next)
+      return all
     })
   }
 
@@ -370,31 +348,11 @@ export class TaskService {
   }
 
   /**
-   * 单项目串行锁：tasks.jsonl 是「读全量 → 改 → 覆盖写」，并发发布会互相覆盖丢任务。
-   * 只包住读改写，不跨越通知/结算（那些会触发 Agent 回合，持锁会自锁）。
+   * 锁语义（重构 P1）：`tasks.jsonl` 是「读全量 → 改 → 覆盖写」，并发发布会互相覆盖丢任务。
+   * 迁移前用本文件自建的 `KeyedLock`；现在由注入的门面 `mutate` 承担（锁归实现层），
+   * 且它仍只包住读改写、不跨越通知/结算（那些会触发 Agent 回合，持锁会自锁）。
    */
-  private async withLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-    return this.lock.run(projectId, fn)
-  }
-
-  private async rewrite(projectId: string, rec: TaskRecord): Promise<void> {
-    const all = await this.readAll(projectId)
-    const idx = all.findIndex((x) => x.id === rec.id)
-    if (idx >= 0) all[idx] = rec
-    else all.push(rec)
-    await fs.mkdir(join(this.projectsRoot, projectId), { recursive: true })
-    await atomicWriteFile(this.file(projectId), all.map((x) => JSON.stringify(x)).join('\n') + '\n')
-  }
 }
 
-/** 实例 id 是否为协调者角色（pm_1 / product_1）。 */
-function isCoordinator(actor: string): boolean {
-  return COORDINATOR_PREFIXES.some((p) => actor === p || actor.startsWith(`${p}_`))
-}
-
-/** 标题归一化（去空白/标点/符号 + 小写）：用于跨管理者同题去重。 */
-export function normalizeTitle(title: string): string {
-  return title
-    .replace(/[\s\p{P}\p{S}]/gu, '')
-    .toLowerCase()
-}
+/** 标题归一化：规则在 domain（`normalizeTaskTitle`）；此处 re-export 保持既有调用方不变。 */
+export const normalizeTitle = normalizeTaskTitle
