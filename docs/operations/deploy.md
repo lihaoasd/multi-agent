@@ -48,10 +48,7 @@ APPROVAL__HIGH_RISK_COMMANDS=true              # 全局审批策略（项目级�
 APPROVAL__DOC_SUBMIT_APPROVAL=true             # 保留字段：artifact_submit 免审批直落，当前不读
 APPROVAL__CODE_SUBMIT_APPROVAL=false
 SANDBOX__NETWORK=online                        # online | offline（sandbox.md §6）
-TASK__ASSIGN_BY_AGENT=true                     # 甲模式：产品/项目经理可直接派活
-MEETING__ENABLED=true                          # 会议总开关；false 时会议工具/REST/入口全关
-MEETING__AUTO_START=true                       # 全员报到后自动开场
-MEETING__AUTO_CLOSE=true                       # 讨论链走完自动结束并生成纪要
+TASK__ASSIGN_BY_AGENT=true                     # 【已废弃 2026-09-14】Agent 委派为默认且受编排图出边约束（D19-④/⑤），该开关不再读取
 SEARCH__ENGINE=keyword
 
 CONTEXT__SESSION__RAW_WINDOW=60                # 上下文窗口默认值（agent-runtime §4）
@@ -72,7 +69,7 @@ CONTEXT__TOOL__RESULT_MAX_CHARS=12000
 | 数据 | 位置 | 备份方式 |
 | --- | --- | --- |
 | 平台配置 | `.env`（模板 `.env.example`） | `.env` 不入库（含密钥）；改动项请同步到 `.env.example` |
-| 运行时项目（会话/记忆/工作区/manifest/审批） | `data/projects/<projectId>/` | **拷贝该文件夹**；UI 提供导出 zip |
+| 运行时项目（会话/记忆/manifest/任务/询问/审批/编排图） | `data/projects/<projectId>/` | **拷贝该文件夹**；UI 提供导出 zip |
 | 用户自定义角色 | `data/roles/` | 拷贝 |
 | 项目产出物 | 用户选定工作目录（不在 data/） | 用户自行纳入自己的版本管理 |
 

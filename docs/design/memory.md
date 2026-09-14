@@ -8,14 +8,14 @@
 | 层 | 载体 | 写入者 | 用途 | 生命周期 |
 | --- | --- | --- | --- | --- |
 | L1 会话全量日志 | `<sessionId>.log.jsonl`（append-only） | 运行时（每个事件） | 上下文构建、恢复、检索、审计、回放 | 随项目保存 |
-| L2 摘要 | 会话内 `summary` 事件 + 记忆条目 type=meeting_summary | 摘要引擎 | 快速恢复上下文、会议纪要 | 滚动更新 |
+| L2 摘要 | 会话内 `summary` 事件 | 摘要引擎 | 快速恢复上下文 | 滚动更新 |
 | L3 长期条目 | `memories/global.jsonl`（项目共享）与 `memories/<instanceId>.jsonl`（角色个人） | Agent 显式写入 + 引擎自动提取 | 跨会话稳定知识 | active/superseded |
 
 **可见性规则（重要）**：
 - 全局记忆：所有 Agent 可读；写入受限（见 §4）。
-- 角色记忆：仅该 Agent 可读写；其他 Agent 不可见（除非把内容提交为产出物/在会议中说出）。
-- 会话日志：用户-角色会话日志仅会话双方可读；会议日志对全体参会者可读；用户对所有会话可见。
-- **检索同等可见（D18-②）**：`session_search`/`memory_search` 与直接读共用同一可见性判定（domain/rules 纯函数）；Agent 可检索集 = 本人 user 会话 ∪ 已参与会议日志 ∪ 项目全局记忆 ∪ 本人角色记忆；**用户侧检索不受限**。
+- 角色记忆：仅该 Agent 可读写；其他 Agent 不可见（除非把内容提交为产出物）。
+- 会话日志：用户-角色会话日志仅会话双方可读；用户对所有会话可见。
+- **检索同等可见（D18-②）**：`session_search`/`memory_search` 与直接读共用同一可见性判定（domain/rules 纯函数）；Agent 可检索集 = 本人 user 会话 ∪ 项目全局记忆 ∪ 本人角色记忆；**用户侧检索不受限**。
 - 用户（老板）通过 UI 可浏览/检索全部（他有平台管理权），含 L1 原始事件时间线查看（D14-④）。
 
 ## 2. L1 会话全量日志（真相源）
@@ -26,34 +26,28 @@
   - 上下文窗口：摘要 + 最近 N 条原文（默认值见 agent-runtime §4 contextLimits）；
   - 中断恢复：以 `turn_end` 缺失判定未完成回合，重放会话尾部（§6）；
   - 检索：关键词命中 → 经 seq+segments 定位注入片段（data-storage §10）；
-  - 审计与会议纪要：事件流即素材；
+  - 审计：事件流即素材；
   - **UI 原始事件时间线**（D14-④）：按会话浏览全部 kind 事件（thought/tool 默认折叠可展开），与检索/摘要视图并存。
 
 ## 3. L2 摘要
 
 ### 3.1 滚动摘要（user 会话/长会话）
 
-- 触发：每累计 ~40 条事件 或 关键事件（artifact 提交、approval、meeting 结束、Agent 主动 `memory.checkpoint`）。
+- 触发：每累计 ~40 条事件 或 关键事件（artifact 提交、approval、Agent 主动 `memory.checkpoint`）。
 - 摘要引擎基于窗口内文本（模型生成，可用角色相同/更省模型）产出**结构化摘要**，写为 log 的 `summary` 事件：
   `{ seq, kind: "summary", summaryId, ofSeq: start, toSeq: end, digest: {主题, 目标, 已定结论, 关键信息, 待办, 相关产出物, 未决问题} }`
   字段与 data-storage §4.1 meta `summaryRefs[]` 完全一致（M10 定稿）。
 - 恢复/上下文构建时：摘要段替代原始窗口（保留最近 M 条原文），显著省 token 且不丢要点。
 
-### 3.2 会议纪要（meeting 结束）
-
-- 引擎读取全量会议日志 → 产出纪要（meetings.md §7 的结构）。
-- 纪要写为记忆条目 type=meeting_summary 分发：全体参与者个人记忆 + 全局记忆；会议 log 尾部留 `summary` 事件。
-- 纪要视为 **L1 的派生视图**：可基于 closed 会话全量日志幂等重新生成（D18-⑤b，close 先置 minutesPending，见 meetings.md §7）。
-
 ## 4. L3 长期条目
 
-条目 schema（data-storage.md §5）：`type ∈ fact|decision|preference|commitment|requirement|progress|meeting_summary|artifact_index`。
+条目 schema（data-storage.md §5）：`type ∈ fact|decision|preference|commitment|requirement|progress|artifact_index`。
 
 - **角色个人**：该 Agent 可随时 `memory_append`（如"用户偏好中文注释/方案 A 被否"、项目相关个人承诺）。
 - **全局**：默认**追加受限**：
-  - 决策条目：由用户拍板或会议结论登记（引擎自动）；
-  - 需求/里程碑：PM 会议结论或用户确认后写入；
-  - Agent 想写入全局须先提交为产出物或在会议中提出（防止记忆污染）。全局条目标注 source（会话/产出物），可追溯。
+  - 决策条目：由用户显式确认后登记（引擎自动）；
+  - 需求/里程碑：PM 协调结论或用户确认后写入；
+  - Agent 想写入全局须先提交为产出物（防止记忆污染）。全局条目标注 source（会话/产出物），可追溯。
 - **回收（compaction）**：被 superseded 的条目保留原行 + `state=superseded, supersededBy=…`，不物理删除；条目超量时按类型分层保留最近 N 条 active。
 - 用户可在 UI 查看/钉住/删除（P1，FR-19）；MVP 至少可看。
 
@@ -70,11 +64,10 @@
 | 中断 | 恢复 |
 | --- | --- |
 | 浏览器关闭/刷新 | 无服务端影响；重连后按会话窗口重新拉取。流式进行中被中断：半截文本不入 log（D14-⑦），UI 标记"（未完成）"，用户可"补全/重说"（服务进程仍在时临时文本可从内存续补；进程已重启则半截文本丢失，"补全"=服务端以已落盘上下文让模型续写，锚点用 turnId，B5）。 |
-| 服务进程退出 | 重启扫描 session meta：meeting queued/proposed/open/blocked_waiting_user 均按 meta 恢复（D16-①）；user 会话 suspended 由 dispatcher **occupancy 重建**（D18-④，meta 仅缓存）；进行中回合以缺 `turn_end` 判定未完成，Agent 下次触发时先读摘要+尾部窗口，主动汇报中断点（**不自动续跑**，D16-③）。 |
+| 服务进程退出 | 重启扫描 session meta：user 会话 suspended 由 dispatcher **occupancy 重建**（D18-④，meta 仅缓存）；进行中回合以缺 `turn_end` 判定未完成，Agent 下次触发时先读摘要+尾部窗口，主动汇报中断点（**不自动续跑**，D16-③）。 |
 | 审批等待跨重启（M1） | approval 保持 `pending`，用户决定落盘但**不回放执行**；Agent 恢复时读取决定自行决定重试（重试需重新审批）。见 agent-runtime §7。 |
 | Agent 回合中途重启 | 以 `turn_start/turn_end` 判定完整性（事件模型已含，H3）；恢复后 Agent 说明已做到哪、续做或重做（给用户选择）。 |
 | plan-execute 断点 | 计划与进度在 `plan` 事件中持久化（data-storage §4.2）；重启后**不自动续跑**（D16-③）：缺 turn_end=未完成，用户下一条消息触发 Agent 读最近 plan 事件 + 摘要尾部，汇报中断点或选择续做。 |
-| 长会议跨重启 | 会议 meta.state（queued/proposed/open/blocked_waiting_user/closed）全量持久化（D16-①）；重启后槽位与排队关系重建，主持人/成员回到对应状态并提示用户继续。 |
 
 恢复工具：`resume_context(scope)` = 摘要 + 最近窗口 + 相关 L3 条目 + 未完成任务，用于"回到现场"。
 

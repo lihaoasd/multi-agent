@@ -6,7 +6,7 @@
 ## 1. 存储原则
 
 1. **无数据库**：全部为文件系统上的 JSON / JSONL / Markdown / YAML。任何"库"都是目录。
-2. **项目即文件夹**：一个项目 = `运行时项目文件夹`（配置/会话日志/记忆/工作区/manifest，**可拷贝迁移**）+ `用户工作目录`（产出物，用户自己管理/备份）。
+2. **项目即文件夹**：一个项目 = `运行时项目文件夹`（配置/会话日志/记忆/manifest，**可拷贝迁移**）+ `用户工作目录`（产出物，用户自己管理/备份）。
 3. **日志 append-only**：会话日志只追加，不原地修改；摘要/长期条目可标记 superseded，不物理删（导出清理除外）。
 4. **原子写**：单进程内所有写经 file-store：写临时文件 → rename；防半截文件。
 5. **索引可再生**：关键词倒排索引是派生数据，损坏/缺失可一键重建。
@@ -31,18 +31,18 @@ agent_haness/                    # 平台仓库
 │           ├── memories/
 │           │   ├── global.jsonl              # 项目全局记忆条目
 │           │   └── <roleInstanceId>.jsonl    # 角色长期记忆条目（个人）
-│           ├── workspaces/
-│           │   └── <roleInstanceId>/         # 私有工作区（2026-09-12 已取消：无写工具，目录保留仅为兼容）
 │           ├── artifacts.jsonl               # 产出物 manifest（相对工作目录路径）
 │           ├── file-owners.jsonl             # 产出物署名与归属：relPath → owner/ownerName/时间/次数（§6.1）
 │           ├── artifact-versions/            # 版本内容存储：doc=提交快照 / code=补丁（回退依据，见 §6）
+│           ├── orchestration.json            # 项目编排图（节点=Agent 实例，边=可委派关系；D19-④，见 orchestration.md）
 │           ├── tasks.jsonl                   # 任务委派记录
+│           ├── questions.jsonl               # 询问记录（Agent→用户提问与答复；D19-⑦）
 │           ├── approvals.jsonl               # 审批队列与历史（含审计）
 │           └── search-index/                 # 派生倒排索引（可重建）
 └── (用户选定) <workdir>/       # 【项目工作目录 = 唯一产出地】：所有角色产出在此落地并署名
 ```
 
-> 会话日志/记忆/工作区 **永不在工作目录内**（prd 明确要求）；工作目录只被「受控编辑（workdir_edit）/产出物登记/受控命令」触碰。
+> 会话日志/记忆 **永不在工作目录内**（prd 明确要求）；工作目录只被「受控编辑（workdir_edit）/产出物登记/受控命令」触碰；目录内容**全员可读**，写入按文件归属校验（workspaces-artifacts §2）。
 
 ## 3. project.json（schema 示例）
 
@@ -80,16 +80,13 @@ agent_haness/                    # 平台仓库
 ```jsonc
 {
   "id": "u_pm_1",                       // 用户-角色 1:1 会话：u_<instanceId>（项目内唯一、长期）
-  "type": "user | meeting",
+  "type": "user",                        // 会话类型（MVP 仅用户↔角色 1:1）
   "projectId": "p_…",
   "participants": { "user": true, "agents": ["pm_1"] },
-  "host": null,                          // meeting 时为主持人 instanceId
-  "state": "…",                          // 状态按会话类型分列（D16-①/②）：
-                                         //   user:  active | suspended(Agent 被会议占用/重启恢复期挂起) | archived(实例停用只读,D14-9；重新启用回 active)
-                                         //   meeting: queued(排队不占槽) | proposed(邀请征询占槽) | open | blocked_waiting_user | closed
+  "state": "…",                          // 状态枚举（D16-②）：
+                                         //   active | suspended(重启恢复期挂起) | archived(实例停用只读,D14-9；重新启用回 active)
                                          // waiting_user 已废弃：审批等待只体现在 Agent 状态 waiting，会话仍 active（见 agent-runtime §2）；
                                          // user suspended 为 occupancy 派生投影（D18-④），可留缓存、非真相源
-  "agenda": null,                        // meeting 议程（meetings.md）
   "createdAt": "…", "updatedAt": "…", "closedAt": null,
   "lastSeq": 1234,                       // log 已写到的最大序号（跨轮转仍单调，见 §9）
   "segments": [ { "file": "<sid>.log.jsonl", "startSeq": 1, "endSeq": 1234 } ],   // 轮转分段表（M3）
@@ -109,7 +106,7 @@ agent_haness/                    # 平台仓库
   "model": "deepseek-chat", "loopStep": "act" }
 ```
 
-> **单一事件规范（D18-⑤d）**：本表 kind 集为规范事件（kind+payload+scope: session/project/agent）的**存储投影**；同一事件同时驱动 WS 推送（api/contract.md §3）、索引/摘要与「需你处理」待办条，实现期以统一事件总线为准，不得另起旁路事件词汇。
+> **单一事件规范（D18-⑤d）**：本表 kind 集为规范事件（kind+payload+scope: session/project/agent）的**存储投影**；同一事件同时驱动 WS 推送（api/contract.md §3）、索引/摘要与前端状态刷新，实现期以统一事件总线为准，不得另起旁路事件词汇。
 
 事件 kind 全集（前端渲染与恢复都依赖它）：
 
@@ -125,7 +122,6 @@ agent_haness/                    # 平台仓库
 | `approval_request` | 审批请求卡片 | approvalId, summary, risk, previewRef?(doc 提交只读预览，D16-⑥) |
 | `approval_result` | 审批结果 | approvalId, decision |
 | `artifact` | 提交/回退产出物 | artifactId, action |
-| `meeting_event` | 会议议程/轮次/阻塞/插话标记 | content（meetings.md） |
 | `state` | agent 状态切换 | state, sessionId |
 | `summary` | 滚动摘要占位（见 memory.md §3） | summaryId, ofSeq, toSeq, digest |
 | `error` | 错误/重试 | errorCode, message |
@@ -138,9 +134,9 @@ agent_haness/                    # 平台仓库
 
 - `memories/global.jsonl`：项目共享长期条目。
 - `memories/<instanceId>.jsonl`：角色个人长期条目。
-- 条目行：`{ id, ts, type: fact|decision|preference|commitment|requirement|progress|meeting_summary|artifact_index,
+- 条目行：`{ id, ts, type: fact|decision|preference|commitment|requirement|progress|artifact_index,
   content, source:{sessionId,seq}, tags:[], refs:[artifactId], state: active|superseded }`
-- 滚动摘要行**属于会话文件**（`summary` kind 事件），总摘要/纪要条目在结束后写入上述记忆文件。
+- 滚动摘要行**属于会话文件**（`summary` kind 事件）；会话总摘要条目在会话归档后写入上述记忆文件。
 
 ## 6. 产出物 manifest（artifacts.jsonl）
 
@@ -161,26 +157,25 @@ agent_haness/                    # 平台仓库
   "summary": "…", "submitter": "pm_1",
   "state": "submitted|approved|rejected|reverted",
   "version": 3,
-  "files": [ { "relPath": "docs/prd.md", "action": "add|modify|delete",
-               "fromWorkspaceRel": "drafts/prd-v3.md", "hash": "sha256…" } ],
+  "files": [ { "relPath": "docs/prd.md", "action": "add|modify|delete", "hash": "sha256…" } ],
   "diffSummary": { "add": 320, "del": 40 },
   "prevVersion": 2, "approvalId": null, "ts": "…" }
 ```
 
-- `relPath` 一律相对**工作目录**；从 workspace 定稿的文档由提交服务拷贝写入。
+- `relPath` 一律相对**工作目录**；文件由角色经 `workdir_edit` 直接写入工作目录后就地登记（无隔离区拷贝步骤）；登记受 `file-owners` 归属校验。
 - **版本内容落盘（H2 定稿，回退的内容依据）**：每次提交/聚合把可回退内容写入运行时项目文件夹 `artifact-versions/<artifactId>/v<n>/`：静态产物(doc/config/deploy 等)=各文件提交时**完整快照**；代码(code)=该版本覆盖的受控编辑**补丁**（每文件 diff）。manifest 每条含 `versionDir` 引用；回退=依前序版本内容反向恢复，不依赖 git（workspaces-artifacts.md §3）。
 - 代码受控编辑按**任务级**自动聚合生成 artifact 记录（D14-⑧；无任务上下文时按回合兜底，见 workspaces-artifacts.md §2.2）；**无审批门时初始 `state`=approved**（B1 口径，与 workspaces-artifacts §4 状态机一致），仅当策略要求审批时才先 `submitted` 待批；manifest 条目含 `taskId`（归属任务，可为 null）。
 
-## 7. 任务（tasks.jsonl）与审批（approvals.jsonl）
+## 7. 任务（tasks.jsonl）、询问（questions.jsonl）与审批（approvals.jsonl）
 
 ```jsonc
-// task（creator：乙模式默认 user（UI 创建，D15；会议纪要转出亦 creator=user，D16-④/D17-⑦）；甲模式开启后可为 pm_1 等 Agent）
+// task（creator：用户经 UI 创建，或**上游 Agent** 沿编排图出边创建（D19-④⑤）；受派者领取后执行）
 { "id": "t_…", "title": "实现登录模块", "desc": "…",
   "creator": "user | pm_1", "assignee": "dev_1",
   "state": "todo|in_progress|done|blocked|terminated", "sessionId": "u_dev_1",
   "artifactIds": [], "ts": "…" }
 // 状态流转（2026-09-12 任务栏）：todo=已发布·待领取 → 受派人 task_claim 领取 → in_progress
-//   → 受派人 task_update 汇报 done/blocked/terminated；用户与委派人(creator)、甲模式协调者可干预。
+//   → 受派人 task_update 汇报 done/blocked/terminated；用户与委派人（creator）可干预。
 // 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/blocked/terminated = 通知委派人安排后续。
 // 状态变化广播 WS task.updated，任务栏面板实时刷新。
 // 撞车去重（2026-09-12）：同 assignee + 归一化标题（去空白/标点+小写）+ 状态∈{todo,in_progress} 视为同一件事，
@@ -195,6 +190,18 @@ agent_haness/                    # 平台仓库
   "actor": "dev_1", "summary": "执行: rm -rf node_modules", "detail": "…(截断)",
   "previewRef": null,   // doc 类提交审批的只读预览引用（文本预览/文件信息，D16-⑥）
   "status": "pending|approved|rejected|expired", "requestedAt": "…", "decidedAt": null }
+
+// question（Agent→用户提问，D19-⑦；提问即 Agent waiting，同一 Agent 至多 1 个 pending）
+{ "id": "q_…", "sessionId": "u_dev_1", "asker": "dev_1",
+  "title": "登录方案选哪个？",
+  "items": [ { "id": "i_1", "text": "…", "options": ["A","B"], "required": true } ],
+  "status": "pending|answered", "answer": { "answers": [ { "itemId": "i_1", "choice": "A" } ], "decidedAt": "…" },
+  "createdAt": "…", "answeredAt": null }
+
+// orchestration（编排图，D19-④；schema 见 orchestration.md §2）
+{ "schemaVersion": 1, "projectId": "p_…", "version": 3,
+  "nodes": [ { "instanceId": "pm_1", "x": 120, "y": 80, "collapsed": false } ],
+  "edges": [ { "id": "e_1", "from": "pm_1", "to": "dev_1", "createdAt": "…" } ] }
 ```
 
 > **双写主从与对账（D18-⑤a）**：approvals/artifacts/tasks 等**业务记录文件先原子写**（成功=事实生效），随后向会话 log 追加对应事件（kind=tool_result/approval_*/artifact/…，审计投影；追加失败记自检告警、不阻断主流程）；启动自检比对 log 尾部并补齐缺失投影。search-index / runtime.state / 会话 meta 标志同理一律视为**可重建投影**，业务状态只以记录文件与 log 事件为准。
@@ -203,8 +210,8 @@ agent_haness/                    # 平台仓库
 
 - 内置：`src/shared/roles/<roleId>.yaml`（随仓库版本，**只读**，升级可覆盖）。
 - 用户自建：`data/roles/<roleId>.yaml`（B12/D16-⑤）：内置模板**只读、不可原地改/删**；需变更时在 UI「基于内置复制新建」（新 roleId）。**不存在"同名文件覆盖内置"路径**。
-- 模板结构：`{ roleId, name, category, description, systemPrompt, defaultModel,
-  defaultLoop:{strategy,params}, tools:[], artifactTypes:[], defaultApprovalRules }`。
+- 模板结构：`{ roleId, name, category, scenario, description, systemPrompt, defaultModel,
+  defaultLoop:{strategy,params}, packages:[], tools:[], artifactTypes:[], defaultApprovalRules }`（`scenario` 与 `packages` 为 2026-09-14 新增，见 agent-templates.md / tool-packages.md）。
 - 项目内实例配置见 §3 team 数组（prompt/model/loop/tools 覆盖模板）；实例创建时**快照**模板默认值（D16-⑤），此后模板增删改不影响既有实例；`roleTemplateId` 仅作溯源（模板被删除时 UI 标「模板已移除」）。
 
 ## 9. 迁移 / 备份 / 损坏恢复

@@ -28,8 +28,7 @@ Agent 看到的文件路径一律是逻辑路径，由平台映射：
 
 | scheme | 含义 | 映射到 | 可写 |
 | --- | --- | --- | --- |
-| `ws://<file>` | 该 Agent 私有工作区 | `<runtime>/projects/<pid>/workspaces/<instanceId>/` | ✅（仅本人） |
-| `workdir://<file>` | 项目工作目录 | 用户选定 workdir 根 | 仅受控通道（tools.md §6） |
+| `workdir://<file>` | 项目工作目录（**全员可读**，写入按归属） | 用户选定 workdir 根 | 仅受控通道（tools.md §6） |
 | `ro://<file>` | 只读平台资源 | 内置模板/公共只读内容 | ❌ |
 | `runtime://` | 运行时项目数据 | 平台独占 | ❌（Agent 一律不可写；会话日志由平台写） |
 
@@ -37,15 +36,15 @@ Agent 看到的文件路径一律是逻辑路径，由平台映射：
 
 ```
 scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(realpath)
-  → 校验最终真实路径仍在「该 Agent 的 ws 根 ∪ 项目 workdir ∪ 允许的 ro 根」之内
+  → 校验最终真实路径仍在「项目 workdir ∪ 允许的 ro 根」之内
   → 通过才交给文件工具；否则拒绝 { ok:false, code: FS_BOUNDARY }
 ```
 
 - 绝对路径输入：先强制转 scheme（落到边界内才接受），不接受 `../` 逃逸或盘符跳转。
 - 符号链接：解析全程跟随并检查每一段，防链接指向 workdir 外。
-- 互不可见：Agent A 无法经 ws:// 读到 Agent B 的工作区；越界尝试按审计记录（不静默）。
-- 例外只读：工作目录与私有区之外的**平台只读资源**（角色模板等）经 ro:// 显式开放，不放开任意路径读取。
-- **工具级可用根（D14-⑩，L0 是底线而非放权）**：L0 允许"本人 ws ∪ workdir ∪ ro"，但各工具可用的根由注册表声明收窄——`fs_*` 仅 workdir+ro://（不含私有区）；本人私有区只能经 `ws_read`（user 会话与会议内均可）；他人私有区一律不可读。
+- **共享与归属**：工作目录内容对**所有角色可读**（不设隔离区）；写入由工具层按 `file-owners` 校验——只能写归属自己或无归属的文件，他人产出物拒改（`ERR_FORBIDDEN`），越界/越权尝试按审计记录（不静默）。
+- 例外只读：工作目录之外的**平台只读资源**（角色模板等）经 ro:// 显式开放，不放开任意路径读取。
+- **工具级可用根（L0 是底线而非放权）**：L0 允许"workdir ∪ ro"，但各工具可用的根由注册表声明收窄——`fs_*` 仅 workdir+ro://（读取全员开放）；写入仅 `workdir`，且另受归属校验（见 workspaces-artifacts §2）。
 
 ## 4. L1 进程执行控制（cmd_run）
 
@@ -58,7 +57,7 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 
 - 优先 `spawn(program, args)` 且 **shell=false**：不给模型可拼接的 shell 字符串入口。
 - Windows 兼容：`npm`/`.bin/*.cmd` 解析为真实可执行（`npm.cmd` 等）再 spawn；不经用户 shell profile；git-bash/全局 shell 不放开。
-- 特殊需要 shell 语义（管道/重定向）的动作：按命令形状白名单特判（如 `git log | head` 拆成查询+截断），不做自由 shell 工具；确需脚本时要求 agent 先在 ws 写好脚本文件再以 `node script.js` 运行（可审计内容）。
+- 特殊需要 shell 语义（管道/重定向）的动作：按命令形状白名单特判（如 `git log | head` 拆成查询+截断），不做自由 shell 工具；确需脚本时要求 agent 先用 `workdir_edit` 在工作目录内写好脚本文件（受控编辑、署名留痕）再以 `node script.js` 运行。
 - `cwd` 必须落在 workdir 内（可子目录）；`env` 仅透传白名单变量（PATH/HOME 等），**不注入密钥/API Key**。**密钥类操作（M14b 定稿）**：涉及密钥的发布/推送/上传命令平台**不自动执行**——prd §8 已排除生产部署自动化，MVP 一律提示用户手动运行；"审批后临时注入密钥并脱敏"留待后续迭代（届时仅限审批通过的单次注入白名单变量、审计脱敏、进程内不留存）。
 
 ### 4.2 进程硬约束
@@ -129,7 +128,7 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 
 | 结果 | code | Agent 应 |
 | --- | --- | --- |
-| 路径越界 | FS_BOUNDARY | 改用合法 ws/workdir 路径 |
+| 路径越界 | FS_BOUNDARY | 改用合法 workdir/ro 路径 |
 | 需审批 | APPROVAL_REQUIRED(→waiting) | 等待用户；说明目的 |
 | 用户拒绝 | APPROVAL_REJECTED | 调整方案或征询替代做法 |
 | 命令超时被杀 | CMD_TIMEOUT | 缩小范围/分批执行/申请更长额度 |
@@ -145,4 +144,4 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 
 - 单元：路径解析（../、盘符、symlink 链、scheme 混用）、危险规则表判定、超时杀进程、env 白名单/密钥不注入。
 - 集成：审批拒绝→回注→Agent 换方案（Mock 剧本）；越界调用被拒并审计；npm install 在 workdir 正常执行且留痕。
-- 验收脚本片段：让 dev Agent `cmd_run` 尝试删除 workdir 根目录 → 弹审批 → 拒绝 → 无任何删除且审计有记录；尝试读 ws:// 其他 Agent 目录 → FS_BOUNDARY。
+- 验收脚本片段：让 dev Agent `cmd_run` 尝试删除 workdir 根目录 → 弹审批 → 拒绝 → 无任何删除且审计有记录；让另一角色尝试改 dev 归属的文件 → `ERR_FORBIDDEN`（点名 owner）；读他人文件正常放行（共享可读）。

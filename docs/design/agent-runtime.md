@@ -18,30 +18,29 @@
 | 执行 | 由 loop 引擎按模板与实例配置驱动 | 不直接操作，通过实例配置影响 |
 
 **内置模板（P0 种子）**：`pm`(项目经理)、`product`(产品)、`architect`(架构)、`ux`(交互)、`ui`(UI)、`dev`(高级开发)、`qa`(测试)、`ops`(运维)。
-MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（如 `pm_1`/`dev_1`）；同角色多实例（两位开发 → dev_1、dev_2，各自独立工作区/记忆/会话）为后续版本迭代。实例可被用户**停用/启用**（`enabled=false` 保留全部数据，D14-9）：停用后 dispatcher 不再为其领活，其 user 会话历史只读，可随时重新启用继续同一会话。
+MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（如 `pm_1`/`dev_1`）；同角色多实例（两位开发 → dev_1、dev_2，各自独立记忆/会话）为后续版本迭代。实例可被用户**停用/启用**（`enabled=false` 保留全部数据，D14-9）：停用后 dispatcher 不再为其领活，其 user 会话历史只读，可随时重新启用继续同一会话。
 
 ## 2. Agent 单工状态机（dispatcher 维护）
 
-状态定义（对齐用户需求：工作中/会议中/等待中 + 空闲）：
+状态定义（对齐用户需求：空闲/工作中/等待中）：
 
 ```
          ┌─────────────────────────────────────────────┐
    idle ─┤  进入个人会话回合(被用户/任务唤醒)  → working  │
-     ▲   │  被拉入会议(散会/退会回 idle)      → meeting   │
-     │   │  回合内等待用户输入/审批            → waiting   │
+     ▲   │  回合内等待用户输入/审批            → waiting   │
      └───┴─────────────────────────────────────────────┘
 ```
-(MVP 为**四态**，D16-②：无 Agent 级 suspended；重启恢复期间以"缺 turn_end=未完成"标记过渡，不设独立状态。) 
+(MVP 为**三态**，D16-②：无 Agent 级 suspended；重启恢复期间以"缺 turn_end=未完成"标记过渡，不设独立状态。) 
 
 不变式（单工，D11）：
-- 任一 Agent 同一时刻**至多一个活动会话**（working/meeting/waiting 均占用）。
-- 进入会议 = 该 Agent 的 user 会话**挂起**（会话显示 suspended——occupancy 派生，D18-④，见 sessions.md §2；Agent 状态为 meeting）。
-- 用户消息在 Agent 忙时入队，Agent 到**可中断点**后处理；界面显示"正在…/会议中/排队中"。
+- 任一 Agent 同一时刻**至多一个活动会话**（working/waiting 均占用）。
+- 用户消息在 Agent 忙时入队，Agent 到**可中断点**后处理；界面显示"正在…/排队中"。
 
-状态持久化：**occupancy 为运行期占用唯一真相（D18-④）**——dispatcher 把 agentId→活动{type,sessionId} 落盘 runtime.state.json，启动时由 session meta/回合与会议状态重建基线，此后以其为准；user 会话 `suspended` 等会话 meta 标志为**派生投影**（可留缓存、不单独作为真相，显示/恢复统一按 occupancy 重算）；log 事件（kind=`state`）为审计真相。重启重建见 §7 与 memory.md §6。
+状态持久化：**occupancy 为运行期占用唯一真相（D18-④）**——dispatcher 把 agentId→活动{type,sessionId} 落盘 runtime.state.json，启动时由 session meta/回合重建基线，此后以其为准；user 会话 `suspended` 等会话 meta 标志为**派生投影**（可留缓存、不单独作为真相，显示/恢复统一按 occupancy 重算）；log 事件（kind=`state`）为审计真相。重启重建见 §7 与 memory.md §6。
 
-> **两级状态映射**：Agent 状态（idle/working/meeting/waiting **四态**，D16-②）由 dispatcher 维护，表示"该 Agent 能否领活"；会话状态**按类型分列**（user: active/suspended/archived；meeting: queued/proposed/open/blocked_waiting_user/closed，D16-①）见 sessions.md。审批等待 = Agent `waiting`，其 user 会话**仍为 active**（用户随时可继续发消息入队），不引入会话级 wait_user 状态（D14 评审定稿）；user 会话 `suspended` 一律由 dispatcher occupancy 派生（D18-④），不单独持久化为真相。
-> **停用实例**：enabled=false 仅是调度开关（不进入上述状态机流转），实例的会话/工作区/记忆全部保留（D14-9）；**忙碌实例停用边界（D16/B6）**：working/meeting 中的实例，停用请求进入"待停用"——dispatcher 不再领新活，当前回合/会议到可中断点或自然结束后生效；waiting（审批等待）中的实例需用户先处理/取消对应审批后再停用。
+> **两级状态映射**：Agent 状态（idle/working/waiting **三态**，D16-②）由 dispatcher 维护，表示"该 Agent 能否领活"；会话状态（user: active/suspended/archived，D16-②）见 sessions.md。审批等待或**询问等待**（等用户答复提问）= Agent `waiting`，其 user 会话**仍为 active**（用户随时可继续发消息入队），不引入会话级 wait_user 状态（D14 评审定稿）；user 会话 `suspended` 一律由 dispatcher occupancy 派生（D18-④），不单独持久化为真相。
+> **停用 / 暂停 / 停止的区别**：`enabled=false`（停用）是管理动作，实例长期退出调度、数据全保留（D14-9）；**暂停**（D19-⑥）是临时运行控制——不再领新任务、当前回合到可中断点挂起，可秒级恢复；**停止**终止该 Agent 当前任务（存在未结算改动先结算为 code artifact 快照，D17-①）。三者都不影响其它 Agent。
+> **停用实例**：enabled=false 仅是调度开关（不进入上述状态机流转），实例的会话/记忆全部保留（D14-9）；**忙碌实例停用边界（D16/B6）**：working 中的实例，停用请求进入"待停用"——dispatcher 不再领新活，当前回合到可中断点或自然结束后生效；waiting（审批等待）中的实例需用户先处理/取消对应审批后再停用。
 
 ## 3. 内置 agent loop（执行模板，D4）
 
@@ -83,7 +82,7 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 6. 回合结束触发记忆维护（memory.md §5 摘要引擎）；
 7. 回到 idle，处理队列中下一条（若存在）。
 
-> 长任务（D16-③/D17-①）：plan-execute 是**单回合多步长跑**——turn_start 开启后连续执行，到"向用户汇报/提交产出"的自然停顿点才写 turn_end；回合内暂停仅三类：命中审批（Agent waiting）、会议抢占（成员入会，到可中断点挂起）、**用户终止任务**（D17-①：显式优先级指令，到当前可中断点打断并回注，停止该任务后续步骤）。恢复均由 dispatcher 在**同一会话内**续跑（plan 事件为断点依据，见下）；**用户普通消息在回合期间只入队、不打断**（可中断点是审批/会议抢占/用户终止使用的优先级闸门，不对普通消息开放）；**跨重启不自动续跑**：缺 turn_end=回合未完成，打开项目/重连时 UI 给出"汇报中断点/续做/忽略"入口（D17-⑤），或由用户下一条消息触发（agent-runtime §7、memory.md §6）。**排队消息恢复（D18-③，与"未完成回合不自动续跑"区分）**：重启后若某 Agent **无活动占用**且其 user 会话存在已入队未处理消息（按 dispatcher per-agent 游标 `lastHandledSeq` 判定），自动补一轮处理或由 UI 强提示，不要求用户再发消息唤醒——这里恢复的是**排队消息处理**，不续跑缺 turn_end 的未完成回合。
+> 长任务（D16-③/D17-①）：plan-execute 是**单回合多步长跑**——turn_start 开启后连续执行，到"向用户汇报/提交产出"的自然停顿点才写 turn_end；回合内暂停仅三类：命中审批（Agent waiting）、**等待用户答复询问（Agent waiting，D19-⑦）**、**用户终止任务**（D17-①：显式优先级指令，到当前可中断点打断并回注，停止该任务后续步骤）。恢复均由 dispatcher 在**同一会话内**续跑（plan 事件为断点依据，见下）；**用户普通消息在回合期间只入队、不打断**（可中断点是审批/用户终止使用的优先级闸门，不对普通消息开放）；**跨重启不自动续跑**：缺 turn_end=回合未完成，打开项目/重连时 UI 给出"汇报中断点/续做/忽略"入口（D17-⑤），或由用户下一条消息触发（agent-runtime §7、memory.md §6）。**排队消息恢复（D18-③，与"未完成回合不自动续跑"区分）**：重启后若某 Agent **无活动占用**且其 user 会话存在已入队未处理消息（按 dispatcher per-agent 游标 `lastHandledSeq` 判定），自动补一轮处理或由 UI 强提示，不要求用户再发消息唤醒——这里恢复的是**排队消息处理**，不续跑缺 turn_end 的未完成回合。
 
 ## 4. 上下文组装（每回合）
 
@@ -113,7 +112,7 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 | `context.search.maxSnippets` | 3 | 检索片段注入上限（每条 ≤600 字） |
 | `context.tool.resultMaxChars` | 12000 | 工具结果注入上限（截尾保留，见 tools.md） |
 
-**任务上下文**（D15/乙模式）：受派 Agent 回合内由 dispatcher 注入其**当前激活任务**（标题/受派者/状态/关联会话），仅用于告知职责与**代码产物按任务聚合的归属锚点**（workspaces-artifacts §2.2）。**激活规则（D16-④ 修订为 D17-①）**：每 Agent 至多 1 个 `in_progress` 任务——已有 in_progress 时**新任务不可置为 in_progress**（UI 置位被拦并提示原因，新任务可先置 `todo` 排队；**无静默自动回退**）；槽位仅由「任务完成（用户确认 done）」或「用户显式**终止**」释放。**激活即唤醒（D18-③）**：任务置 `in_progress` 时 dispatcher 向受派者 user 会话注入一条唤醒消息「请开始执行任务 t_…」，作为确定性开工触发（不依赖用户另行发消息）。**终止语义（D17-①）**：终止入口带确认；存在未结算改动时**先结算为一条 code artifact 快照**（归属落袋、可回退）再置 `terminated`；若 Agent 正在执行该任务，终止到**当前可中断点**生效并回注 Agent「任务已被用户终止」、停止该任务后续计划步骤（未执行步骤作废，不回放）。仅 `in_progress` 任务被注入上下文并充当代码聚合锚点；`todo` 任务与会话内口头指派不入上下文（对应改动按回合兜底，workspaces-artifacts §2.2）；状态流转默认由用户经 UI 驱动，Agent 以会话汇报完成。
+**任务上下文**（D15 → D19-⑤）：受派 Agent 回合内由 dispatcher 注入其**当前激活任务**（标题/受派者/状态/关联会话），仅用于告知职责与**代码产物按任务聚合的归属锚点**（workspaces-artifacts §2.2）。**激活规则（D16-④ 修订为 D17-①）**：每 Agent 至多 1 个 `in_progress` 任务——已有 in_progress 时**新任务不可置为 in_progress**（UI 置位被拦并提示原因，新任务可先置 `todo` 排队；**无静默自动回退**）；槽位仅由「任务完成（用户确认 done）」或「用户显式**终止**」释放。**激活即唤醒（D18-③）**：任务置 `in_progress` 时 dispatcher 向受派者 user 会话注入一条唤醒消息「请开始执行任务 t_…」，作为确定性开工触发（不依赖用户另行发消息）。**终止语义（D17-①）**：终止入口带确认；存在未结算改动时**先结算为一条 code artifact 快照**（归属落袋、可回退）再置 `terminated`；若 Agent 正在执行该任务，终止到**当前可中断点**生效并回注 Agent「任务已被用户终止」、停止该任务后续计划步骤（未执行步骤作废，不回放）。仅 `in_progress` 任务被注入上下文并充当代码聚合锚点；`todo` 任务与会话内口头指派不入上下文（对应改动按回合兜底，workspaces-artifacts §2.2）；状态流转由受派者领取/汇报驱动（D19-⑤：`todo`→`claim`→`in_progress`→`done`/`blocked`/`terminated`），用户可随时干预。
 
 ## 5. 模型路由（D4/D5）
 
@@ -134,23 +133,19 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 
 | 工具（概要） | 作用域 | 风险 | 说明 |
 | --- | --- | --- | --- |
-| fs_read_file / fs_list_dir / fs_search | workdir + ro:// 只读 | none | **不含私有区**；读本人私有区一律走 ws_read（D14-⑩） |
-| ws_write | workspace（本人） | none | 仅本人私有区可写；user 会话 |
-| ws_read | workspace（本人） | none | 仅本人私有区可读；user+meeting（会议内可引用本人笔记/草稿，D14-⑩） |
+| fs_read_file / fs_list_dir / fs_search | workdir + ro:// 只读 | none | **工作目录内容全员可读**（角色间共享）；ro:// 为只读平台资源 |
 | memory_append / memory_search | 记忆 | none | 个人记忆写、项目全局只读(默认；全局写仅 pm 例外) |
 | session_search | 本项目会话 | none | 关键词检索 |
 | artifact_submit | →workdir | low（doc 类默认审批，D13②） | 静态产物提交（写工作目录通道②） |
-| workdir_edit | workdir | low | 代码受控编辑（diff 审计 + **任务级**聚合 artifact，写通道①，D14-⑧） |
+| workdir_edit | workdir | low | 代码受控编辑（diff 审计 + **任务级**聚合 artifact，写通道①，D14-⑧）；**写前按 `file-owners` 校验归属**（他人文件拒改） |
 | cmd_run | workdir | 视命令 | 命令执行器（写通道③；沙箱/风险/联网见 sandbox.md） |
 | approval_query | 审批状态 | none | 查看自己触发的审批（审批请求由执行器自动产生，不由模型触发） |
-| meeting_start | platform | none | 发起会议（主持人在其 user 会话回合调用） |
-| meeting_advance / meeting_close | platform | none | 主持人**在其主持的会议会话内**推进议程/结束会议（tools.md §3 可用性规则） |
-| meeting_ask_user | platform | none | 主持人请求用户拍板（question/options，会议转 blocked_waiting_user；meeting 会话内**仅主持人**可调，D18-①） |
+| ask_user | platform | none | 向用户提问（question/options）并**阻塞等待**答复：Agent 转 `waiting`，右栏询问列表原地答复后继续（D19-⑦；同一 Agent 至多 1 个待答） |
 
-> **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign`/`task_claim`/`task_update` 作为**平台工具在 user 会话始终可用**（`PLATFORM_USER_TOOLS`）：`task_assign` 仅 pm/product 可调用（工具内校验角色），把任务**发布到任务栏**（`todo`=已发布·待领取）并通知受派人；受派人用 `task_claim` **领取**（只能领自己的、受单工槽位约束）后转 `in_progress`；`task_update` 汇报完成/受阻/终止，平台据此**通知委派人安排后续**。系统提示相应注入 `[待领取任务]`（引导 claim）、`[当前任务]`（要求 done 上报）与 `[任务栏（甲模式已开启）]`（pm/product 发布指引）。乙模式（`task.assignByAgent=false`）下 Agent 不能创建任务，任务由用户经 API/UI 发布。
+> **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign`/`task_claim`/`task_update` 作为**平台工具在 user 会话始终可用**（`PLATFORM_USER_TOOLS`）：`task_assign` 对所有角色开放，但**目标必须是自己在本项目编排图中的出边节点**（D19-④；越权返回 `ERR_ORCHESTRATION_EDGE`；用户经 UI 手动派单不受此限），把任务**发布到任务栏**（`todo`=已发布·待领取）并通知受派人；受派人用 `task_claim` **领取**（只能领自己的、受单工槽位约束）后转 `in_progress`；`task_update` 汇报完成/受阻/终止，平台据此**通知委派人安排后续**。系统提示相应注入 `[待领取任务]`（引导 claim）、`[当前任务]`（要求 done 上报）与 `[任务栏]`（上游 Agent 依出边发布指引）。**Agent 委派已是默认行为**（D19-⑤），原 `task.assignByAgent` 开关废弃；用户仍可经 API/UI 手动发布与干预。
 
 **审批默认（D13②）**：doc 提交需审批；code 提交（workdir_edit 聚合）无需审批留痕即可；高危命令需审批。`cmd_run` 风险判定、cwd 锁定、危险清单与审批桥规则见 [sandbox.md](sandbox.md) §5（本节不再重复）。
-**路径边界**：任何文件工具目标解析后必须落在「该 Agent 私有工作区 ∪ 项目工作目录」内（虚拟路径机制见 sandbox.md §3），否则拒绝并记 audit 事件（错误回注 agent 调整）；平台内置只读资源经 ro:// 显式开放。
+**路径边界**：任何文件工具目标解析后必须落在**项目工作目录**内（虚拟路径机制见 sandbox.md §3），否则拒绝并记 audit 事件（错误回注 agent 调整）；平台内置只读资源经 ro:// 显式开放。文件**读取全员开放**（工作目录共享）；写入另受归属约束——仅可写归属自己或无归属的文件，他人产出物拒改（`ERR_FORBIDDEN`，见 workspaces-artifacts §2）。
 
 ## 7. 回合执行错误处理
 
@@ -158,6 +153,7 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 - 工具越界/拒绝：以结构化 tool_result 返回（含原因），Agent 调整方案继续。
 - 审批拒绝：tool_result 注明拒绝，Agent 需给替代方案或说明。
 - 进程重启：进行中的回合以"未完成"记录，恢复后按策略续跑或让 Agent 总结中断点（memory.md §7 恢复）。
+- **询问等待跨重启（D19-⑦）**：Agent 提问后 `waiting`，question 记录保持 `pending`（questions.jsonl）；重启后 Agent 不自动续跑（缺 `turn_end`），用户答复后由 dispatcher 唤醒其继续该任务是/或汇报中断点。
 - **审批等待跨重启（M1 定稿）**：进程内工具命中审批 → Agent `waiting`，用户批准后执行器**续跑原调用**；若等待期间进程重启，该回合视为未完成（缺 `turn_end`），approval 记录（approvals.jsonl）保持 `pending`——用户决定写入 approvals 与会话 log，但不自动执行原动作；Agent 下次被触发时读取决定并自行决定是否重试（重试动作再次命中审批则需重新审批）。
 
 ## 8. 审计

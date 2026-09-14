@@ -1,7 +1,7 @@
 # 接口约定草案 · Agent Haness
 
 > 类别：api · 状态：草稿(待评审) · 决策依据：架构 §10、FR-12；**本文件为草案**，编码阶段以实际实现为准并回写。
-> 关联：[frontend/style.md](../frontend/style.md)、[data-storage.md](../design/data-storage.md)
+> 关联：[ui.md](../design/ui.md)、[data-storage.md](../design/data-storage.md)、[orchestration.md](../design/orchestration.md)、[tool-packages.md](../design/tool-packages.md)、[agent-templates.md](../design/agent-templates.md)
 
 ## 1. 约定
 
@@ -30,23 +30,15 @@
 | GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读，2026-09-13）：按 user 会话实时拼装 → `{ preview: { sessionType:'user', blocks:[{id,origin,title,text}], text } }`；`origin=role-config` 仅第 1 段（实例提示词），其余为平台注入段；与运行期同源、不落盘；实例不存在 → 404 |
 | POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）|
 | PATCH | /api/projects/:pid/team/:iid | 改实例（改名/提示词/模型/loop/工具集/**enabled 停用启用**）|
-| DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/工作区/记忆，可重新启用，D14-9）；彻底删除数据为后续版本 |
+| DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/记忆，可重新启用，D14-9）；彻底删除数据为后续版本 |
 
 ### 会话 / 消息
-| GET | /api/projects/:pid/sessions | 会话列表（user+meeting，含 meta/未读）|
+| GET | /api/projects/:pid/sessions | 会话列表（user 会话，含 meta/未读）|
 | GET | /api/projects/:pid/sessions/:sid | meta + 窗口消息（`?beforeSeq=&limit=`）|
 | POST | /api/projects/:pid/sessions/:sid/messages | 发送用户消息（body:{text}）→ 入队/直接处理 |
 | POST | /api/projects/:pid/sessions/:sid/messages/:msgId/continue | 补全/重说未完成回合（D14-⑦）：进程仍在时半截文本可内存续补；进程已重启则临时文本丢失，服务端以已落盘上下文让模型续写；锚点实际用 turnId（B5）|
 | GET | /api/projects/:pid/sessions/:sid/log?fromSeq=&kind= | 增量拉日志（重连恢复）；`kind=` 支持**原始事件时间线视图**过滤（D14-④，kind 全集见 data-storage §4.2）|
 | POST | /api/projects/:pid/sessions/:sid/hangup | user 会话：暂停 Agent（P1）|
-
-### 会议
-| POST | /api/projects/:pid/meetings | 发起（host/主题/议程/成员）→ 生成邀请；返回 state=`proposed`（无占槽会议）或 `queued`（排队，槽空自动转 proposed，D16-①）|
-| POST | /api/projects/:pid/meetings/:mid/respond | 成员接受/稍后/拒绝 |
-| POST | /api/projects/:pid/meetings/:mid/decision | 用户答复决策点（questionId/choice/text）|
-| POST | /api/projects/:pid/meetings/:mid/cancel | 取消 queued/proposed 会议（发起者或用户，D17-②；open/closed 用 close）|
-| POST | /api/projects/:pid/meetings/:mid/close | 结束（主持人或用户）→ 触发纪要 |
-| GET | /api/projects/:pid/meetings/:mid/minutes | 会议纪要（结构化）|
 
 ### 产出物 / 任务 / 审批 / 搜索
 | GET | /api/projects/:pid/artifacts | manifest 列表 |
@@ -55,8 +47,8 @@
 | GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
 | PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
 | GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12 |
-| GET | /api/projects/:pid/questions?status=pending\|queued&sessionId= | 提问列表（**问题列表**：一条记录含 `items[]`；`pending`=待答、`queued`=排队），2026-09-12 |
-| POST | /api/projects/:pid/questions/:qid/answer | 回答提问：`{answers:[{itemId?,choice?/choices?/text?}]}`（问题列表**每题必答**、一次提交）；单题兼容 `{choice/choices/text}`。返回 `{question, nextQuestion, wakeError}`：`nextQuestion` 非空=还有排队提问，此时**不唤醒角色** |
+| GET | /api/projects/:pid/questions?status=pending\|answered&sessionId= | **询问列表**：Agent 向用户提问（一条记录含 `items[]`；`pending`=待答）；Agent 提问后状态 `waiting`，同一 Agent 至多 1 个 pending |
+| POST | /api/projects/:pid/questions/:qid/answer | 答复询问：`{answers:[{itemId?,choice?/choices?/text?}]}`；答复后唤醒该 Agent 继续（无排队提问时）|
 | GET | /api/projects/:pid/approvals?status=pending | 审批列表 |
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 {decision, reason?} |
 | GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
@@ -67,6 +59,32 @@
 | GET/PUT | /api/settings/models | 模型路由配置（config.yaml 落盘）|
 | GET | /api/projects/:pid/export | 导出运行时项目文件夹为 zip（会话/记忆备份）|
 
+### 首页库（工具包 / Agent 模板，MVP 只读）
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | /api/tool-packages | 工具包列表（含 `tools[]` 展开、`required`、`source`、`riskMax`）|
+| GET | /api/tool-packages/:packageId | 单包详情（含每个工具的作用/风险/网络/幂等/适用会话）|
+| GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要）|
+| GET | /api/agent-templates/:roleId | 模板详情（身份/loop/**系统提示词只读预览**/工具按包展开/模型/审批规则）|
+
+> MVP 均为只读：制作工具包（U8）与提交 Agent 配置（U9）后续开放（见 tool-packages.md §6、agent-templates.md §4）。
+
+### 项目编排（拓扑图）
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | /api/projects/:pid/orchestration | 读取编排图（`nodes[]`/`edges[]`/`version`）|
+| PUT | /api/projects/:pid/orchestration | **全量保存**（body 带 `version` 做乐观并发）；校验自环/重复边/节点属本项目，失败返回 `ERR_ORCHESTRATION_INVALID`；版本不匹配返回 `ERR_CONFLICT` |
+
+### Agent 运行控制
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务，当前回合到可中断点挂起 |
+| POST | /api/projects/:pid/agents/:iid/resume | 恢复：继续处理队列 |
+| POST | /api/projects/:pid/agents/:iid/stop | **停止**当前任务（带确认；存在未结算改动先结算为 code artifact 快照）|
+
 ## 3. WS 协议
 
 上行（客户端→服务）：
@@ -74,25 +92,24 @@
 { type:"ping" }
 { type:"subscribe", payload:{projectId, sessionIds?:[]} }
 { type:"send", payload:{projectId, sessionId, text} }        // 发送消息
-{ type:"decision", payload:{projectId, meetingId, questionId, choice?, text?} }
 { type:"approval", payload:{approvalId, decision, reason?} }
 { type:"ack", payload:{seq} }                                 // UI 已渲染到 seq，服务端据此算未读
 ```
 
 下行（服务→客户端）事件（payload 结构随实现细化）：
 ```
-{ type:"session.updated" }            // meta 变化（状态/议程/未读基线）
+{ type:"session.updated" }            // meta 变化（状态/未读基线）
 { type:"message.chunk", payload:{sessionId, turnId, seq, delta} }   // 流式增量
 { type:"message.commit", payload:{sessionId, seq} }                 // 该消息落盘完成
 { type:"agent.state", payload:{instanceId, state, sessionId} }
 { type:"team.updated", payload:{instanceId, enabled, …} }            // 实例停用/启用（D14-9）
+{ type:"orchestration.updated", payload:{projectId, version} }        // 编排图保存（画布同步刷新）
 { type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
 { type:"event.appended", payload:{sessionId, seq, kind}}            // tool/artifact/approval 等事件 + 回合边界（turn_start/turn_end，2026-09-12 起广播）
 { type:"approval.requested", payload:{approval:…}}
-{ type:"meeting.event", payload:{meetingId, kind, …}}              // 轮次/决策点/结束
 { type:"artifact.updated", payload:{artifactId, state}}
-{ type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // 回合结束、占用释放后推送（与「等待你处理」状态同时到达）
-{ type:"question.answered", payload:{questionId, asker, answer}}                       // 回答/多标签页同步撤卡
+{ type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // Agent 提问：右栏询问列表新增待答项，Agent 转 waiting
+{ type:"question.answered", payload:{questionId, asker, answer}}                       // 答复：撤卡/列表项转已答，Agent 继续
 { type:"error", payload:{code, message}}
 ```
 
@@ -107,7 +124,7 @@ API 统一返回 `{ code: ERR_*, message }`。工具执行/审计事件内部用
 | API code | 含义 | 内部简码 |
 | --- | --- | --- |
 | ERR_NOT_FOUND | 资源不存在 | — |
-| ERR_CONFLICT | 状态冲突（Agent busy / 会议已结束 / 任务槽位被占 / 非法状态流转） | — |
+| ERR_CONFLICT | 状态冲突（Agent busy / 任务槽位被占 / 非法状态流转） | — |
 | ERR_FORBIDDEN | **归属限制**：该文件/产出物属他人（署名与归属锁，2026-09-12） | — |
 | ERR_FORBIDDEN_PATH | 路径越界 | FS_BOUNDARY |
 | ERR_APPROVAL_REQUIRED | 动作需审批（返回 approvalId） | APPROVAL_REQUIRED |
@@ -117,7 +134,8 @@ API 统一返回 `{ code: ERR_*, message }`。工具执行/审计事件内部用
 | ERR_NET_OFFLINE | 离线模式禁止联网动作 | NET_OFFLINE |
 | ERR_VALIDATION | 参数/边界校验失败 | — |
 | ERR_MODEL | 模型调用失败（含 provider 未配置） | — |
-| ERR_MEETING_BLOCKED | 会议正阻塞等待用户决策 | — |
-| ERR_MEETING_FULL | 已有进行中会议，发起排队（D14-⑥） | — |
+| ERR_ORCHESTRATION_EDGE | 越权委派：目标不是本 Agent 的出边节点（Agent 发起时） | — |
+| ERR_ORCHESTRATION_INVALID | 编排图非法：自环 / 重复边 / 节点不属于本项目 | — |
+| ERR_QUESTION_PENDING | 该 Agent 已有待答询问（同一时刻至多 1 个） | — |
 | ERR_TOOL_REJECTED | 工具被策略拒绝 | — |
 | ERR_INTERNAL | 内部错误（审计信息入日志） | — |
