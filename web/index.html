@@ -3,21 +3,55 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
     <title>Agent Haness</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0d14'/%3E%3Cpath d='M16 5.5l9 5.2v10.6l-9 5.2-9-5.2V10.7z' fill='none' stroke='%2322d3ee' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%2322d3ee'/%3E%3Ccircle cx='16' cy='8.5' r='1.6' fill='%2334d399'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
+    <!-- 顶栏 -->
     <header id="topbar">
-      <h1 id="btn-home" title="回到项目列表">Agent Haness</h1>
+      <div id="btn-home" class="brand" title="回到项目列表">
+        <svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">
+          <path
+            d="M16 3.5l11 6.35v12.3L16 28.5l-11-6.35V9.85z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+          />
+          <circle cx="16" cy="16" r="3.4" fill="currentColor" />
+          <circle cx="16" cy="6.4" r="1.8" fill="var(--ok)" />
+        </svg>
+        <span class="brand-name">Agent Haness</span>
+        <span class="brand-tag">多 Agent 协作</span>
+      </div>
       <span id="current-project" class="crumb hidden"></span>
       <div class="spacer"></div>
-      <span id="attention-wrap" class="hidden" title="打开需你处理清单"
-        ><button id="btn-attention" class="ghost">
-          需你处理 <span id="attention-count" class="badge"></span></button
-      ></span>
-      <button id="btn-new-project">新建项目</button>
-      <button id="btn-records" class="hidden" title="项目记录：任务完成 / 会议完成">项目记录</button>
-      <button id="btn-export" class="hidden">导出 zip</button>
+      <span id="attention-wrap" class="hidden" title="打开需你处理清单">
+        <button id="btn-attention" class="ghost attention-btn">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+            <path
+              d="M12 3l9 16H3z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linejoin="round"
+            />
+            <path d="M12 10v4M12 17.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          需你处理 <span id="attention-count" class="badge"></span>
+        </button>
+      </span>
+      <button id="btn-new-project" class="primary">＋ 新建项目</button>
+      <button id="btn-records" class="ghost hidden" title="项目记录：任务完成 / 会议完成">
+        项目记录
+      </button>
+      <button id="btn-export" class="ghost hidden" title="导出项目运行时数据为 zip">
+        导出 zip
+      </button>
     </header>
 
     <!-- 页 1：项目列表 -->
@@ -28,7 +62,8 @@
       </div>
       <div id="project-grid"></div>
       <div id="project-empty" class="empty hidden">
-        还没有项目。点击右上角「新建项目」，选一个工作目录并勾选角色即可开始。
+        <div class="empty-ico">◈</div>
+        <p>还没有项目。点击右上角「新建项目」，选一个工作目录并勾选角色即可开始。</p>
       </div>
     </main>
 
@@ -36,45 +71,96 @@
     <main id="layout" class="hidden">
       <aside id="left">
         <div class="panel-head">
-          <h4>团队</h4>
-          <button id="btn-add-member" class="ghost" title="添加角色实例">＋添加</button>
+          <h4>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2" />
+              <path
+                d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M15.5 5.4a3.2 3.2 0 010 5.2M17.5 14c1.8.8 3 2.3 3.3 5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              />
+            </svg>
+            团队
+          </h4>
+          <button id="btn-add-member" class="ghost add-btn" title="添加角色实例">＋添加</button>
         </div>
         <ul id="team-list"></ul>
         <div class="panel-head" id="meeting-nav-head">
-          <h4>会议</h4>
-          <button id="btn-new-meeting" class="ghost" title="发起会议（需主题与描述）">
+          <h4>
+            <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+              <rect x="3" y="6" width="13" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M16 10.5l5-3v9l-5-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+            </svg>
+            会议
+          </h4>
+          <button id="btn-new-meeting" class="ghost add-btn" title="发起会议（需主题与描述）">
             ＋发起
           </button>
         </div>
         <ul id="meeting-nav-list"></ul>
       </aside>
+
       <section id="center">
         <div id="session-header">
           <div class="sh-main">
-            <span id="session-title"></span><span id="typing" class="typing hidden">回复中…</span>
+            <span id="session-title"></span>
+            <span id="typing" class="typing hidden">回复中</span>
           </div>
           <div id="session-sub" class="session-sub hidden"></div>
         </div>
-        <div id="load-old-wrap" class="hidden"><button id="btn-load-old">加载更早消息</button></div>
+        <div id="load-old-wrap" class="hidden">
+          <button id="btn-load-old">加载更早消息</button>
+        </div>
         <div id="messages"></div>
         <div id="question-zone" class="hidden"></div>
         <form id="composer" class="hidden">
-          <textarea id="msg-text" rows="2" placeholder="发消息给 Agent"></textarea>
-          <button id="btn-send">发送</button>
+          <textarea
+            id="msg-text"
+            rows="2"
+            placeholder="发消息给 Agent"
+            aria-label="发消息给 Agent"
+          ></textarea>
+          <button id="btn-send" class="primary">发送</button>
         </form>
       </section>
+
       <aside id="right">
-        <h4>
+        <h4 class="sec-title">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M8.5 12.5l2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
           任务栏 <span id="task-count" class="badge"></span>
           <button type="button" id="btn-task-board" class="mini">打开面板</button>
         </h4>
         <ul id="task-list"></ul>
-        <h4>审批 <span id="approval-count" class="badge"></span></h4>
+        <h4 class="sec-title">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+            <path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+            <path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          审批 <span id="approval-count" class="badge"></span>
+        </h4>
         <ul id="approval-list"></ul>
-        <h4 id="right-meeting-head">当前会议</h4>
+        <h4 class="sec-title" id="right-meeting-head">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+            <circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            <path d="M16.5 6.4a2.6 2.6 0 110 4.6M17.8 14.2c1.5.9 2.6 2.3 2.9 4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          当前会议
+        </h4>
         <div id="meeting-actions"></div>
         <ul id="meeting-list"></ul>
-        <h4>记忆/纪要</h4>
+        <h4 class="sec-title">
+          <svg viewBox="0 0 24 24" class="ic" aria-hidden="true">
+            <path d="M5 4.5h11a3 3 0 013 3V20H8a3 3 0 01-3-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+            <path d="M8 20v-2.5M8 8h6M8 11.5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          记忆/纪要
+        </h4>
         <div id="memory-panel"></div>
       </aside>
     </main>
@@ -84,7 +170,7 @@
       <div class="page-head">
         <div class="page-head-row">
           <h2>项目记录</h2>
-          <button id="btn-records-back" title="返回会话工作台">← 返回工作台</button>
+          <button id="btn-records-back" class="ghost" title="返回会话工作台">← 返回工作台</button>
         </div>
         <p class="muted">
           任务完成与会议完成的记载（时间倒序）。只读；卡片上可一键跳到源会话。
@@ -92,35 +178,42 @@
       </div>
       <div id="records-list" class="record-list"></div>
       <div id="records-empty" class="empty hidden">
-        暂无记录。任务被角色上报为「已完成/已终止」、会议结束后，这里会出现对应卡片。
+        <div class="empty-ico">▤</div>
+        <p>暂无记录。任务被角色上报为「已完成/已终止」、会议结束后，这里会出现对应卡片。</p>
       </div>
     </main>
 
     <!-- 新建项目向导（弹窗） -->
     <div id="wizard" class="modal hidden">
       <div class="modal-box card">
-        <h3>创建项目</h3>
-        <label>项目名 <input id="w-name" placeholder="todo-app" /></label>
-        <label
-          >工作目录（绝对路径）
+        <div class="modal-head">
+          <h3>创建项目</h3>
+          <p class="muted">选择一个工作目录，勾选需要加入的角色。</p>
+        </div>
+        <label class="fld">
+          <span>项目名</span>
+          <input id="w-name" placeholder="todo-app" autocomplete="off" />
+        </label>
+        <label class="fld">
+          <span>工作目录（绝对路径）</span>
           <div class="inline-row">
-            <input id="w-workdir" placeholder="D:/dev/todo-app" />
-            <button type="button" id="btn-pick-dir">选择文件夹…</button>
+            <input id="w-workdir" placeholder="D:/dev/todo-app" autocomplete="off" />
+            <button type="button" id="btn-pick-dir" class="ghost bordered">选择文件夹…</button>
           </div>
         </label>
         <fieldset id="w-roles">
           <legend>
             角色
-            <label class="role-all" title="勾选/取消全部角色"
-              ><input type="checkbox" id="w-role-all" /> 全选</label
-            >
+            <label class="role-all" title="勾选/取消全部角色">
+              <input type="checkbox" id="w-role-all" /> 全选
+            </label>
             <span id="w-role-count" class="who"></span>
           </legend>
           <div id="w-roles-list" class="role-list"></div>
         </fieldset>
         <div class="row">
           <button id="btn-create" class="primary">创建并进入</button>
-          <button id="btn-wizard-close">取消</button>
+          <button id="btn-wizard-close" class="ghost bordered">取消</button>
         </div>
       </div>
     </div>
@@ -128,20 +221,23 @@
     <!-- 目录选择器（经服务端 fs/browse 逐层浏览） -->
     <div id="dir-modal" class="modal hidden">
       <div class="modal-box card">
-        <h3>选择工作目录</h3>
+        <div class="modal-head">
+          <h3>选择工作目录</h3>
+          <p class="muted">浏览或直接粘贴绝对路径，回车跳转。</p>
+        </div>
         <div class="dp-quick" id="dp-quick"></div>
         <div class="inline-row">
-          <input id="dp-path" placeholder="输入或粘贴绝对路径，回车跳转" />
-          <button type="button" id="dp-go">跳转</button>
-          <button type="button" id="dp-up">上级</button>
+          <input id="dp-path" placeholder="输入或粘贴绝对路径，回车跳转" autocomplete="off" />
+          <button type="button" id="dp-go" class="ghost bordered">跳转</button>
+          <button type="button" id="dp-up" class="ghost bordered">上级</button>
         </div>
         <div id="dp-current" class="dp-crumb"></div>
         <ul id="dp-list" class="dp-list"></ul>
         <div class="row">
-          <button type="button" id="dp-new">＋ 新建文件夹…</button>
+          <button type="button" id="dp-new" class="ghost bordered">＋ 新建文件夹…</button>
           <span class="spacer"></span>
           <button id="dp-use" class="primary">选择此目录</button>
-          <button id="dp-close">取消</button>
+          <button id="dp-close" class="ghost bordered">取消</button>
         </div>
       </div>
     </div>
@@ -149,18 +245,28 @@
     <!-- 需你处理弹窗 -->
     <div id="attention-modal" class="modal hidden">
       <div class="modal-box card">
-        <h3>需你处理</h3>
+        <div class="modal-head">
+          <h3>需你处理</h3>
+          <p class="muted">审批、会议拍板与待回答提问，集中在这里处理。</p>
+        </div>
         <ul id="attention-items"></ul>
-        <div class="row"><button id="btn-attention-close">关闭</button></div>
+        <div class="row">
+          <button id="btn-attention-close" class="ghost bordered">关闭</button>
+        </div>
       </div>
     </div>
 
     <!-- 添加角色实例弹窗 -->
     <div id="member-modal" class="modal hidden">
       <div class="modal-box card">
-        <h3>添加角色到团队</h3>
+        <div class="modal-head">
+          <h3>添加角色到团队</h3>
+          <p class="muted">每个角色模板至多加入一个实例。</p>
+        </div>
         <ul id="member-list" class="member-list"></ul>
-        <div class="row"><button id="btn-member-close">关闭</button></div>
+        <div class="row">
+          <button id="btn-member-close" class="ghost bordered">关闭</button>
+        </div>
       </div>
     </div>
 
@@ -170,7 +276,7 @@
         <div class="board-head">
           <h3 id="agent-detail-title">角色详情</h3>
           <span id="agent-detail-sub" class="who"></span>
-          <button type="button" id="btn-agent-close">关闭</button>
+          <button type="button" id="btn-agent-close" class="ghost bordered">关闭</button>
         </div>
         <div id="agent-detail-body" class="agent-detail-body"></div>
       </div>
@@ -179,28 +285,37 @@
     <!-- 发起会议弹窗（主题 + 描述 + 参会人） -->
     <div id="meeting-modal" class="modal hidden">
       <div class="modal-box card">
-        <h3>发起会议</h3>
-        <label
-          >主持人
-          <select id="mt-host"></select
-        ></label>
-        <label>会议主题 <input id="mt-topic" placeholder="例如：登录模块方案评审" /></label>
-        <label
-          >会议描述
+        <div class="modal-head">
+          <h3>发起会议</h3>
+          <p class="muted">主题与描述必填，至少邀请 1 位成员参会。</p>
+        </div>
+        <label class="fld">
+          <span>主持人</span>
+          <select id="mt-host"></select>
+        </label>
+        <label class="fld">
+          <span>会议主题</span>
+          <input id="mt-topic" placeholder="例如：登录模块方案评审" autocomplete="off" />
+        </label>
+        <label class="fld">
+          <span>会议描述</span>
           <textarea
             id="mt-desc"
             rows="3"
             placeholder="为什么开这次会、期望产出什么（会显示在会议窗口顶部）"
           ></textarea>
         </label>
-        <label>议题（可选，一行一个）<textarea id="mt-agenda" rows="2"></textarea></label>
+        <label class="fld">
+          <span>议题（可选，一行一个）</span>
+          <textarea id="mt-agenda" rows="2"></textarea>
+        </label>
         <fieldset>
           <legend>参会成员 <span id="mt-member-count" class="who"></span></legend>
           <div id="mt-members" class="role-list"></div>
         </fieldset>
         <div class="row">
           <button id="btn-meeting-create" class="primary">发起并进入</button>
-          <button id="btn-meeting-cancel">取消</button>
+          <button id="btn-meeting-cancel" class="ghost bordered">取消</button>
         </div>
       </div>
     </div>
@@ -211,7 +326,7 @@
         <div class="board-head">
           <h3>任务栏</h3>
           <span id="task-board-stat" class="who"></span>
-          <button type="button" id="btn-task-board-close">关闭</button>
+          <button type="button" id="btn-task-board-close" class="ghost bordered">关闭</button>
         </div>
         <div id="task-board-body" class="board-body"></div>
         <div class="empty-tip">
@@ -221,7 +336,7 @@
       </div>
     </div>
 
-    <div id="toast"></div>
+    <div id="toast" role="status"></div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>
