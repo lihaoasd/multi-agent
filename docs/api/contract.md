@@ -40,12 +40,16 @@
 | POST | /api/projects/:pid/team/:iid/enable | 重新启用（无 body；服务端把空 body 视为 `{}`） |
 
 ### 会话 / 消息
-| GET | /api/projects/:pid/sessions | 会话列表（user 会话，含 meta/未读）|
-| GET | /api/projects/:pid/sessions/:sid | meta + 窗口消息（`?beforeSeq=&limit=`）|
-| POST | /api/projects/:pid/sessions/:sid/messages | 发送用户消息（body:{text}）→ 入队/直接处理 |
-| POST | /api/projects/:pid/sessions/:sid/messages/:msgId/continue | 补全/重说未完成回合（D14-⑦）：进程仍在时半截文本可内存续补；进程已重启则临时文本丢失，服务端以已落盘上下文让模型续写；锚点实际用 turnId（B5）|
-| GET | /api/projects/:pid/sessions/:sid/log?fromSeq=&kind= | 增量拉日志（重连恢复）；`kind=` 支持**原始事件时间线视图**过滤（D14-④，kind 全集见 data-storage §4.2）|
+| GET | /api/projects/:pid/sessions | 会话列表（每实例 1 条 `u_<instanceId>`；含 `state`/`lastSeq`/`lastMessagePreview`）|
+| GET | /api/projects/:pid/sessions/:sid | meta + 事件窗口（`?limit=` 尾窗语义，默认 200）|
+| POST | /api/projects/:pid/sessions/:sid/messages | 发送用户消息（body:`{text}`）→ **202** `{seq, queued}`；`queued=true` 表示该 Agent 忙或已暂停、消息已入队（队列 = 日志中未处理消息）；实例停用 → `ERR_CONFLICT` |
+| GET | /api/projects/:pid/sessions/:sid/log?fromSeq=&kind=&limit= | 增量拉日志（重连恢复）；`kind=` 逗号分隔过滤（原始事件时间线视图）|
+| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务（当前回合到可中断点）；重复暂停 → `ERR_CONFLICT` |
+| POST | /api/projects/:pid/agents/:iid/resume | 恢复并**立刻补处理排队消息** → `{...status, handled}` |
+| POST | /api/projects/:pid/dispatcher/resume-queued | 项目级恢复入口：给"队列非空且无占用"的 Agent 各补一轮（D18-③）→ `{resumed:[instanceId]}` |
 | POST | /api/projects/:pid/sessions/:sid/hangup | user 会话：暂停 Agent（P1）|
+
+> 会话与事件口径（2026-09-15 实现）：事件**先落盘后推送**（`EventPipeline` 是唯一写入口）；`GET .../log` 返回 `[{seq,ts,sessionId,turn,kind,...payload}]`；seq 会话内单调且**跨轮转连续**（轮转段命名 `<sid>.log.<n>.jsonl`，当前段恒为 `<sid>.log.jsonl`）。
 
 ### 产出物 / 任务 / 审批 / 搜索
 | GET | /api/projects/:pid/artifacts | manifest 列表 |
@@ -118,27 +122,32 @@
 
 ## 3. WS 协议
 
+连接：`GET /ws?projectId=<pid>`（带 projectId 即自动订阅该项目；也可连接后用 `subscribe` 上行补订阅）。
+
 上行（客户端→服务）：
 ```
-{ type:"ping" }
-{ type:"subscribe", payload:{projectId, sessionIds?:[]} }
-{ type:"send", payload:{projectId, sessionId, text} }        // 发送消息
-{ type:"approval", payload:{approvalId, decision, reason?} }
-{ type:"ack", payload:{seq} }                                 // UI 已渲染到 seq，服务端据此算未读
+{ type:"ping" }                                               // → 下行 pong
+{ type:"subscribe", payload:{projectId} }                      // 订阅项目（连接时已带 projectId 则无需再发）
+{ type:"send", payload:{projectId, sessionId, text} }          // 发送消息（等价 REST 发消息）
+{ type:"ack", payload:{seq} }                                  // UI 已渲染到 seq（服务端据此算未读，P1）
 ```
 
-下行（服务→客户端）事件（payload 结构随实现细化）：
+下行（服务→客户端）事件：
 ```
+{ type:"ws.ready", payload:{clientId, projectId} }            // 连接就绪（订阅生效）
+{ type:"pong", payload:{ts} }
+{ type:"subscribed", payload:{projectId} }
+{ type:"message.accepted", payload:{sessionId, seq, queued} }  // 上行 send 的回执
 { type:"session.updated" }            // meta 变化（状态/未读基线）
-{ type:"message.chunk", payload:{sessionId, turnId, seq, delta} }   // 流式增量
-{ type:"message.commit", payload:{sessionId, seq} }                 // 该消息落盘完成
-{ type:"agent.state", payload:{instanceId, state, sessionId} }
-{ type:"team.updated", payload:{instanceId, enabled, …} }            // 实例停用/启用（D14-9）
+{ type:"message.chunk", payload:{sessionId, turnId, seq, delta} }   // 流式增量（S4 起，由 ModelGateway 驱动）
+{ type:"message.commit", payload:{sessionId, seq} }                 // 该消息落盘完成（先盘后推）
+{ type:"agent.state", payload:{projectId, instanceId, state, sessionId} }
+{ type:"team.updated", payload:{projectId, instanceId, action} }            // 实例增删停启/配置覆盖（D14-9）
 { type:"orchestration.updated", payload:{projectId, version} }        // 编排图保存（画布同步刷新）
 { type:"model-config.updated", payload:{revision, changed:{kind:"provider"|"model"|"routing", id}} }  // 供应商/模型/路由变更（2026-09-15）
 { type:"agent-config.updated", payload:{scope:"template"|"instance", roleId?, projectId?, instanceId?, configVersion} }  // Agent 配置提交（2026-09-15）
 { type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
-{ type:"event.appended", payload:{sessionId, seq, kind}}            // tool/artifact/approval 等事件 + 回合边界（turn_start/turn_end，2026-09-12 起广播）
+{ type:"event.appended", payload:{projectId, sessionId, seq, kind, ts}}            // 事件已落盘并追加（含回合边界）
 { type:"approval.requested", payload:{approval:…}}
 { type:"artifact.updated", payload:{artifactId, state}}
 { type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // Agent 提问：右栏询问列表新增待答项，Agent 转 waiting
@@ -147,6 +156,7 @@
 ```
 
 顺序保证：同会话事件按 seq 单调下发；`message.commit` 表示该条已落盘（先盘后推，见 memory.md §2）。
+**广播路由（2026-09-15 实现）**：事件 payload 带 `projectId` → 只发给订阅该项目的连接；不带 → 全局事件发给所有连接（如 `model-config.updated`）。
 
 > 事件规范（D18-⑤d）：本节 WS 下行事件是规范事件（data-storage.md §4.2 单一事件规范）的 **UI 投影**，与 log kind 一一对应，实现期不得另起旁路事件词汇。
 

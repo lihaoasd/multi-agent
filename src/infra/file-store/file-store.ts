@@ -148,6 +148,23 @@ export function createFileStore(options: FileStoreOptions): FileStore {
       return text.ok ? sha256(text.value) : null
     },
 
+    async move(from: RelPath, to: RelPath): Promise<Result<void>> {
+      const source = toAbsolute(from)
+      if (!source.ok) return source
+      const target = toAbsolute(to)
+      if (!target.ok) return target
+      try {
+        await mkdir(dirname(target.value), { recursive: true })
+        await rename(source.value, target.value)
+        return ok(undefined)
+      } catch (cause) {
+        if (isNodeError(cause) && cause.code === 'ENOENT') {
+          return err('ERR_NOT_FOUND', '源文件不存在', { from })
+        }
+        return err('ERR_INTERNAL', '移动文件失败', { from, to, cause: String(cause) })
+      }
+    },
+
     async ensureDir(path: RelPath): Promise<Result<void>> {
       const absolute = toAbsolute(path)
       if (!absolute.ok) return absolute

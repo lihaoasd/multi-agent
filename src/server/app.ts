@@ -1,9 +1,13 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { ModelConfigService } from '../application/model-config/service'
+import type { Dispatcher } from '../ports/dispatcher'
+import type { WsRealtime } from '../ports/events'
+import type { SessionService } from '../application/session/session-service'
 import type { ProjectService } from '../application/project/service'
 import type { AgentConfigService } from '../application/team/agent-config-service'
 import type { TeamService } from '../application/team/team-service'
 import type { EventBroadcaster } from '../ports/events'
+import type { IdGenerator } from '../ports/id'
 import type { Logger } from '../ports/logger'
 import type { StaticAssetProvider } from '../ports/static-assets'
 import type { AppConfig } from '../shared/config'
@@ -12,6 +16,8 @@ import { registerAgentTemplateRoutes } from './http-routes/agent-templates'
 import { registerHealthRoutes } from './http-routes/health'
 import { registerModelConfigRoutes } from './http-routes/model-config'
 import { registerProjectRoutes } from './http-routes/projects'
+import { registerSessionRoutes } from './http-routes/sessions'
+import { registerWsGateway } from './ws/gateway'
 import { registerStaticRoutes } from './static'
 
 export interface ServerServices {
@@ -19,7 +25,11 @@ export interface ServerServices {
   readonly agentConfig: AgentConfigService
   readonly project: ProjectService
   readonly team: TeamService
+  readonly sessions: SessionService
+  readonly dispatcher: Dispatcher
+  readonly realtime: WsRealtime
   readonly broadcaster: EventBroadcaster
+  readonly ids: IdGenerator
 }
 
 export interface CreateServerOptions {
@@ -76,7 +86,19 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   registerProjectRoutes(app, {
     project: options.services.project,
     team: options.services.team,
+    sessions: options.services.sessions,
+    dispatcher: options.services.dispatcher,
     broadcaster: options.services.broadcaster,
+  })
+  registerSessionRoutes(app, {
+    sessions: options.services.sessions,
+    dispatcher: options.services.dispatcher,
+  })
+  await registerWsGateway(app, {
+    realtime: options.services.realtime,
+    dispatcher: options.services.dispatcher,
+    ids: options.services.ids,
+    logger: options.logger,
   })
 
   if (distDir !== null) {

@@ -1,3 +1,6 @@
+import type { SessionLogStore, SessionMetaStore } from './session'
+import type { DispatcherStateStore } from './dispatcher'
+import type { WsRealtime } from './events'
 import type { Clock } from './clock'
 import type { ConfigProvider } from './config'
 import { token, type Token } from './container'
@@ -17,6 +20,7 @@ import type {
 import type { ProjectStore } from './project'
 import type { RoleTemplateStore } from './role-templates'
 import type { StaticAssetProvider } from './static-assets'
+import type { TurnRunner } from './turn'
 
 /**
  * 全局 Token 注册表（唯一一处定义；键名与接口名一致，见 abstraction.md §5.2）。
@@ -29,11 +33,15 @@ export const TOKENS = {
   IdGenerator: token<IdGenerator>('IdGenerator'),
   Logger: token<Logger>('Logger'),
   StaticAssets: token<StaticAssetProvider>('StaticAssetProvider'),
+  Realtime: token<WsRealtime>('WsRealtime'),
   // 存储
   FileStore: token<FileStore>('FileStore'),
   LockManager: token<LockManager>('LockManager'),
   DirectoryBrowser: token<DirectoryBrowser>('DirectoryBrowser'),
   ProjectStore: token<ProjectStore>('ProjectStore'),
+  SessionMetaStore: token<SessionMetaStore>('SessionMetaStore'),
+  SessionLogStore: token<SessionLogStore>('SessionLogStore'),
+  DispatcherStateStore: token<DispatcherStateStore>('DispatcherStateStore'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),
   ModelPresetProvider: token<ModelPresetProvider>('ModelPresetProvider'),
@@ -41,6 +49,8 @@ export const TOKENS = {
   ProviderKindRegistry: token<ProviderKindRegistry>('ProviderKindRegistry'),
   ModelCatalog: token<ModelCatalog>('ModelCatalog'),
   ModelGateway: token<ModelGateway>('ModelGateway'),
+  // 回合执行
+  TurnRunner: token<TurnRunner>('TurnRunner'),
   // Agent 模板
   RoleTemplateStore: token<RoleTemplateStore>('RoleTemplateStore'),
 } as const

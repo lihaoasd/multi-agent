@@ -1,4 +1,8 @@
+import { createPlaceholderTurnRunner } from '../application/agent-loop/placeholder-runner'
+import { createDispatcher } from '../application/dispatcher/dispatcher'
 import { createModelCatalog } from '../application/model-config/catalog'
+import { createEventPipeline } from '../application/session/event-pipeline'
+import { createSessionService, type SessionService } from '../application/session/session-service'
 import { createProjectService, type ProjectService } from '../application/project/service'
 import { createTeamService, type TeamService } from '../application/team/team-service'
 import { createTemplateModelReferenceQuery } from '../application/model-config/references'
@@ -10,10 +14,13 @@ import {
   type LoadAppConfigOptions,
 } from '../infra/config/env-config'
 import { createSecretResolver } from '../infra/config/secret-resolver'
-import { createNoopEventBroadcaster } from '../infra/events/noop-broadcaster'
+import { createWsEventHub } from '../infra/events/ws-hub'
 import { createFileStore } from '../infra/file-store/file-store'
 import { createModelConfigStore } from '../infra/file-store/model-config-store'
+import { createDispatcherStateStore } from '../infra/file-store/dispatcher-state-store'
 import { createProjectStore } from '../infra/file-store/project-store'
+import { createSessionLogStore } from '../infra/file-store/session-log-store'
+import { createSessionMetaStore } from '../infra/file-store/session-meta-store'
 import { createRoleTemplateStore } from '../infra/file-store/role-template-store'
 import { createDirectoryBrowser } from '../infra/fs/directory-browser'
 import { createKeyedLockManager } from '../infra/lock/keyed-lock'
@@ -31,7 +38,10 @@ import type { EventBroadcaster } from '../ports/events'
 import type { FileStore } from '../ports/file-store'
 import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
+import type { Dispatcher } from '../ports/dispatcher'
+import type { WsRealtime } from '../ports/events'
 import type { ProjectStore } from '../ports/project'
+import type { SessionLogStore, SessionMetaStore } from '../ports/session'
 import type { IdGenerator } from '../ports/id'
 import type { Logger } from '../ports/logger'
 import type { ModelGateway } from '../ports/model'
@@ -43,6 +53,7 @@ import type {
   SecretResolver,
 } from '../ports/model-config'
 import type { RoleTemplateStore } from '../ports/role-templates'
+import type { TurnRunner } from '../ports/turn'
 import type { StaticAssetProvider } from '../ports/static-assets'
 import { TOKENS } from '../ports/tokens'
 import { buildAppConfig, type AppConfig } from '../shared/config'
@@ -120,6 +131,35 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     }),
   )
   container.registerInstance(
+    TOKENS.SessionMetaStore,
+    createSessionMetaStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(
+    TOKENS.SessionLogStore,
+    createSessionLogStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      metaStore: container.resolve(TOKENS.SessionMetaStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(
+    TOKENS.DispatcherStateStore,
+    createDispatcherStateStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(TOKENS.Realtime, createWsEventHub())
+  container.registerInstance(TOKENS.TurnRunner, createPlaceholderTurnRunner(ids))
+  container.registerInstance(
     TOKENS.RoleTemplateStore,
     createRoleTemplateStore({
       fileStore: container.resolve(TOKENS.FileStore),
@@ -169,6 +209,11 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.LockManager,
     TOKENS.DirectoryBrowser,
     TOKENS.ProjectStore,
+    TOKENS.SessionMetaStore,
+    TOKENS.SessionLogStore,
+    TOKENS.DispatcherStateStore,
+    TOKENS.Realtime,
+    TOKENS.TurnRunner,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -191,6 +236,8 @@ export interface AppDeps {
   readonly lock: LockManager
   readonly directoryBrowser: DirectoryBrowser
   readonly projectStore: ProjectStore
+  readonly sessionMetaStore: SessionMetaStore
+  readonly sessionLogStore: SessionLogStore
   readonly modelConfigStore: ModelConfigStore
   readonly roleTemplateStore: RoleTemplateStore
   readonly presets: ModelPresetProvider
@@ -202,6 +249,9 @@ export interface AppDeps {
   readonly agentConfig: AgentConfigService
   readonly project: ProjectService
   readonly team: TeamService
+  readonly sessions: SessionService
+  readonly dispatcher: Dispatcher
+  readonly realtime: WsRealtime
   readonly broadcaster: EventBroadcaster
 }
 
@@ -213,6 +263,8 @@ export function resolveDeps(
   container: Container,
   overrides: {
     broadcaster?: EventBroadcaster
+    /** 实时通道（默认取容器内的 WS Hub；测试可注入记录型实现） */
+    realtime?: WsRealtime
     /** 遗留键（MODELS__PROVIDERS）读取来源；默认进程环境 */
     envMap?: Readonly<Record<string, string | undefined>>
   } = {},
@@ -224,7 +276,8 @@ export function resolveDeps(
   const roleTemplateStore = container.resolve<RoleTemplateStore>(TOKENS.RoleTemplateStore)
   const clock = container.resolve(TOKENS.Clock)
   const ids = container.resolve(TOKENS.IdGenerator)
-  const broadcaster = overrides.broadcaster ?? createNoopEventBroadcaster()
+  const realtime = overrides.realtime ?? container.resolve<WsRealtime>(TOKENS.Realtime)
+  const broadcaster: EventBroadcaster = overrides.broadcaster ?? realtime
   const envMap = overrides.envMap ?? process.env
 
   const modelConfig = createModelConfigService({
@@ -277,6 +330,31 @@ export function resolveDeps(
     config: configProvider,
   })
 
+  const pipeline = createEventPipeline({
+    logStore: container.resolve(TOKENS.SessionLogStore),
+    broadcaster,
+    clock,
+  })
+
+  const sessions = createSessionService({
+    metaStore: container.resolve(TOKENS.SessionMetaStore),
+    logStore: container.resolve(TOKENS.SessionLogStore),
+    pipeline,
+    projectStore: container.resolve(TOKENS.ProjectStore),
+    clock,
+  })
+
+  const dispatcher = createDispatcher({
+    stateStore: container.resolve(TOKENS.DispatcherStateStore),
+    projectStore: container.resolve(TOKENS.ProjectStore),
+    sessions,
+    runner: container.resolve<TurnRunner>(TOKENS.TurnRunner),
+    broadcaster,
+    lock: container.resolve(TOKENS.LockManager),
+    clock,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
   return {
     config,
     clock,
@@ -287,6 +365,8 @@ export function resolveDeps(
     lock: container.resolve(TOKENS.LockManager),
     directoryBrowser: container.resolve(TOKENS.DirectoryBrowser),
     projectStore: container.resolve(TOKENS.ProjectStore),
+    sessionMetaStore: container.resolve(TOKENS.SessionMetaStore),
+    sessionLogStore: container.resolve(TOKENS.SessionLogStore),
     modelConfigStore,
     roleTemplateStore,
     presets: container.resolve(TOKENS.ModelPresetProvider),
@@ -298,6 +378,9 @@ export function resolveDeps(
     agentConfig,
     project,
     team,
+    sessions,
+    dispatcher,
+    realtime,
     broadcaster,
   }
 }

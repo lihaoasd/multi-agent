@@ -210,16 +210,19 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
     expect(after.json<InstanceBody>().effective.systemPrompt).toBe(beforePrompt)
   })
 
-  it('团队列表与状态投影（S3 前 state 恒为 idle）', async () => {
+  it('团队列表与状态投影（S3 起：state 由 dispatcher 派生，sessionId 为 u_<instanceId>）', async () => {
     const instances = await inject({ method: 'GET', url: `/api/projects/${projectId}/team` })
     expect(instances.statusCode).toBe(200)
     expect(instances.json<InstanceBody[]>()).toHaveLength(8)
 
     const agents = await inject({ method: 'GET', url: `/api/projects/${projectId}/agents` })
     expect(agents.statusCode).toBe(200)
-    const projection = agents.json<Array<{ instanceId: string; state: string; sessionId: string | null }>>()
+    const projection = agents.json<
+      Array<{ instanceId: string; state: string; sessionId: string | null; paused: boolean; queued: number }>
+    >()
     expect(projection).toHaveLength(8)
-    expect(projection.every((item) => item.state === 'idle' && item.sessionId === null)).toBe(true)
+    expect(projection.every((item) => item.state === 'idle' && item.paused === false && item.queued === 0)).toBe(true)
+    expect(projection.find((item) => item.instanceId === 'dev_1')?.sessionId).toBe('u_dev_1')
   })
 
   it('无 body 的 POST 容错：空 body + JSON content-type 视为 {}（不报 500）', async () => {

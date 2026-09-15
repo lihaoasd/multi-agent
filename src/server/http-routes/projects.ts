@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify'
+import type { SessionService } from '../../application/session/session-service'
+import type { Dispatcher } from '../../ports/dispatcher'
 import type { ProjectService } from '../../application/project/service'
 import type { InstancePatch, TeamService } from '../../application/team/team-service'
 import type { EventBroadcaster } from '../../ports/events'
@@ -9,6 +11,8 @@ import { asRecord, readBoolean, readLoopConfig, readString, requireString } from
 export interface ProjectRouteContext {
   readonly project: ProjectService
   readonly team: TeamService
+  readonly sessions: SessionService
+  readonly dispatcher: Dispatcher
   readonly broadcaster: EventBroadcaster
 }
 
@@ -53,7 +57,7 @@ function readInstancePatch(record: Record<string, unknown>): InstancePatch {
 
 /** 项目与团队路由（contract.md §2「项目」「角色库 / 团队」「目录浏览器」） */
 export function registerProjectRoutes(app: FastifyInstance, context: ProjectRouteContext): void {
-  const { project, team, broadcaster } = context
+  const { project, team, sessions, dispatcher, broadcaster } = context
   const notifyTeam = (projectId: string, instanceId: string, action: string): void => {
     broadcaster.broadcast({ type: 'team.updated', payload: { projectId, instanceId, action } })
   }
@@ -73,6 +77,11 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
       workdir: workdir.value,
       ...(members === undefined ? {} : { members }),
     })
+    if (created.ok) {
+      // 项目创建后为每个成员建立 1:1 会话（u_<instanceId>）
+      const ensured = await sessions.ensureProjectSessions(created.value.id)
+      if (!ensured.ok) return replyFromResult(reply, ensured)
+    }
     return replyFromResult(reply, created, 201)
   })
 
@@ -105,7 +114,10 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
       roleTemplateId: roleTemplateId.value,
       ...(readString(body, 'displayName') === undefined ? {} : { displayName: readString(body, 'displayName') }),
     })
-    if (created.ok) notifyTeam(request.params.pid, created.value.instanceId, 'added')
+    if (created.ok) {
+      await sessions.ensureProjectSessions(request.params.pid)
+      notifyTeam(request.params.pid, created.value.instanceId, 'added')
+    }
     return replyFromResult(reply, created, 201)
   })
 
@@ -126,7 +138,10 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
   app.delete<{ Params: { pid: string; iid: string } }>('/api/projects/:pid/team/:iid', async (request, reply) => {
     // 删除 = 停用（保留会话/记忆，可重新启用，D14-9）
     const updated = await team.setEnabled(request.params.pid, request.params.iid, false)
-    if (updated.ok) notifyTeam(request.params.pid, request.params.iid, 'disabled')
+    if (updated.ok) {
+      await sessions.syncInstanceState(request.params.pid, request.params.iid, false)
+      notifyTeam(request.params.pid, request.params.iid, 'disabled')
+    }
     return replyFromResult(reply, updated)
   })
 
@@ -134,7 +149,10 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
     '/api/projects/:pid/team/:iid/enable',
     async (request, reply) => {
       const updated = await team.setEnabled(request.params.pid, request.params.iid, true)
-      if (updated.ok) notifyTeam(request.params.pid, request.params.iid, 'enabled')
+      if (updated.ok) {
+        await sessions.syncInstanceState(request.params.pid, request.params.iid, true)
+        notifyTeam(request.params.pid, request.params.iid, 'enabled')
+      }
       return replyFromResult(reply, updated)
     },
   )
@@ -145,24 +163,29 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
       replyFromResult(reply, await team.effectiveConfig(request.params.pid, request.params.iid)),
   )
 
-  // 团队实时状态投影（左栏/画布用）；dispatcher 接通后由它提供 state（S3）
+  // 团队实时状态投影（左栏/画布用）：state 由 dispatcher 的 occupancy 派生（D18-④）
   app.get<{ Params: { pid: string } }>('/api/projects/:pid/agents', async (request, reply) => {
     const instances = await team.listInstances(request.params.pid)
     if (!instances.ok) return replyFromResult(reply, instances)
-    return replyFromResult(
-      reply,
-      {
-        ok: true as const,
-        value: instances.value.map((instance) => ({
+    const statuses = await dispatcher.status(request.params.pid)
+    if (!statuses.ok) return replyFromResult(reply, statuses)
+    const byInstance = new Map(statuses.value.map((status) => [status.instanceId, status]))
+    return replyFromResult(reply, {
+      ok: true as const,
+      value: instances.value.map((instance) => {
+        const status = byInstance.get(instance.instanceId)
+        return {
           instanceId: instance.instanceId,
           displayName: instance.displayName,
           enabled: instance.enabled,
-          state: 'idle' as const,
-          sessionId: null,
+          state: status?.state ?? 'idle',
+          paused: status?.paused ?? false,
+          queued: status?.queued ?? 0,
+          sessionId: status?.sessionId ?? sessions.sessionIdFor(instance.instanceId),
           currentTask: null,
-        })),
-      },
-    )
+        }
+      }),
+    })
   })
 
   app.get<{ Querystring: { path?: string; includeHidden?: string } }>('/api/fs/browse', async (request, reply) => {

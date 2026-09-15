@@ -43,6 +43,8 @@ export interface FileStore {
   exists(path: RelPath): Promise<boolean>
   /** 文件内容 sha256；不存在返回 null */
   hash(path: RelPath): Promise<string | null>
+  /** 重命名/移动（日志轮转需要原子改名；目标存在则由实现决定覆盖语义） */
+  move(from: RelPath, to: RelPath): Promise<Result<void>>
   ensureDir(path: RelPath): Promise<Result<void>>
   remove(path: RelPath): Promise<Result<void>>
 }

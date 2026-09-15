@@ -16,6 +16,17 @@ async function main(): Promise<void> {
     deps.logger.info('已从 .env 导入遗留模型配置', { imported: initialized.value.imported })
   }
 
+  // 启动自检：清掉进程崩溃遗留的占用（重启后不可能仍有活跃回合），游标保留 → 未处理消息仍在队列
+  const projects = await deps.project.list()
+  if (projects.ok) {
+    for (const summary of projects.value) {
+      const reset = await deps.dispatcher.resetStaleOccupancy(summary.id)
+      if (reset.ok && reset.value > 0) {
+        deps.logger.warn('清理了重启遗留的 Agent 占用', { projectId: summary.id, cleared: reset.value })
+      }
+    }
+  }
+
   const app = await createServer({
     config: deps.config,
     logger: deps.logger,
@@ -25,6 +36,10 @@ async function main(): Promise<void> {
       agentConfig: deps.agentConfig,
       project: deps.project,
       team: deps.team,
+      sessions: deps.sessions,
+      dispatcher: deps.dispatcher,
+      realtime: deps.realtime,
+      ids: deps.ids,
       broadcaster: deps.broadcaster,
     },
   })

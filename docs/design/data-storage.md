@@ -105,7 +105,7 @@ agent_haness/                    # 平台仓库
                                          // user suspended 为 occupancy 派生投影（D18-④），可留缓存、非真相源
   "createdAt": "…", "updatedAt": "…", "closedAt": null,
   "lastSeq": 1234,                       // log 已写到的最大序号（跨轮转仍单调，见 §9）
-  "segments": [ { "file": "<sid>.log.jsonl", "startSeq": 1, "endSeq": 1234 } ],   // 轮转分段表（M3）
+  "segments": [ { "file": "<sid>.log.jsonl", "startSeq": 1, "endSeq": 1234, "lines": 1234 } ],   // 轮转分段表（`lines` 为实现补充字段）
   "summaryRefs": [ { "seq": 101, "summaryId": "s_…", "ofSeq": 1, "toSeq": 100 } ]  // 摘要行索引（memory.md；字段与 §4.2 summary 事件一致）
 }
 ```
@@ -145,6 +145,23 @@ agent_haness/                    # 平台仓库
 > 每行含 `seq`（会话内**单调且跨轮转连续**，见 §9）；`turn`（该次 agent 回合序号）。恢复=从 0 顺序读 + 摘要跳读。
 > **流式文本（D14-⑦）**：`message` 事件只在流式回复结束时整体落盘；流中半截内容不入 log（先推后落），崩溃后以"未完成"标记 + 补全/重说兜底。
 > **回合边界（H3 定稿）**：每次 Agent 执行以 `turn_start` 开启、`turn_end` 收尾；中断恢复/未完成判定以"缺 turn_end"为准（memory.md §6）。
+
+**实现口径（2026-09-15，S3）**
+
+- 文件与命名：`projects/<pid>/sessions/<sid>.meta.json`、`<sid>.log.jsonl`；轮转后旧段改名为 `<sid>.log.<n>.jsonl`，**当前段始终叫 `<sid>.log.jsonl`**。
+- 行格式：`{seq, ts, sessionId, turn, kind, ...payload}`（payload 平铺，与上方示例一致）；读入时按 `seq/ts/sessionId/turn/kind` 之外的全部键还原 payload。坏行**逐行跳过**（不使整个读取失败）。
+- `segments[]` 实现补充 `lines`（该段已写行数）用于轮转判定；`startSeq/endSeq` 语义不变，`seq` 跨段单调连续。
+- 读窗口：`limit` 为**尾窗**语义（取最近 N 条）；`fromSeq` 为增量重连游标。
+- 写入顺序：一律经 `EventPipeline`（落盘拿到 seq → 再推送 WS），见 §7 双写主从与 api/contract §3。
+- `runtime.state.json`（dispatcher 占用真相，D18-④）实现 schema：
+  ```jsonc
+  { "schemaVersion": 1,
+    "occupancy": { "dev_1": { "type": "user", "sessionId": "u_dev_1", "since": "…" } }, // 唯一真相
+    "lastHandledSeq": { "dev_1": 6 },   // per-agent 处理游标；队列 = 日志中 seq > 游标 的未处理用户消息
+    "paused": { "qa_1": false },        // 暂停=不再领新活（D19-⑥）
+    "turns": { "dev_1": 2 } }           // 回合计数器（写入事件的 turn 字段）
+  ```
+  文件损坏 → 备份为 `runtime.state.json.bak-<ts>.json` 并按空状态启动（占用可由日志重建）。启动时清理**进程遗留的占用**（`resetStaleOccupancy`），但**不自动续跑**未完成回合（D17-⑤，恢复入口在 S8）。
 
 ## 5. 记忆文件（详见 memory.md）
 

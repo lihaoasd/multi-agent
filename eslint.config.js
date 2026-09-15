@@ -49,6 +49,11 @@ export default tseslint.config(
       eqeqeq: ['error', 'always', { null: 'ignore' }],
       'prefer-const': 'error',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // `_` 前缀表示"有意不用"（解构剔除、未用形参），是显式意图而非疏漏
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
     },
   },
   {

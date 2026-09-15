@@ -185,6 +185,9 @@ export interface SessionLogStore {
   /** 超阈值轮转；返回分段表（seq 跨段仍单调） */
   rotate(sessionId: SessionId, maxLines: number): Promise<Result<SegmentRef[]>>
 }
+// ⚠️ 实现口径（2026-09-15，S3）：会话文件位于 `projects/<pid>/sessions/` 内，故实现把 `projectId`
+//    作为**第一个参数**（`append(projectId, sessionId, events)` 等），避免为定位文件而全盘扫描项目目录。
+//    同时 `FileStore` 增加 `move(from, to)`（日志轮转需要原子改名）。签名以本节注释为准。
 
 // ── ports/file-store.ts ───────────────────────────────────────────
 export interface FileStore {

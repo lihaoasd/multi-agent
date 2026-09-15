@@ -14,6 +14,7 @@ import {
   Space,
   Steps,
   Switch,
+  Tabs,
   Table,
   Tag,
   Typography,
@@ -23,6 +24,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { agentTemplateApi, type AgentTemplateView } from '../api/agentTemplates'
 import { describeError } from '../api/client'
 import { modelConfigApi, type ModelView } from '../api/modelConfig'
+import { SessionPanel } from './SessionPanel'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
 const LOOP_STRATEGIES = [
@@ -323,10 +325,17 @@ export function ProjectModule() {
             <Descriptions.Item label="成员">{`${current.enabledCount} 启用 / ${current.memberCount} 总计`}</Descriptions.Item>
           </Descriptions>
           <Typography.Text type="secondary">
-            拓扑画布、会话与任务列表在后续阶段接入（S3/S7）；当前可在此查看与覆盖每个 Agent 的配置。
+            会话已接入（S3：单工调度 + WS 实时）；拓扑画布与任务/询问/审批列表在后续阶段接入（S6/S7）。
           </Typography.Text>
         </Card>
-        <Card size="small" title="团队与实例配置（提示词 / loop / 模型）">
+        <Tabs
+          defaultActiveKey="team"
+          items={[
+            {
+              key: 'team',
+              label: '团队与配置',
+              children: (
+                <Card size="small" title="团队与实例配置（提示词 / loop / 模型）">
           <Table<InstanceView>
             rowKey="instanceId"
             size="small"
@@ -390,7 +399,16 @@ export function ProjectModule() {
               },
             ]}
           />
-        </Card>
+                </Card>
+              ),
+            },
+            {
+              key: 'session',
+              label: '会话',
+              children: <SessionPanel projectId={current.id} />,
+            },
+          ]}
+        />
 
         <Drawer
           open={editing !== null}
