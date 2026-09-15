@@ -17,6 +17,8 @@ logs/
 # 环境与密钥
 .env
 .env.*
+# 例外：配置模板入库（docs/operations/deploy.md §3 要求）
+!.env.example
 *.local
 
 # 系统文件

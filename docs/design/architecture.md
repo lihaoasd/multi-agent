@@ -17,7 +17,7 @@
 | --- | --- |
 | 语言/运行时 | TypeScript + Node.js ≥ 20 |
 | HTTP/WS 服务 | Fastify（REST + 静态托管 + @fastify/websocket 或 ws） |
-| 前端 | React 18 + Vite + Ant Design 5（聊天/工作台组件） |
+| 前端 | React 19 + Vite 8 + Ant Design 6（聊天/工作台组件；画布候选 React Flow）；构建产物 `web/dist`，由 Fastify 单端口托管 |
 | 实时通道 | WebSocket（事件推送 + 消息流式 chunk）；无 SSE 时退回轮询（不推荐） |
 | 模型 Provider | 五种协议适配器：`openai-compatible` / `anthropic` / `gemini` / `ollama` / `mock`（**自研轻量网关，不引重型 SDK 依赖**，便于换后端）；供应商与模型条目由用户在 UI 配置（D20 / [model-config.md](model-config.md)） |
 | 存储 | 纯文件系统 + 手写 JSONL/JSON/Markdown 读写层 + 自建关键词倒排索引 |

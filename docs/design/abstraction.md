@@ -540,8 +540,10 @@ src/
 └── bootstrap/
     ├── composition-root.ts     # 唯一装配处
     └── self-check.ts           # 启动自检（注册表一致性/对账/临时文件）
-web/                        # 前端（独立工程，React Flow 画布 + antd）
+web/                        # 前端（独立工程，React 19 + antd 6；画布候选 React Flow）
 tests/{unit,integration,e2e,mocks}
+scripts/                    # 工程脚本：dev 并行启动、依赖门禁 ratchet（ESLint Node API）
+tools/                      # 门禁基线等工具数据（import-ratchet.json）
 ```
 
 ## 9. 错误与结果约定

@@ -17,7 +17,7 @@
 └── 对话        ← 3 栏：左会话切换 + 中会话 + 右三列表
 ```
 
-- 技术栈：React 18 + Vite（antd 组件 + 画布库，画布候选 React Flow）。
+- 技术栈：React 19 + Vite 8 + Ant Design 6（antd 组件 + 画布库，画布候选 React Flow）；实际版本以根 `package.json` 为准。
 - 主题：浅色（沿用既有浅色主题风格）；中文 UI；无账号体系（本机单用户）。
 
 ## 2. 首页四模块（项目 / Agent / 模型 / 工具）

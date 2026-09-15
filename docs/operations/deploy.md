@@ -16,13 +16,21 @@
 
 ```bash
 npm install
-npm run dev        # 开发：server:3000 + web:5173（前端代理 /api 与 /ws 到 3000）
-npm run build && npm run start   # 生产：单端口 http://127.0.0.1:3000
-npm run test       # 全量测试（Vitest）
+npm run dev        # 开发：server :3000 + web :5173（vite 代理 /api、/health、/ws 到 3000）
+npm run build      # 服务端类型检查 + 前端构建（产物 web/dist，由服务端单端口托管）
+npm start          # 生产：单端口 http://127.0.0.1:3000（tsx 直跑 TS，不产出服务端 dist）
+npm run typecheck  # 服务端 + 前端两套 tsconfig 类型检查
+npm test           # 全量测试（Vitest：unit + integration）
+npm run lint       # ESLint（含六层依赖 zones）
+npm run ratchet    # 依赖门禁 ratchet（越层违规只减不增）
+npm run reindex    # 检索索引重建（S5 接入前为空操作，命令可用）
 ```
 
+- **运行方式**：服务端由 `tsx` 直接执行 TypeScript，**没有服务端 `dist`**；`npm run build` 只做类型检查与前端构建。
+- **依赖与缓存**：`.npmrc` 把 npm cache 固定到仓库内 `.npm-cache`（已在 `.gitignore`）。若本机 `npm_config_cache` 环境变量指向别处，它会覆盖 `.npmrc`，受限环境请显式指定：`$env:npm_config_cache = "$PWD/.npm-cache"; npm install`。
 - 默认绑定 127.0.0.1（`.env` 的 `SERVER__HOST` 可改 0.0.0.0 —— 局域网使用需自行评估安全，无鉴权）。
 - 服务重启无损：会话/记忆全落盘（见下）。
+- 健康检查：`GET /health`（进程存活、版本、数据目录、联网模式；不含任何密钥）。
 
 ## 3. 配置（`.env` + 运行时模型配置）
 

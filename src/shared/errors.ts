@@ -1,0 +1,45 @@
+/**
+ * 统一错误码（真源：docs/api/contract.md §4）。
+ * 一套语义、三层映射：REST `{code,message}` / 工具 `{ok,code,reason}` / 会话事件 `kind=error`。
+ * 新增错误码必须先改 contract.md §4 并同步 docs；内部简码（FS_BOUNDARY 等）只出现在审计事件里。
+ */
+export const ERROR_CODES = [
+  'ERR_NOT_FOUND',
+  'ERR_CONFLICT',
+  'ERR_FORBIDDEN',
+  'ERR_FORBIDDEN_PATH',
+  'ERR_APPROVAL_REQUIRED',
+  'ERR_APPROVAL_REJECTED',
+  'ERR_CMD_TIMEOUT',
+  'ERR_CMD_FORBIDDEN',
+  'ERR_NET_OFFLINE',
+  'ERR_VALIDATION',
+  'ERR_MODEL',
+  'ERR_ORCHESTRATION_EDGE',
+  'ERR_ORCHESTRATION_INVALID',
+  'ERR_QUESTION_PENDING',
+  'ERR_TOOL_REJECTED',
+  'ERR_INTERNAL',
+] as const
+
+export type ErrorCode = (typeof ERROR_CODES)[number]
+
+/** REST 层粗分类（仅作 HTTP 状态码映射，判定仍以 code 为准） */
+export const HTTP_STATUS_BY_ERROR_CODE: Readonly<Record<ErrorCode, number>> = {
+  ERR_NOT_FOUND: 404,
+  ERR_CONFLICT: 409,
+  ERR_FORBIDDEN: 403,
+  ERR_FORBIDDEN_PATH: 403,
+  ERR_APPROVAL_REQUIRED: 202,
+  ERR_APPROVAL_REJECTED: 403,
+  ERR_CMD_TIMEOUT: 504,
+  ERR_CMD_FORBIDDEN: 403,
+  ERR_NET_OFFLINE: 503,
+  ERR_VALIDATION: 400,
+  ERR_MODEL: 502,
+  ERR_ORCHESTRATION_EDGE: 403,
+  ERR_ORCHESTRATION_INVALID: 400,
+  ERR_QUESTION_PENDING: 409,
+  ERR_TOOL_REJECTED: 403,
+  ERR_INTERNAL: 500,
+}

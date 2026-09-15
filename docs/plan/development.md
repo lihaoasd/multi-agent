@@ -25,7 +25,7 @@
 
 | 阶段 | 目标 | 主要交付物 | 依赖 | 覆盖测试规则 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| **S0** | 工程脚手架与依赖门禁 | `package.json`/`tsconfig`/`vite`/`vitest`/eslint zones+ratchet、六层目录、`Container`、`/health` | — | — | 未开始 |
+| **S0** | 工程脚手架与依赖门禁 | `package.json`/`tsconfig`/`vite`/`vitest`/eslint zones+ratchet、六层目录、`Container`、`/health` | — | — | **已完成（2026-09-15）**：[方案](2026-09-15-s0-scaffold.md) · [记录](../changes/2026-09-15-s0-scaffold.md) |
 | **S1** | **模型配置模块 + Agent 配置提交**（本轮设计落地） | 5 个协议适配器、`ModelConfigStore`/`ModelCatalog`、`/api/model-*`、模板与实例三项配置、前端"模型"模块 | S0 | 27~31 | 未开始 |
 | **S2** | 存储底座与项目/团队 | `FileStore`/`LockManager`/`IdGenerator`/`Clock`/`Logger`、project CRUD、创建向导、实例快照与停用 | S0 | 8 | 未开始 |
 | **S3** | 会话与单工调度 | `SessionLogStore`（seq/轮转）、`SessionMetaStore`、dispatcher occupancy、WS 网关（先盘后推） | S2 | 1、5、9 | 未开始 |
