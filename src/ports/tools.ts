@@ -54,12 +54,23 @@ export interface ToolCallContext {
   readonly sourceSeq?: number
   /** 项目工作目录/运行时目录（绝对路径） */
   readonly roots: import('./path-resolver').PathRoots
-  /** 注入当前回合的审批等待回调（审批桥用） */
+  /** 注入当前回合的审批等待回调（审批桥用）；返回决定与审批 id（供产出物记录 approvalId） */
   readonly requestApproval: (request: {
     readonly kind: 'command' | 'submit' | 'rollback'
     readonly summary: string
     readonly detail: string
-  }) => Promise<Result<'approved' | 'rejected'>>
+  }) => Promise<Result<{ readonly decision: 'approved' | 'rejected'; readonly approvalId: string | null }>>
+  /** 本次调用关联的审批 id（审批通过后由执行链填入） */
+  readonly approvalId?: string | null
+  /** 注入询问桥（`ask_user` 用）：落问题 + 等用户答复；缺省时该工具不可用 */
+  readonly askUser?: (request: {
+    readonly title: string
+    readonly items: readonly {
+      readonly text: string
+      readonly options?: readonly string[]
+      readonly required?: boolean
+    }[]
+  }) => Promise<Result<{ readonly questionId: string; readonly answers: readonly { readonly itemId: string; readonly choice: string | null; readonly text: string | null }[] }>>
   /** 信号：用户停止/回合取消 */
   readonly signal: AbortSignal
 }

@@ -27,6 +27,7 @@ import { modelConfigApi, type ModelView } from '../api/modelConfig'
 import { promptPreviewApi, type PromptPreviewView } from '../api/platform'
 import { SessionPanel } from './SessionPanel'
 import { MemoryPanel } from './MemoryPanel'
+import { WorkPanel } from './WorkPanel'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
 const LOOP_STRATEGIES = [
@@ -426,6 +427,11 @@ export function ProjectModule() {
               key: 'memory',
               label: '记忆与检索',
               children: <MemoryPanel projectId={current.id} />,
+            },
+            {
+              key: 'work',
+              label: '任务与产出物',
+              children: <WorkPanel projectId={current.id} />,
             },
           ]}
         />

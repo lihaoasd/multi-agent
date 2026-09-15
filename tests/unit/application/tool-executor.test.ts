@@ -50,7 +50,7 @@ function contextOf(overrides: Partial<ToolExecutionContext> = {}): ToolExecution
     roots,
     projectPolicy: onlinePolicy,
     signal: new AbortController().signal,
-    requestApproval: vi.fn(async () => ({ ok: true as const, value: 'approved' as const })),
+    requestApproval: vi.fn(async () => ({ ok: true as const, value: { decision: 'approved' as const, approvalId: 'ap_1' } })),
     ...overrides,
   }
 }
@@ -116,7 +116,7 @@ describe('application/tools/tool-executor · 校验链（规则 3）', () => {
     handler.mockClear()
     const rejected = await executor.execute(
       { callId: 'c2', name: 'demo_tool', args: {} },
-      contextOf({ requestApproval: vi.fn(async () => ({ ok: true as const, value: 'rejected' as const })) }),
+      contextOf({ requestApproval: vi.fn(async () => ({ ok: true as const, value: { decision: 'rejected' as const, approvalId: 'ap_2' } })) }),
     )
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) expect(rejected.error.code).toBe('ERR_APPROVAL_REJECTED')

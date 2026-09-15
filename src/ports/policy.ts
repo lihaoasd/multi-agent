@@ -5,6 +5,7 @@
  */
 import type { InstanceId, ProjectId } from './project'
 import type { SessionType } from './session'
+import type { ArtifactType } from '../shared/artifacts'
 import type { ToolName, ToolNetwork, ToolRisk } from './tools'
 
 export interface Actor {
@@ -26,6 +27,15 @@ export type PolicyAction =
       readonly kind: 'command'
       readonly program: string
       readonly args: readonly string[]
+    }
+  | {
+      /** 产出物登记（workspaces-artifacts §6）：是否需审批由项目 `artifactPolicy` 决定 */
+      readonly kind: 'submit'
+      readonly tool: ToolName
+      readonly artifactType: ArtifactType
+      readonly risk: ToolRisk
+      readonly network: ToolNetwork
+      readonly needsApproval: boolean
     }
 
 export interface TrustScope {

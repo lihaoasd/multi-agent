@@ -3,6 +3,9 @@ import type { ModelConfigService } from '../application/model-config/service'
 import type { ApprovalService } from '../application/approval/approval-service'
 import type { MemoryService } from '../ports/memory'
 import type { SearchService } from '../ports/search'
+import type { ArtifactService } from '../ports/artifact'
+import type { TaskService } from '../ports/task'
+import type { QuestionService } from '../ports/question'
 import type { PromptPreviewService } from '../application/agent-loop/preview'
 import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
@@ -25,6 +28,7 @@ import { registerProjectRoutes } from './http-routes/projects'
 import { registerSessionRoutes } from './http-routes/sessions'
 import { registerApprovalRoutes } from './http-routes/approvals'
 import { registerMemoryRoutes } from './http-routes/memory'
+import { registerArtifactRoutes } from './http-routes/work'
 import { registerToolRoutes } from './http-routes/tools'
 import { registerWsGateway } from './ws/gateway'
 import { registerStaticRoutes } from './static'
@@ -42,6 +46,9 @@ export interface ServerServices {
   readonly approvals: ApprovalService
   readonly memory: MemoryService
   readonly search: SearchService
+  readonly artifacts: ArtifactService
+  readonly tasks: TaskService
+  readonly questions: QuestionService
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -111,6 +118,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   registerMemoryRoutes(app, {
     memory: options.services.memory,
     search: options.services.search,
+  })
+  registerArtifactRoutes(app, {
+    artifacts: options.services.artifacts,
+    tasks: options.services.tasks,
+    questions: options.services.questions,
   })
   registerToolRoutes(app, {
     tools: options.services.toolRegistry,

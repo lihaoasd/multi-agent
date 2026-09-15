@@ -4,6 +4,8 @@ import type { SessionType } from '../../ports/session'
 import type { ToolRegistry } from '../../ports/tools'
 import { ok, type Result } from '../../shared/result'
 import type { MemoryService } from '../../ports/memory'
+import type { ArtifactService } from '../../ports/artifact'
+import type { TaskService } from '../../ports/task'
 import type { TeamService } from '../team/team-service'
 import { buildAgentContext, type ContextBlock } from './context-builder'
 
@@ -14,6 +16,9 @@ export interface PromptPreviewServiceOptions {
   readonly config: ConfigProvider
   /** 与运行期同源的记忆来源（预览可见 global-memory / role-memory 块） */
   readonly memory: MemoryService
+  /** 与运行期同源的任务与产出物来源（预览可见 task-context / artifact-index 块） */
+  readonly tasks: TaskService
+  readonly artifacts: ArtifactService
 }
 
 export interface PromptPreview {
@@ -43,6 +48,9 @@ export function createPromptPreviewService(options: PromptPreviewServiceOptions)
       const toolNames = effective.value.tools.length > 0 ? effective.value.tools : options.tools.list().map((item) => item.name)
       const toolSchemas = options.tools.schemasFor(toolNames, sessionType)
       const memories = await options.memory.activeFor(projectId, instanceId)
+      const activeTask = await options.tasks.activeFor(projectId, instanceId)
+      const owners = await options.artifacts.listOwners(projectId)
+      const artifacts = await options.artifacts.list(projectId, { limit: 10 })
 
       const built = buildAgentContext({
         project: { id: project.value.id, name: project.value.name, workdir: project.value.workdir },
@@ -52,6 +60,12 @@ export function createPromptPreviewService(options: PromptPreviewServiceOptions)
         memories: memories.ok ? memories.value : [],
         // 检索片段依赖"本次用户消息"，预览无消息故不注入（运行期才可能出现 retrieval 块）
         snippets: [],
+        ...(activeTask.ok && activeTask.value !== null ? { task: activeTask.value } : {}),
+        ownership: {
+          mine: owners.ok ? owners.value.filter((item) => item.owner === instanceId) : [],
+          others: owners.ok ? owners.value.filter((item) => item.owner !== instanceId) : [],
+        },
+        artifacts: artifacts.ok ? artifacts.value : [],
         limits: {
           rawWindow: platform.context.session.rawWindow,
           maxCharsPerMsg: platform.context.session.maxCharsPerMsg,

@@ -19,6 +19,10 @@ import type {
   SecretResolver,
 } from './model-config'
 import type { ApprovalStore } from './approval'
+import type { ArtifactStore } from './artifact'
+import type { QuestionStore } from './question'
+import type { TaskStore } from './task'
+import type { WorkdirFs } from './workdir'
 import type { PathResolver } from './path-resolver'
 import type { PolicyEngine } from './policy'
 import type { ProjectStore } from './project'
@@ -51,6 +55,10 @@ export const TOKENS = {
   ApprovalStore: token<ApprovalStore>('ApprovalStore'),
   MemoryStore: token<MemoryStore>('MemoryStore'),
   SearchIndex: token<SearchIndex>('SearchIndex'),
+  ArtifactStore: token<ArtifactStore>('ArtifactStore'),
+  TaskStore: token<TaskStore>('TaskStore'),
+  QuestionStore: token<QuestionStore>('QuestionStore'),
+  WorkdirFs: token<WorkdirFs>('WorkdirFs'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),
   ModelPresetProvider: token<ModelPresetProvider>('ModelPresetProvider'),

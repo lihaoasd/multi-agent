@@ -102,3 +102,16 @@ approved ──回退──▶ reverted
 > `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json 与 `.env` 的 `APPROVAL__*` 中保留（项目数据模型），但当前**不读该策略**。
 
 P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合（如某评审节点）锁定为基线，后续改动需先解锁/评审。
+
+## 7. 实现口径（2026-09-15，S6）
+
+- **写通道落地**：`workdir_edit` 经 `PathResolver`（`workdir://` 边界 + 符号链接逃逸拦截）解析为工作目录内 relPath，再由 `WorkdirFs` 二次防御（拒绝绝对路径、盘符与 `..`）；写前查 `file-owners`（无主放行 / 自己放行 / 他人 → `ERR_FORBIDDEN` 并点名 `ownerName`），写后按 `via='workdir_edit'` 署名并累加 `edits`。
+- **编辑锁（M5）**：同一 `(projectId, relPath)` 的并发编辑由 `LockManager.tryLock` 拦截——命中即返回 `ERR_CONFLICT`（不排队、不覆盖），规则 12。
+- **未结算改动**：每次 `workdir_edit` 追加一行到 `projects/<pid>/pending/<key>.jsonl`（`key=task-<taskId>` 或回合兜底 `turn-<sessionId>-<turn>`），只记**首次** `base`（内容依据）+ 最近 `after` 哈希；`artifact_submit`/任务 done/终止结算时组装版本并把它移档到 `pending-settled/`（可审计、不会重复结算）。
+- **版本内容（补丁类与快照类的统一存放）**：`artifact-versions/<artifactId>/v<n>/` 下 `manifest.json`（文件表 + diffText）、`diff.patch`（统一 diff，审计）、`files/<i>/<flat>`（提交后内容）、`base/<i>/<flat>`（提交前内容，新增文件缺省）。
+  ⚠️ 设计原文要求"code 回退=补丁反向应用"：实现同时保存 `diff.patch` 与 base 内容，回退直接写回 base（与反向应用等价且不引入补丁解析风险）。
+- **版本递增**：同一提交者 + 同题 + 同任务再次登记 → 复用同一 `artifactId` 且 `version+1`（`prevVersion` 链），跨回合/跨会话持续累计（D14-⑧）。
+- **回退**：目标版本之后文件被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`（用户确认后 `force=true` 覆盖）；回退产生 `state=reverted` + `revertedTo` 的新版本，不物理删历史。
+- **审批门（§6 与 §4 的口径冲突处理）**：`artifact_submit` 是否需审批**由项目 `artifactPolicy` 决定**（`docSubmitApproval`/`codeSubmitApproval`，`PolicyAction.kind='submit'`），策略拒绝时不产生 manifest 条目（审计在 session log 的 `approval_result`/`tool_result`）；任务级聚落（settle）不走审批门，直接 `state=approved`（B1 口径）。审批卡带 `previewRef`（doc 类提交的只读预览引用）。
+- **任务级聚合**：`workdir_edit` 的 `taskId` 由运行时注入（当前 `in_progress` 任务）；`done`/`terminated` 前 `TaskService` 先 `settle` 生成 `type=code` artifact（文件清单=该任务全部变更）并回写 `artifactIds`（可回退）。
+- **未做**：托盘批量同意/信任开关 UI（D17-④，留 S8）；回退的 UI 入口已在项目页「任务与产出物」提供（用户侧以提交者身份代行）。

@@ -198,6 +198,7 @@ agent_haness/                    # 平台仓库
 
 - `relPath` 一律相对**工作目录**；文件由角色经 `workdir_edit` 直接写入工作目录后就地登记（无隔离区拷贝步骤）；登记受 `file-owners` 归属校验。
 - **版本内容落盘（H2 定稿，回退的内容依据）**：每次提交/聚合把可回退内容写入运行时项目文件夹 `artifact-versions/<artifactId>/v<n>/`：静态产物(doc/config/deploy 等)=各文件提交时**完整快照**；代码(code)=该版本覆盖的受控编辑**补丁**（每文件 diff）。manifest 每条含 `versionDir` 引用；回退=依前序版本内容反向恢复，不依赖 git（workspaces-artifacts.md §3）。
+  - **S6 实现口径**：`v<n>/` 内为 `manifest.json`（文件表 + `diffText`）、`diff.patch`（统一 diff）、`files/<i>/<扁平名>`（提交后内容）、`base/<i>/<扁平名>`（提交前内容）；快照类与 code 类**同样保存 base**，回退写回 base（= 补丁反向应用的等价实现）。文件名扁平化以避开 relPath 对目录结构的影响。
 - 代码受控编辑按**任务级**自动聚合生成 artifact 记录（D14-⑧；无任务上下文时按回合兜底，见 workspaces-artifacts.md §2.2）；**无审批门时初始 `state`=approved**（B1 口径，与 workspaces-artifacts §4 状态机一致），仅当策略要求审批时才先 `submitted` 待批；manifest 条目含 `taskId`（归属任务，可为 null）。
 
 ## 7. 任务（tasks.jsonl）、询问（questions.jsonl）与审批（approvals.jsonl）
@@ -239,6 +240,8 @@ agent_haness/                    # 平台仓库
 ```
 
 > **双写主从与对账（D18-⑤a）**：approvals/artifacts/tasks 等**业务记录文件先原子写**（成功=事实生效），随后向会话 log 追加对应事件（kind=tool_result/approval_*/artifact/…，审计投影；追加失败记自检告警、不阻断主流程）；启动自检比对 log 尾部并补齐缺失投影。search-index / runtime.state / 会话 meta 标志同理一律视为**可重建投影**，业务状态只以记录文件与 log 事件为准。
+>
+> **S6 实现口径（2026-09-15）**：`tasks.jsonl`/`questions.jsonl`/`artifacts.jsonl` 一律 **append-only**（同 id 取最后一条），任务状态不再"读全量→改→覆盖写"；进程内以 `tasks:<pid>`/`questions:<pid>`/`artifacts:<pid>` 锁串行化。新增 `projects/<pid>/pending/<key>.jsonl`（未结算改动）与 `pending-settled/`（落袋归档，保留审计）。版本内容布局见 §6 的 S6 说明。
 
 ## 8. 角色模板（系统角色库）
 

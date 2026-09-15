@@ -183,14 +183,36 @@ describe('API · 审批（规则 3 / 11）', () => {
     const packages = await inject({ method: 'GET', url: '/api/tool-packages' })
     const list = packages.json<Array<{ id: string; tools: Array<{ name: string; registered: boolean }> }>>()
     expect(list).toHaveLength(7)
+    // S6 起 7 个基础包的工具全部真实注册（展示态 = 生效态）
+    for (const item of list) {
+      expect(item.tools.every((tool) => tool.registered)).toBe(true)
+    }
     const fs = list.find((item) => item.id === 'fs')
     expect(fs?.tools.every((tool) => tool.registered)).toBe(true)
-    const task = list.find((item) => item.id === 'task')
-    expect(task?.tools.every((tool) => tool.registered)).toBe(false)
 
     const tools = await inject({ method: 'GET', url: '/api/tools' })
     const names = tools.json<Array<{ name: string }>>().map((tool) => tool.name)
-    expect(names).toEqual(expect.arrayContaining(['fs_read_file', 'fs_list_dir', 'fs_search', 'cmd_run', 'approval_query']))
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'fs_read_file',
+        'fs_list_dir',
+        'fs_search',
+        'cmd_run',
+        'approval_query',
+        'memory_append',
+        'memory_search',
+        'session_search',
+        'workdir_edit',
+        'artifact_submit',
+        'artifact_rollback',
+        'task_view',
+        'task_list',
+        'task_assign',
+        'task_claim',
+        'task_update',
+        'ask_user',
+      ]),
+    )
 
     const loops = await inject({ method: 'GET', url: '/api/loops' })
     expect(loops.json<Array<{ name: string }>>().map((loop) => loop.name).sort()).toEqual([

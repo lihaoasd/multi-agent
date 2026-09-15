@@ -72,8 +72,8 @@ export const BUILTIN_TOOL_PACKAGES: readonly ToolPackageInfo[] = [
   {
     id: 'task',
     name: '任务',
-    description: '任务查看/委派/领取/汇报（委派受编排图出边约束）',
-    tools: ['task_view', 'task_list', 'task_assign', 'task_claim', 'task_update'],
+    description: '任务查看/委派/领取/汇报（委派受编排图出边约束）+ 向用户提问（ask_user）',
+    tools: ['task_view', 'task_list', 'task_assign', 'task_claim', 'task_update', 'ask_user'],
     riskMax: 'low',
     network: 'none',
     required: true,

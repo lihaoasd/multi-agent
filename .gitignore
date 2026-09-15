@@ -4,6 +4,10 @@ data/
 # 测试临时目录
 .test-tmp/
 
+# 临时脚本与提交信息（演示脚本、提交说明，随用随删，不入库）
+.demo-*.ts
+.commitmsg*.tmp
+
 # 依赖与构建产物
 node_modules/
 dist/

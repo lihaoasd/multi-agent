@@ -20,6 +20,8 @@ export interface DispatcherOptions {
   readonly sessions: SessionService
   readonly runner: TurnRunner
   readonly approvals: { hasPending(projectId: string, instanceId: string): Promise<boolean> }
+  /** 待答复询问同样让占用者进入 `waiting`（D19-⑦） */
+  readonly questions: { hasPending(projectId: string, instanceId: string): Promise<boolean> }
   readonly broadcaster: EventBroadcaster
   readonly lock: LockManager
   readonly clock: Clock
@@ -187,7 +189,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       const occupancy = state.value.occupancy[instance.instanceId]
       const cursor = state.value.lastHandledSeq[instance.instanceId] ?? 0
       const pending = await pendingMessages(projectId, instance.instanceId, cursor)
-      const waiting = occupancy !== undefined && (await approvals.hasPending(projectId, instance.instanceId))
+      const waiting =
+        occupancy !== undefined &&
+        ((await approvals.hasPending(projectId, instance.instanceId)) ||
+          (await options.questions.hasPending(projectId, instance.instanceId)))
       statuses.push({
         instanceId: instance.instanceId,
         enabled: instance.enabled,

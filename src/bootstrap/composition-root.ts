@@ -6,6 +6,9 @@ import { createApprovalService, type ApprovalService } from '../application/appr
 import { createMemoryService } from '../application/memory/memory-service'
 import { createSearchService } from '../application/search/search-service'
 import { createSummaryEngine, type SummaryEngine } from '../application/memory/summary-engine'
+import { createArtifactService } from '../application/artifact/artifact-service'
+import { createTaskService } from '../application/task/task-service'
+import { createQuestionService } from '../application/question/question-service'
 import { createToolExecutor } from '../application/tools/tool-executor'
 import { createDispatcher } from '../application/dispatcher/dispatcher'
 import { createModelCatalog } from '../application/model-config/catalog'
@@ -24,6 +27,10 @@ import {
 import { createSecretResolver } from '../infra/config/secret-resolver'
 import { createWsEventHub } from '../infra/events/ws-hub'
 import { createFileStore } from '../infra/file-store/file-store'
+import { createArtifactStore } from '../infra/file-store/artifact-store'
+import { createTaskStore } from '../infra/file-store/task-store'
+import { createQuestionStore } from '../infra/file-store/question-store'
+import { createWorkdirFs } from '../infra/fs/workdir-fs'
 import { createMemoryStore } from '../infra/file-store/memory-store'
 import { createKeywordIndex } from '../infra/indexer/keyword-index'
 import { createModelConfigStore } from '../infra/file-store/model-config-store'
@@ -59,6 +66,10 @@ import type { CmdRunner } from '../ports/sandbox'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
 import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
+import type { ArtifactService, ArtifactStore } from '../ports/artifact'
+import type { QuestionService, QuestionStore } from '../ports/question'
+import type { TaskService, TaskStore } from '../ports/task'
+import type { WorkdirFs } from '../ports/workdir'
 import type { MemoryService, MemoryStore } from '../ports/memory'
 import type { SearchIndex, SearchService } from '../ports/search'
 import type { Dispatcher } from '../ports/dispatcher'
@@ -226,6 +237,36 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     }),
   )
 
+  // 5) 产出物 / 任务 / 询问（S6）
+  container.registerInstance(TOKENS.WorkdirFs, createWorkdirFs())
+  container.registerInstance(
+    TOKENS.ArtifactStore,
+    createArtifactStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(
+    TOKENS.TaskStore,
+    createTaskStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(
+    TOKENS.QuestionStore,
+    createQuestionStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+
   // 3) 模型
   const presets = createYamlModelPresetProvider(DEFAULT_PRESET_PATH)
   // 启动自检：预置目录随仓库只读，坏了必须立刻暴露（否则每次请求都 500）
@@ -276,6 +317,10 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.ApprovalStore,
     TOKENS.MemoryStore,
     TOKENS.SearchIndex,
+    TOKENS.WorkdirFs,
+    TOKENS.ArtifactStore,
+    TOKENS.TaskStore,
+    TOKENS.QuestionStore,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -317,6 +362,9 @@ export interface AppDeps {
   readonly memory: MemoryService
   readonly search: SearchService
   readonly summary: SummaryEngine
+  readonly artifacts: ArtifactService
+  readonly tasks: TaskService
+  readonly questions: QuestionService
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -433,12 +481,55 @@ export function resolveDeps(
     memory,
   })
 
+  // 产出物/任务/询问服务：任务与询问的"通知并唤醒一轮"在这里收口（D18-③）
+  const artifacts = createArtifactService({
+    store: container.resolve<ArtifactStore>(TOKENS.ArtifactStore),
+    workdir: container.resolve<WorkdirFs>(TOKENS.WorkdirFs),
+    projects: container.resolve(TOKENS.ProjectStore),
+    lock: container.resolve(TOKENS.LockManager),
+    ids,
+    clock,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
+  const notifier: { wake?: (input: { projectId: string; instanceId: string; text: string }) => Promise<void> } = {}
+  const wake = async (input: { projectId: string; instanceId: string; text: string }): Promise<void> => {
+    if (notifier.wake === undefined) return
+    await notifier.wake(input)
+  }
+
+  const tasks = createTaskService({
+    store: container.resolve<TaskStore>(TOKENS.TaskStore),
+    projects: container.resolve(TOKENS.ProjectStore),
+    artifacts,
+    ids,
+    clock,
+    broadcaster,
+    logger: container.resolve(TOKENS.Logger),
+    notify: wake,
+  })
+
+  const questions = createQuestionService({
+    store: container.resolve<QuestionStore>(TOKENS.QuestionStore),
+    broadcaster,
+    ids,
+    clock,
+    logger: container.resolve(TOKENS.Logger),
+    notify: wake,
+  })
+
   const toolRegistry = createToolRegistry()
   registerBuiltinTools(toolRegistry, {
     paths: container.resolve<PathResolver>(TOKENS.PathResolver),
     cmd: container.resolve<CmdRunner>(TOKENS.CmdRunner),
     memory,
     search,
+    artifacts,
+    tasks,
+    activeTaskId: async ({ projectId, instanceId }) => {
+      const active = await tasks.activeFor(projectId, instanceId)
+      return active.ok ? (active.value?.id ?? null) : null
+    },
     listOwnApprovals: async ({ projectId, instanceId }) => {
       const listed = await approvals.list(projectId, { actor: instanceId })
       return listed.ok
@@ -482,6 +573,9 @@ export function resolveDeps(
     memory,
     search,
     summary,
+    tasks,
+    questions,
+    artifacts,
     broadcaster,
     config: configProvider,
     clock,
@@ -494,6 +588,8 @@ export function resolveDeps(
     tools: toolRegistry,
     config: configProvider,
     memory,
+    tasks,
+    artifacts,
   })
 
   const dispatcher = createDispatcher({
@@ -502,11 +598,25 @@ export function resolveDeps(
     sessions,
     runner,
     approvals,
+    questions,
     broadcaster,
     lock: container.resolve(TOKENS.LockManager),
     clock,
     logger: container.resolve(TOKENS.Logger),
   })
+
+  // 通知并唤醒一轮（D18-③）：向该角色的 user 会话注入一条系统消息，再触发 drain 处理它
+  notifier.wake = async (input) => {
+    const appended = await sessions.append(input.projectId, sessions.sessionIdFor(input.instanceId), [
+      {
+        kind: 'message',
+        turn: 0,
+        payload: { role: 'user', sender: 'system', text: input.text, content: { text: input.text } },
+      },
+    ])
+    if (!appended.ok) return
+    await dispatcher.drain(input.projectId, input.instanceId)
+  }
 
   return {
     config,
@@ -537,6 +647,9 @@ export function resolveDeps(
     memory,
     search,
     summary,
+    artifacts,
+    tasks,
+    questions,
     toolRegistry,
     toolPackages,
     loopRegistry,

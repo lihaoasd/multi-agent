@@ -172,6 +172,19 @@ export function createPolicyEngine(): PolicyEngine {
         }
       }
 
+      // ── 1.5) 产出物登记：是否需审批由项目 artifactPolicy 决定（workspaces-artifacts §6）──
+      if (action.kind === 'submit') {
+        const gate = action.artifactType === 'code' ? projectPolicy.codeSubmitApproval : projectPolicy.docSubmitApproval
+        if (gate || action.risk === 'high' || action.needsApproval) {
+          return {
+            decision: 'approval',
+            ruleId: action.artifactType === 'code' ? 'SUBMIT_CODE_APPROVAL' : 'SUBMIT_DOC_APPROVAL',
+            reason: `产出物登记（${action.artifactType}）需要用户确认`,
+          }
+        }
+        return { decision: 'allow', ruleId: 'SUBMIT_FREE', reason: '登记免审批（artifactPolicy 已关闭审批门）' }
+      }
+
       // ── 2) trust 可以放行"待审批但已记住"的动作（D17-④，默认仅 doc/test）──
       if (trust !== undefined && trust.instanceId === input.actor.instanceId && action.needsApproval) {
         const tag = action.tool.startsWith('doc') ? 'doc' : action.tool.startsWith('test') ? 'test' : 'other'

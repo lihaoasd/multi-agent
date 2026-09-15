@@ -97,9 +97,10 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 
 组装顺序固定，可配置 `contextLimits`。检索到的旧会话片段按需注入（tag 为引用片段）。
 
-> **实现口径（2026-09-15，S5）**：块顺序落地为 `role-config → platform-role → global-memory → role-memory → session-window → retrieval? → tools`（`tools` 按本节口径排在最后；此前 S4 的 `tools` 在 `session-window` 之前已修正）。
+> **实现口径（2026-09-15，S5/S6）**：块顺序落地为 `role-config → platform-role → global-memory → role-memory → session-window → retrieval? → task-context? → artifact-index? → tools`（`tools` 按本节口径排在最后；此前 S4 的 `tools` 在 `session-window` 之前已修正）。
 > `global-memory`/`role-memory` 取 `memory.activeFor`（global 与本人角色分别限量、时间倒序）；`session-window` 先给**最近一条 `summary` 事件的 digest**（`【历史摘要（至 seq N）】`），再列该摘要覆盖范围之后的最近 `rawWindow` 条原文；
-> `retrieval` 块仅在检索到"不在本次窗口内"的片段时出现（上限 `context.search.maxSnippets`，每条 ≤600 字），检索词取本次用户消息，可见性同 D18-②（Agent 只可能命中本人会话与可见记忆）。
+> `retrieval` 块仅在检索到"不在本次窗口内"的片段时出现（上限 `context.search.maxSnippets`，每条 ≤600 字），检索词取本次用户消息，可见性同 D18-②（Agent 只可能命中本人会话与可见记忆）；
+> `task-context` 只在存在 `in_progress` 任务时出现（todo 不入上下文，规则 15）；`artifact-index` 汇总"我的产出物（可改）/他人产出物（只读）"（`file-owners` 署名，workspaces-artifacts §2.2）与最近 10 条产出物摘要，供 Agent 判断"能改谁的、改过什么"。
 
 **contextLimits MVP 默认值**（`.env` 集中配置，键名如 `CONTEXT__SESSION__RAW_WINDOW`，可全局/实例覆盖，M11 定稿）：
 
@@ -138,6 +139,8 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 | fs_read_file / fs_list_dir / fs_search | workdir + ro:// 只读 | none | **工作目录内容全员可读**（角色间共享）；ro:// 为只读平台资源 |
 | memory_append / memory_search | 记忆 | none | 个人记忆写、项目全局只读(默认；全局写仅 pm 例外) |
 | session_search | 本项目会话 | none | 关键词检索 |
+| workdir_edit / artifact_submit | 工作目录 | low | 唯一写通道（归属校验 + 署名）与产出物登记（S6） |
+| task_* / ask_user | 任务与询问 | low/none | 任务闭环与向用户提问（S6） |
 | artifact_submit | →workdir | low（doc 类默认审批，D13②） | 静态产物提交（写工作目录通道②） |
 | workdir_edit | workdir | low | 代码受控编辑（diff 审计 + **任务级**聚合 artifact，写通道①，D14-⑧）；**写前按 `file-owners` 校验归属**（他人文件拒改） |
 | cmd_run | workdir | 视命令 | 命令执行器（写通道③；沙箱/风险/联网见 sandbox.md） |

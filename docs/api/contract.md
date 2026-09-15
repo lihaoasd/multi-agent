@@ -52,14 +52,16 @@
 > 会话与事件口径（2026-09-15 实现）：事件**先落盘后推送**（`EventPipeline` 是唯一写入口）；`GET .../log` 返回 `[{seq,ts,sessionId,turn,kind,...payload}]`；seq 会话内单调且**跨轮转连续**（轮转段命名 `<sid>.log.<n>.jsonl`，当前段恒为 `<sid>.log.jsonl`）。
 
 ### 产出物 / 任务 / 审批 / 搜索
-| GET | /api/projects/:pid/artifacts | manifest 列表 |
+| GET | /api/projects/:pid/artifacts?type=&submitter=&state=&taskId=&limit= | manifest 列表（每个 artifact 只回最新版本）。实现（2026-09-15，S6）：条目含 `id/type/title/summary/submitter/state/version/files[{relPath,action,hash}]/diffSummary/prevVersion/taskId/revertedTo/ts` |
 | GET | /api/projects/:pid/artifacts/:aid | 详情（文件清单/diff 摘要）|
-| POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 |
-| GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
-| PATCH | /api/projects/:pid/tasks/:tid | 改状态（状态含 `terminated`=用户终止，先结算未结算改动，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
-| GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12 |
-| GET | /api/projects/:pid/questions?status=pending\|answered&sessionId= | **询问列表**：Agent 向用户提问（一条记录含 `items[]`；`pending`=待答）；Agent 提问后状态 `waiting`，同一 Agent 至多 1 个 pending |
-| POST | /api/projects/:pid/questions/:qid/answer | 答复询问：`{answers:[{itemId?,choice?/choices?/text?}]}`；答复后唤醒该 Agent 继续（无排队提问时）|
+| GET | /api/projects/:pid/artifacts/:aid/versions | 该 artifact 的全部版本（版本号升序；回退产生 `state=reverted` + `revertedTo` 的新版本）|
+| POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 `{version, force?}`：把该版本涉及文件恢复为其提交前内容（新增文件即删除）；文件在目标版本后被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`，确认覆盖需 `force=true` |
+| GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee/creator 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
+| PATCH | /api/projects/:pid/tasks/:tid | 改状态 `{state, note?}`（状态含 `terminated`=用户终止，先结算未结算改动为 code artifact，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
+| GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12；实现（S6）另含 `lastTaskId`/`via`（`workdir_edit`\|`artifact_submit`）|
+| GET | /api/projects/:pid/pending-edits?key= | 未结算改动（任务级聚合视图）：`{edits[], files, diffSummary}`；`key=task-<taskId>` 或 `turn-<sessionId>-<turn>` |
+| GET | /api/projects/:pid/questions?status=pending\|answered&sessionId= | **询问列表**：Agent 向用户提问（一条记录含 `items[]`；`pending`=待答）；Agent 提问后状态 `waiting`，同一 Agent 至多 1 个 pending（再问 → `ERR_QUESTION_PENDING`）|
+| POST | /api/projects/:pid/questions/:qid/answer | 答复询问：`{answers:[{itemId, choice?/text?}]}`；必答项缺失 → `ERR_VALIDATION`（`detail.missing[]`）、重复答复 → `ERR_CONFLICT`；答复后唤醒该 Agent 继续（无排队提问时）|
 | GET | /api/projects/:pid/approvals?status=pending\|approved\|rejected&actor= | 审批列表（按请求时间倒序）|
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 `{decision:"approved"\|"rejected", reason?}`；**决定只能落一次**（重复 → `ERR_CONFLICT`）；落盘后唤醒等待中的回合（approved 继续执行 / rejected 回注 `ERR_APPROVAL_REJECTED`）|
 | GET | /api/projects/:pid/search?q=&scope=\|type=&sessionId=&limit= | 关键词检索（会话/记忆分组）。实现（2026-09-15，S5）：`scope` 与 `type` 同义（`all\|session\|memory`），2-gram 中文匹配 + 汉字单字回退；返回 `{query,count,sessionHits[],memoryHits[]}`，命中带 `(sessionId,seq)` 或 `entryId`、`kind`、`score`、`tokens[]`（供高亮与跳转）。用户视角不受可见性限制 |

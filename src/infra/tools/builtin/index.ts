@@ -7,6 +7,9 @@ import type { ToolDefinition, ToolHandler, ToolOutcome } from '../../../ports/to
 import { classifyCommand } from '../../../domain/rules/policy'
 import { err, ok, type Result } from '../../../shared/result'
 import { memoryTools, type MemoryToolDeps } from './memory'
+import { artifactTools, type ArtifactToolDeps } from './artifact'
+import { taskTools, type TaskToolDeps } from './task'
+import { askUserTool } from './question'
 
 /** 内置工具（S4：只读 fs 三件套 + cmd_run + approval_query；S5：记忆与检索三件套） */
 
@@ -321,7 +324,9 @@ export function approvalQueryTool(options: {
 export function registerBuiltinTools(
   registry: import('../../../ports/tools').ToolRegistry,
   deps: BuiltinToolDeps &
-    MemoryToolDeps & {
+    MemoryToolDeps &
+    ArtifactToolDeps &
+    TaskToolDeps & {
       readonly listOwnApprovals: (context: {
         readonly projectId: string
         readonly instanceId: string
@@ -335,6 +340,9 @@ export function registerBuiltinTools(
     cmdRunTool(deps),
     approvalQueryTool({ listOwn: deps.listOwnApprovals }),
     ...memoryTools({ memory: deps.memory, search: deps.search }),
+    ...artifactTools({ artifacts: deps.artifacts, paths: deps.paths, activeTaskId: deps.activeTaskId }),
+    ...taskTools({ tasks: deps.tasks }),
+    askUserTool(),
   ]
   for (const tool of tools) registry.register(tool.definition, tool.handler)
 }

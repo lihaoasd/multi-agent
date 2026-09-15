@@ -4,4 +4,9 @@
  */
 export interface LockManager {
   withLock<T>(key: string, fn: () => Promise<T>): Promise<T>
+  /**
+   * 非阻塞版本：key 已被占用时**立即**返回 false（用于"同一文件正被编辑"这类要报
+   * `ERR_CONFLICT` 而不是排队的场景，规则 12/M5）。
+   */
+  tryLock<T>(key: string, fn: () => Promise<T>): Promise<{ readonly acquired: boolean; readonly value?: T }>
 }

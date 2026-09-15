@@ -7,6 +7,7 @@ import type { LockManager } from '../../ports/lock'
  */
 export function createKeyedLockManager(): LockManager {
   const tails = new Map<string, Promise<unknown>>()
+  const held = new Set<string>()
 
   return {
     async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -22,6 +23,16 @@ export function createKeyedLockManager(): LockManager {
         return await run
       } finally {
         if (tails.get(key) === tail) tails.delete(key)
+      }
+    },
+
+    async tryLock<T>(key: string, fn: () => Promise<T>): Promise<{ acquired: boolean; value?: T }> {
+      if (held.has(key)) return { acquired: false }
+      held.add(key)
+      try {
+        return { acquired: true, value: await fn() }
+      } finally {
+        held.delete(key)
       }
     },
   }

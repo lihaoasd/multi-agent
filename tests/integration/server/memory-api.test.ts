@@ -192,7 +192,7 @@ describe('API · 记忆与检索（规则 6 / 7 / 13）', () => {
         turn: 1,
         sourceSeq: 9,
         roots: { workdir: process.cwd(), runtime: process.cwd(), readonly: [] },
-        requestApproval: async () => ({ ok: true, value: 'approved' as const }),
+        requestApproval: async () => ({ ok: true, value: { decision: 'approved' as const, approvalId: null } }),
         signal: new AbortController().signal,
       }
       return entry.handler(args, toolContext)

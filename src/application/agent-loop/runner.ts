@@ -10,6 +10,8 @@ import type { TurnRunContext, TurnRunner } from '../../ports/turn'
 import type { ApprovalService } from '../approval/approval-service'
 import type { MemoryService } from '../../ports/memory'
 import type { SearchService } from '../../ports/search'
+import type { TaskService } from '../../ports/task'
+import type { QuestionService } from '../../ports/question'
 import type { SummaryEngine } from '../memory/summary-engine'
 import type { SessionService } from '../session/session-service'
 import type { TeamService } from '../team/team-service'
@@ -34,6 +36,12 @@ export interface AgentLoopRunnerOptions {
   readonly search: SearchService
   /** L2 滚动摘要引擎：回合结束后按阈值维护 */
   readonly summary: SummaryEngine
+  /** 任务：上下文注入 + 产出物按任务聚合归属（D14-⑧/D19-⑤） */
+  readonly tasks: TaskService
+  /** 询问桥：`ask_user` 落 pending 并等待用户答复（D19-⑦） */
+  readonly questions: QuestionService
+  /** 产出物清单（`file-owners`）注入系统提示：我的/他人产出物（§2.2） */
+  readonly artifacts: import('../../ports/artifact').ArtifactService
   readonly broadcaster: EventBroadcaster
   readonly config: ConfigProvider
   readonly clock: Clock
@@ -146,6 +154,14 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         ? retrieved.value.filter((hit) => hit.sessionId === null || !windowKeys.has(`${hit.sessionId}#${hit.seq}`))
         : []
 
+      // 任务上下文（D19-⑤/D17-①）：只注入"进行中"的任务；todo 不入上下文
+      const activeTask = await options.tasks.activeFor(context.projectId, context.instanceId)
+      // 产出物索引与署名（workspaces-artifacts §2.2）：我的（可改）/ 他人的（只读）
+      const owners = await options.artifacts.listOwners(context.projectId)
+      const myOwners = owners.ok ? owners.value.filter((item) => item.owner === context.instanceId) : []
+      const otherOwners = owners.ok ? owners.value.filter((item) => item.owner !== context.instanceId) : []
+      const artifactList = await options.artifacts.list(context.projectId, { limit: 10 })
+
       const built = buildAgentContext({
         project: { id: project.value.id, name: project.value.name, workdir: project.value.workdir },
         effective: config,
@@ -153,6 +169,9 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         toolSchemas,
         memories: memories.ok ? memories.value : [],
         snippets,
+        ...(activeTask.ok && activeTask.value !== null ? { task: activeTask.value } : {}),
+        ownership: { mine: myOwners, others: otherOwners },
+        artifacts: artifactList.ok ? artifactList.value : [],
         limits: {
           rawWindow: platform.context.session.rawWindow,
           maxCharsPerMsg: platform.context.session.maxCharsPerMsg,
@@ -183,7 +202,7 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         readonly kind: 'command' | 'submit' | 'rollback'
         readonly summary: string
         readonly detail: string
-      }): Promise<Result<'approved' | 'rejected'>> => {
+      }): Promise<Result<{ readonly decision: 'approved' | 'rejected'; readonly approvalId: string | null }>> => {
         const created = await options.approvals.request({
           projectId: context.projectId,
           kind: request.kind,
@@ -191,6 +210,8 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
           sessionId: context.sessionId,
           summary: request.summary,
           detail: request.detail,
+          // doc 类提交审批的只读预览引用（D16-⑥，规则 16）：先给"待批动作"的说明文本
+          ...(request.kind === 'submit' ? { previewRef: `approval-preview://${context.sessionId}/${context.turn}` } : {}),
         })
         if (!created.ok) return created
         await context.emit({
@@ -202,6 +223,7 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
             summary: created.value.summary,
             risk: request.kind === 'command' ? 'high' : 'low',
             detail: created.value.detail,
+            previewRef: created.value.previewRef,
           },
         })
         const decision = await options.approvals.waitForDecision(context.projectId, created.value.id, context.signal)
@@ -214,7 +236,35 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
             reason: decision.ok ? null : decision.error.message,
           },
         })
-        return decision
+        if (!decision.ok) return decision
+        return ok({ decision: decision.value, approvalId: created.value.id })
+      }
+
+      /** 询问桥（D19-⑦）：落 pending → 广播 → 阻塞等待答复；答复或回合取消都会返回 */
+      const askUser = async (request: {
+        readonly title: string
+        readonly items: readonly {
+          readonly text: string
+          readonly options?: readonly string[]
+          readonly required?: boolean
+        }[]
+      }): Promise<
+        Result<{
+          readonly questionId: string
+          readonly answers: readonly { readonly itemId: string; readonly choice: string | null; readonly text: string | null }[]
+        }>
+      > => {
+        const asked = await options.questions.ask({
+          projectId: context.projectId,
+          sessionId: context.sessionId,
+          asker: context.instanceId,
+          title: request.title,
+          items: request.items,
+        })
+        if (!asked.ok) return asked
+        const answered = await options.questions.waitForAnswer(context.projectId, asked.value.id, context.signal)
+        if (!answered.ok) return answered
+        return ok({ questionId: asked.value.id, answers: answered.value.answer?.answers ?? [] })
       }
 
       const callModel = (request: {
@@ -266,6 +316,7 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
             projectPolicy,
             signal: context.signal,
             requestApproval,
+            askUser,
           }),
         budget,
         shouldInterrupt: () => {

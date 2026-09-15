@@ -1,6 +1,8 @@
 import type { ChatMessage, ToolSchema } from '../../ports/model'
+import type { ArtifactRecord, FileOwnerRecord } from '../../ports/artifact'
 import type { MemoryEntry } from '../../ports/memory'
 import type { SearchHit } from '../../ports/search'
+import type { TaskRecord } from '../../ports/task'
 import type { StoredEvent } from '../../ports/session'
 import type { ProjectMeta } from '../../ports/project'
 import { DEFAULT_MAX_PROMPT_CHARS, SUMMARY_PROMPT_CHARS } from '../../shared/loop'
@@ -48,6 +50,12 @@ export interface BuildContextInput {
   readonly memories?: readonly MemoryEntry[]
   /** 检索命中片段（按需注入，最多 `contextLimits.search.maxSnippets` 条） */
   readonly snippets?: readonly SearchHit[]
+  /** 当前激活任务（只注入 `in_progress`；todo 不入上下文，规则 15） */
+  readonly task?: TaskRecord
+  /** 产出物署名（`file-owners`）：我的（可改）/ 他人的（只读）（workspaces-artifacts §2.2） */
+  readonly ownership?: { readonly mine: readonly FileOwnerRecord[]; readonly others: readonly FileOwnerRecord[] }
+  /** 项目产出物索引（名称/版本/文件数，内容按需读） */
+  readonly artifacts?: readonly ArtifactRecord[]
   readonly limits: {
     readonly rawWindow: number
     readonly maxCharsPerMsg: number
@@ -180,6 +188,53 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
           return `- [${where}] ${hit.text}`
         })
         .join('\n'),
+    })
+  }
+
+  if (input.task !== undefined) {
+    blocks.push({
+      id: 'task-context',
+      origin: 'task-context',
+      title: '当前任务',
+      text: [
+        `任务 ${input.task.id}：${input.task.title}（${input.task.state}｜发起：${input.task.creator}）`,
+        ...(input.task.desc.length === 0 ? [] : [`说明：${input.task.desc}`]),
+        '你的代码改动会计入这条任务；完成后用 task_update 汇报 done（平台会结算为可回退的产出物）。',
+      ].join('\n'),
+    })
+  }
+
+  if (input.ownership !== undefined || (input.artifacts?.length ?? 0) > 0) {
+    const lines: string[] = []
+    if (input.ownership !== undefined) {
+      lines.push(
+        input.ownership.mine.length === 0
+          ? '我的产出物（可改）：暂无'
+          : `我的产出物（可改）：\n${input.ownership.mine.map((item) => `- ${item.relPath}`).join('\n')}`,
+      )
+      lines.push(
+        input.ownership.others.length === 0
+          ? '他人产出物（只读）：暂无'
+          : `他人产出物（只读）：\n${input.ownership.others
+              .map((item) => `- ${item.relPath}（署名：${item.ownerName}）`)
+              .join('\n')}`,
+      )
+    }
+    if ((input.artifacts?.length ?? 0) > 0) {
+      lines.push(
+        `最近产出物：\n${(input.artifacts ?? [])
+          .map(
+            (item) =>
+              `- ${item.id} v${item.version} [${item.type}/${item.state}] ${item.title}（${item.files.length} 文件，+${item.diffSummary.add}/-${item.diffSummary.del}）`,
+          )
+          .join('\n')}`,
+      )
+    }
+    blocks.push({
+      id: 'artifact-index',
+      origin: 'artifact-index',
+      title: '产出物索引与署名',
+      text: lines.join('\n'),
     })
   }
 

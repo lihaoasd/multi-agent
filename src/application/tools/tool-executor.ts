@@ -21,7 +21,9 @@ export interface ToolExecutionContext {
     readonly kind: 'command' | 'submit' | 'rollback'
     readonly summary: string
     readonly detail: string
-  }) => Promise<Result<'approved' | 'rejected'>>
+  }) => Promise<Result<{ readonly decision: 'approved' | 'rejected'; readonly approvalId: string | null }>>
+  /** 询问桥：由 loop 提供（落问题 + 发事件 + 等用户答复）；`ask_user` 依赖它 */
+  readonly askUser?: import('../../ports/tools').ToolCallContext['askUser']
 }
 
 export interface ToolExecutorOptions {
@@ -80,17 +82,21 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
         return err(code, `策略拒绝：${decision.reason}`, { ruleId: decision.ruleId, tool: call.name })
       }
 
+      let approvalId: string | null = null
       if (decision.decision === 'approval') {
         const approved = await context.requestApproval({
           kind: action.kind === 'command' ? 'command' : 'submit',
           summary:
             action.kind === 'command'
               ? `执行命令：${action.program} ${action.args.join(' ')}`.trim()
-              : `调用工具：${call.name}`,
+              : action.kind === 'submit'
+                ? `登记产出物（${action.artifactType}）：${call.name}`
+                : `调用工具：${call.name}`,
           detail: `${decision.reason}（ruleId=${decision.ruleId}）\n参数：${JSON.stringify(call.args).slice(0, 800)}`,
         })
         if (!approved.ok) return approved
-        if (approved.value === 'rejected') {
+        approvalId = approved.value.approvalId
+        if (approved.value.decision === 'rejected') {
           return err('ERR_APPROVAL_REJECTED', '用户拒绝了该动作，请调整方案', {
             tool: call.name,
             ruleId: decision.ruleId,
@@ -105,8 +111,10 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
         sessionType: context.sessionType,
         turn: context.turn,
         ...(context.sourceSeq === undefined ? {} : { sourceSeq: context.sourceSeq }),
+        approvalId,
         roots: context.roots,
         requestApproval: context.requestApproval,
+        ...(context.askUser === undefined ? {} : { askUser: context.askUser }),
         signal: context.signal,
       })
 
