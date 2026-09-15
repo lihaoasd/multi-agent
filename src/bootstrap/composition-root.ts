@@ -1,4 +1,6 @@
 import { createModelCatalog } from '../application/model-config/catalog'
+import { createProjectService, type ProjectService } from '../application/project/service'
+import { createTeamService, type TeamService } from '../application/team/team-service'
 import { createTemplateModelReferenceQuery } from '../application/model-config/references'
 import { createModelConfigService, type ModelConfigService } from '../application/model-config/service'
 import { createAgentConfigService, type AgentConfigService } from '../application/team/agent-config-service'
@@ -11,7 +13,10 @@ import { createSecretResolver } from '../infra/config/secret-resolver'
 import { createNoopEventBroadcaster } from '../infra/events/noop-broadcaster'
 import { createFileStore } from '../infra/file-store/file-store'
 import { createModelConfigStore } from '../infra/file-store/model-config-store'
+import { createProjectStore } from '../infra/file-store/project-store'
 import { createRoleTemplateStore } from '../infra/file-store/role-template-store'
+import { createDirectoryBrowser } from '../infra/fs/directory-browser'
+import { createKeyedLockManager } from '../infra/lock/keyed-lock'
 import { createModelGateway } from '../infra/model/gateway'
 import { createYamlModelPresetProvider } from '../infra/model/presets'
 import { createProviderKindRegistry, registerBuiltinProviderKinds } from '../infra/model/registry'
@@ -24,6 +29,9 @@ import type { ConfigProvider } from '../ports/config'
 import type { Container } from '../ports/container'
 import type { EventBroadcaster } from '../ports/events'
 import type { FileStore } from '../ports/file-store'
+import type { DirectoryBrowser } from '../ports/fs-browse'
+import type { LockManager } from '../ports/lock'
+import type { ProjectStore } from '../ports/project'
 import type { IdGenerator } from '../ports/id'
 import type { Logger } from '../ports/logger'
 import type { ModelGateway } from '../ports/model'
@@ -38,6 +46,7 @@ import type { RoleTemplateStore } from '../ports/role-templates'
 import type { StaticAssetProvider } from '../ports/static-assets'
 import { TOKENS } from '../ports/tokens'
 import { buildAppConfig, type AppConfig } from '../shared/config'
+import { resolve } from 'node:path'
 import { createContainer } from './container'
 
 /** web 构建产物候选目录（相对 cwd），供 server 静态托管 */
@@ -99,6 +108,17 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
       auditPath: `${config.dataDir}/config-audit.jsonl`,
     }),
   )
+  container.registerInstance(TOKENS.LockManager, createKeyedLockManager())
+  container.registerInstance(TOKENS.DirectoryBrowser, createDirectoryBrowser())
+  container.registerInstance(
+    TOKENS.ProjectStore,
+    createProjectStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
   container.registerInstance(
     TOKENS.RoleTemplateStore,
     createRoleTemplateStore({
@@ -146,6 +166,9 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.Logger,
     TOKENS.StaticAssets,
     TOKENS.FileStore,
+    TOKENS.LockManager,
+    TOKENS.DirectoryBrowser,
+    TOKENS.ProjectStore,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -165,6 +188,9 @@ export interface AppDeps {
   readonly logger: Logger
   readonly staticAssets: StaticAssetProvider
   readonly fileStore: FileStore
+  readonly lock: LockManager
+  readonly directoryBrowser: DirectoryBrowser
+  readonly projectStore: ProjectStore
   readonly modelConfigStore: ModelConfigStore
   readonly roleTemplateStore: RoleTemplateStore
   readonly presets: ModelPresetProvider
@@ -174,6 +200,8 @@ export interface AppDeps {
   readonly gateway: ModelGateway
   readonly modelConfig: ModelConfigService
   readonly agentConfig: AgentConfigService
+  readonly project: ProjectService
+  readonly team: TeamService
   readonly broadcaster: EventBroadcaster
 }
 
@@ -229,6 +257,26 @@ export function resolveDeps(
     config: configProvider,
   })
 
+  const project = createProjectService({
+    store: container.resolve(TOKENS.ProjectStore),
+    roleTemplates: roleTemplateStore,
+    browser: container.resolve(TOKENS.DirectoryBrowser),
+    ids,
+    clock,
+    config: configProvider,
+    platformDataRoot: resolve(process.cwd(), config.dataDir),
+  })
+
+  const team = createTeamService({
+    store: container.resolve(TOKENS.ProjectStore),
+    roleTemplates: roleTemplateStore,
+    catalog,
+    audit: modelConfigStore,
+    ids,
+    clock,
+    config: configProvider,
+  })
+
   return {
     config,
     clock,
@@ -236,6 +284,9 @@ export function resolveDeps(
     logger: container.resolve(TOKENS.Logger),
     staticAssets: container.resolve(TOKENS.StaticAssets),
     fileStore: container.resolve(TOKENS.FileStore),
+    lock: container.resolve(TOKENS.LockManager),
+    directoryBrowser: container.resolve(TOKENS.DirectoryBrowser),
+    projectStore: container.resolve(TOKENS.ProjectStore),
     modelConfigStore,
     roleTemplateStore,
     presets: container.resolve(TOKENS.ModelPresetProvider),
@@ -245,6 +296,8 @@ export function resolveDeps(
     gateway: container.resolve(TOKENS.ModelGateway),
     modelConfig,
     agentConfig,
+    project,
+    team,
     broadcaster,
   }
 }

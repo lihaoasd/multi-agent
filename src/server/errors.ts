@@ -32,6 +32,11 @@ export function toAppError(error: unknown): AppError {
     if (typeof fastifyCode === 'string' && fastifyCode.startsWith('ERR_')) {
       return { code: fastifyCode as ErrorCode, message: error.message }
     }
+    // 客户端请求错误（内容类型不支持、body 为空/过大、JSON 坏）→ 一律 4xx 语义，不能报成 500
+    const status = (error as { statusCode?: unknown }).statusCode
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return { code: status === 404 ? 'ERR_NOT_FOUND' : 'ERR_VALIDATION', message: error.message }
+    }
     return { code: 'ERR_INTERNAL', message: error.message }
   }
   return { code: 'ERR_INTERNAL', message: '未知错误' }

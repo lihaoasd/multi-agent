@@ -2,7 +2,9 @@ import type { Clock } from './clock'
 import type { ConfigProvider } from './config'
 import { token, type Token } from './container'
 import type { FileStore } from './file-store'
+import type { DirectoryBrowser } from './fs-browse'
 import type { IdGenerator } from './id'
+import type { LockManager } from './lock'
 import type { Logger } from './logger'
 import type { ModelGateway } from './model'
 import type {
@@ -12,6 +14,7 @@ import type {
   ProviderKindRegistry,
   SecretResolver,
 } from './model-config'
+import type { ProjectStore } from './project'
 import type { RoleTemplateStore } from './role-templates'
 import type { StaticAssetProvider } from './static-assets'
 
@@ -28,6 +31,9 @@ export const TOKENS = {
   StaticAssets: token<StaticAssetProvider>('StaticAssetProvider'),
   // 存储
   FileStore: token<FileStore>('FileStore'),
+  LockManager: token<LockManager>('LockManager'),
+  DirectoryBrowser: token<DirectoryBrowser>('DirectoryBrowser'),
+  ProjectStore: token<ProjectStore>('ProjectStore'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),
   ModelPresetProvider: token<ModelPresetProvider>('ModelPresetProvider'),

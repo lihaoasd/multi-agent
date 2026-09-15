@@ -58,26 +58,36 @@ agent_haness/                    # 平台仓库
   "name": "todo-app",
   "description": "本地待办清单 Web 应用",
   "createdAt": "2026-09-08T…Z",
+  "updatedAt": "2026-09-08T…Z",
   "workdir": "D:/dev/todo-app",          // 绝对路径存记录；迁移到别机时由用户重设(见 §9)
-  "workdirKind": "empty | existing-repo",
+  "workdirKind": "empty | existing-repo", // 创建时嗅探（含 .git 或有可见条目 → existing-repo）
   "team": [
     {
-      "instanceId": "pm_1",
+      "instanceId": "pm_1",               // MVP 每模板至多 1 实例（D14-3）
       "roleTemplateId": "pm",
       "displayName": "项目经理",
-      "prompt": null,                     // 创建实例时快照模板默认值写入实例；示例以 null 占位。此后模板变更不影响本实例（D16-⑤）
-      "model": "deepseek-chat",           // **模型条目 id** 引用（data/model-config.json 的 models[].id，口径见 model-config.md §2）；覆盖模板 defaultModel
-      "loop": { "strategy": "plan-execute", "params": {} },
-      "configVersion": 3,                 // 实例配置版本：prompt/model/loop 每次覆盖 +1，供 EffectiveAgentConfigResolver 缓存失效与审计（2026-09-15）
-      "tools": null,                      // 同上：创建时快照模板默认工具集，可再覆盖（D16-⑤）
-      "enabled": true,                    // false = 停用（保留全部数据，D14-9；MVP 每模板至多 1 实例，D14-3）
-      "createdAt": "…"
+      "prompt": null,                     // **覆盖**字段：null = 跟随快照（D16-⑤）
+      "model": null,                      // 模型条目 id 覆盖；null = 用快照 defaultModel
+      "loop": null,                       // loop 覆盖；null = 用快照 defaultLoop
+      "enabled": true,                    // false = 停用（保留全部数据，D14-9）
+      "configVersion": 1,                 // 覆盖变化 +1（供解析缓存失效与审计）
+      "createdAt": "…",
+      "snapshot": {                       // 创建时从模板捕获的**只读快照**（模板后续变更不影响本实例）
+        "roleTemplateId": "pm", "templateName": "项目经理", "systemPrompt": "…",
+        "defaultModel": "mock", "defaultLoop": { "strategy": "plan-execute", "params": {} },
+        "packages": ["fs","cmd","memory","session","artifact","approval","task"],
+        "tools": ["task_assign"], "artifactTypes": ["doc"], "defaultApprovalRules": [],
+        "capturedAt": "…"
+      }
     }
   ],
   "artifactPolicy": { "codeSubmitApproval": false, "docSubmitApproval": true },   // 两扇门：code 门=workdir_edit 任务级聚合；doc 门=静态产物提交(doc/config/deploy 文档/test 报告等)。类型→门映射见 workspaces-artifacts.md §6
   "approvalPolicy": { "highRiskCommands": true }
 }
 ```
+
+> **有效配置解析（D20-⑦）**：`实例覆盖 → 模板快照 → 平台 routing.defaultModelId`；提示词为**整段替换**（不是拼接）；三级都没有模型时为 `null`，运行期报 `ERR_MODEL`（不静默挑模型）。详见 agent-templates.md §4 与 model-config.md §2。
+> **列表投影**：`data/projects/index.json` 是 `list()` 的派生缓存（每次重建，可丢可重建）；`project.json` 才是唯一真源（§7 双写主从口径）。
 
 ## 4. 会话文件
 

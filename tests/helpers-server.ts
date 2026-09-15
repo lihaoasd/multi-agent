@@ -50,7 +50,13 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
     config,
     logger: deps.logger,
     staticAssets: { distDir: () => staticDir },
-    services: { modelConfig: deps.modelConfig, agentConfig: deps.agentConfig, broadcaster },
+    services: {
+      modelConfig: deps.modelConfig,
+      agentConfig: deps.agentConfig,
+      project: deps.project,
+      team: deps.team,
+      broadcaster,
+    },
   })
 
   return {

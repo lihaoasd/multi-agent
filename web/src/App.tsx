@@ -3,19 +3,20 @@ import { useEffect, useState } from 'react'
 import { fetchHealth, type HealthResponse } from './api/health'
 import { AgentModule } from './pages/AgentModule'
 import { ModelModule } from './pages/ModelModule'
+import { ProjectModule } from './pages/ProjectModule'
 
 const { Header, Content, Sider } = Layout
 
-type ModuleKey = 'status' | 'agent' | 'model'
+type ModuleKey = 'project' | 'agent' | 'model'
 
 /**
- * 首页骨架（docs/design/ui.md §1）：全局导航为 项目 / Agent / 模型 / 工具。
- * 本阶段（S1）已接入 **Agent** 与 **模型**；项目与工具随后续阶段补齐。
+ * 首页四模块（docs/design/ui.md §1：项目 / Agent / 模型 / 工具），默认进**项目**模块。
+ * 已接入：项目（S2）、Agent（S1）、模型（S1）；工具模块随工具注册表在 S4 接入。
  */
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
-  const [active, setActive] = useState<ModuleKey>('model')
+  const [active, setActive] = useState<ModuleKey>('project')
 
   useEffect(() => {
     let cancelled = false
@@ -38,7 +39,9 @@ export function App() {
           Agent Haness
         </Typography.Title>
         <Typography.Text style={{ color: 'rgba(255,255,255,0.65)' }}>
-          {health === null ? '连接中…' : `v${health.version} · 数据目录 ${health.dataDir} · 联网 ${health.sandboxNetwork}`}
+          {health === null
+            ? '连接中…'
+            : `v${health.version} · 数据目录 ${health.dataDir} · 联网 ${health.sandboxNetwork}`}
         </Typography.Text>
       </Header>
       <Layout>
@@ -48,10 +51,9 @@ export function App() {
             selectedKeys={[active]}
             onClick={({ key }) => setActive(key as ModuleKey)}
             items={[
-              { key: 'status', label: '服务状态' },
+              { key: 'project', label: '项目' },
               { key: 'agent', label: 'Agent' },
               { key: 'model', label: '模型' },
-              { key: 'project', label: '项目（S2）', disabled: true },
               { key: 'tools', label: '工具（S4）', disabled: true },
             ]}
           />
@@ -66,18 +68,7 @@ export function App() {
               description={healthError}
             />
           )}
-          {active === 'status' && (
-            <Alert
-              type="success"
-              showIcon
-              message="服务运行中"
-              description={
-                health === null
-                  ? '正在获取健康信息…'
-                  : `应用 ${health.name} v${health.version}｜运行 ${Math.round(health.uptimeMs / 1000)} 秒｜数据目录 ${health.dataDir}`
-              }
-            />
-          )}
+          {active === 'project' && <ProjectModule />}
           {active === 'model' && <ModelModule />}
           {active === 'agent' && <AgentModule />}
         </Content>

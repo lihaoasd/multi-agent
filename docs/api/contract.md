@@ -7,6 +7,7 @@
 ## 1. 约定
 
 - Base：`/api`；JSON 请求/响应；统一错误体 `{ "code": "ERR_XXX", "message": "…" }`（HTTP 状态码仅作粗分类）。
+- **客户端请求错误按 4xx 语义返回**（2026-09-15 实现口径）：不支持的 `content-type`、body 过大、JSON 非法等 Fastify 解析错误一律 `ERR_VALIDATION`（404 路由 → `ERR_NOT_FOUND`），**不得报成 `ERR_INTERNAL`**；无参数接口可发空 body（服务端把 `application/json` 的空 body 视为 `{}`）。
 - id：全部由服务端生成；时间 UTC ISO-8601。
 - 实时：WS `ws://host/ws?projectId=…`，上行 `{type,payload}` / 下行 `{type,payload}`，消息为 JSON 文本帧。
 - 安全：本机单用户，无鉴权（绑定 127.0.0.1 默认）。
@@ -16,11 +17,12 @@
 ### 项目
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET | /api/projects | 项目列表 |
-| POST | /api/projects | 创建（name/description/workdir/team 配置）|
-| GET/PATCH | /api/projects/:pid | 详情 / 改元数据（含重设 workdir）|
-| DELETE | /api/projects/:pid | 删除平台数据（二次确认参数 force）|
-| GET | /api/fs/browse?path=&depth= | 目录浏览器：**用户级 API，绕过 Agent 沙箱**（本机全盘路径，供创建向导选工作目录；默认过滤/标记系统与隐藏目录、限深度，M8 定稿） |
+| GET | /api/projects | 项目列表（`index.json` 为派生投影，真源是各项目 `project.json`；结构非法的遗留项目被跳过）|
+| POST | /api/projects | 创建（name/description/workdir/members）；`members` 省略 = 全部启用的内置模板（D14-①）；工作目录须"存在 + 目录 + 可写 + 不在平台数据目录内"，否则 `ERR_VALIDATION`；成员实例写入**模板快照**（D16-⑤）|
+| GET/PATCH | /api/projects/:pid | 详情 / 改元数据（`name`/`description`；重设 workdir 见 §9 迁移口径）|
+| DELETE | /api/projects/:pid | 删除平台数据（只删运行时项目文件夹，**不动用户工作目录**，prd FR-01）|
+| GET | /api/fs/browse?path=&depth= | 目录浏览器：**用户级 API，绕过 Agent 沙箱**（本机全盘路径，供创建向导选工作目录；默认过滤/标记系统与隐藏目录、限深度，M8 定稿）。实现口径（2026-09-15）：`path` 必须是绝对路径，省略则返回**根列表**（Windows 为盘符）；返回 `{path,parent,entries[{name,path,isDirectory,isRepo,hidden}],truncated}`，`isRepo`=含 `.git` |
+| POST | /api/fs/inspect | 工作目录检查（创建向导用）：`{path}` → `{path,exists,isDirectory,writable,entryCount,kind}`；`kind=empty\|existing-repo`（含 `.git` 或存在可见条目即 existing-repo） |
 
 ### 角色库 / 团队
 | GET | /api/agent-templates | 模板列表（内置+自定义，含 artifactTypes/tools 元信息）；**`/api/roles` 为同一资源的废弃别名，实施期删除**（2026-09-15 术语收敛为"Agent 模板"）|
@@ -28,12 +30,14 @@
 | PATCH | /api/agent-templates/:roleId | 编辑模板的 **提示词 / loop / 模型**（FR-35）；内置模板 → `ERR_FORBIDDEN`（提示"基于内置复制新建"）|
 | POST | /api/agent-templates/:roleId/disable\|enable | 停用/启用模板；不影响既有实例（快照，D16-⑤），UI 仅标「模板已移除/已停用」|
 | GET | /api/projects/:pid/team | 实例列表+状态 |
-| GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏团队行用）|
-| GET | /api/projects/:pid/agents/:iid | **角色详情**（只读，2026-09-13）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
-| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读，2026-09-13）：按 user 会话实时拼装 → `{ preview: { sessionType:'user', blocks:[{id,origin,title,text}], text } }`；`origin=role-config` 仅第 1 段（实例提示词），其余为平台注入段；与运行期同源、不落盘；实例不存在 → 404 |
-| POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）|
-| PATCH | /api/projects/:pid/team/:iid | 改实例（改名/提示词/模型/loop/工具集/**enabled 停用启用**）|
-| DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/记忆，可重新启用，D14-9）；彻底删除数据为后续版本 |
+| GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏与画布用）；**S2 阶段 `state` 恒为 `idle`，dispatcher 于 S3 接管** |
+| GET | /api/projects/:pid/agents/:iid | **角色详情**（只读）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
+| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：按 user 会话实时拼装 → `{ preview: { sessionType:'user', blocks:[{id,origin,title,text}], text } }`；`origin=role-config` 仅第 1 段（实例提示词），其余为平台注入段；与运行期同源、不落盘；实例不存在 → 404 |
+| POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）；**每模板至多 1 实例**（D14-3，重复 → `ERR_CONFLICT`）；创建时**快照模板默认值**（D16-⑤） |
+| PATCH | /api/projects/:pid/team/:iid | 改实例：`displayName` / `prompt` / `model` / `loop` / `enabled`；**传 `null` 表示清除覆盖回到快照**；仅覆盖变化时 `configVersion+1`；校验复用模板层同一套（提示词长度、loop 参数范围、模型须已启用） |
+| GET | /api/projects/:pid/team/:iid/effective-config | 有效配置解析结果（实例覆盖 → 模板快照 → 平台默认模型） |
+| DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/记忆，可重新启用，D14-9）；重复停用 → `ERR_CONFLICT` |
+| POST | /api/projects/:pid/team/:iid/enable | 重新启用（无 body；服务端把空 body 视为 `{}`） |
 
 ### 会话 / 消息
 | GET | /api/projects/:pid/sessions | 会话列表（user 会话，含 meta/未读）|

@@ -23,6 +23,8 @@ async function main(): Promise<void> {
     services: {
       modelConfig: deps.modelConfig,
       agentConfig: deps.agentConfig,
+      project: deps.project,
+      team: deps.team,
       broadcaster: deps.broadcaster,
     },
   })
