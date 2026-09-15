@@ -88,11 +88,13 @@ describe('WS 网关（先盘后推 + 上行 send/subscribe）', () => {
     const accepted = frames.find((frame) => frame.type === 'message.accepted')
     expect(accepted?.payload).toMatchObject({ sessionId: 'u_dev_1', seq: 1, queued: false })
 
-    // 事件按 seq 顺序推送，且覆盖一个完整回合
+    // 事件按 seq 顺序推送，且覆盖一个完整回合（S4 起由真实 loop 产生）
     const appended = frames.filter((frame) => frame.type === 'event.appended').map((frame) => frame.payload['seq'])
-    expect(appended.slice(0, 5)).toEqual([1, 2, 3, 4, 5])
+    expect(appended.slice(0, 2)).toEqual([1, 2])
     const kinds = frames.filter((frame) => frame.type === 'event.appended').map((frame) => frame.payload['kind'])
-    expect(kinds.slice(0, 5)).toEqual(['message', 'turn_start', 'thought', 'message', 'turn_end'])
+    expect(kinds[0]).toBe('message')
+    expect(kinds[1]).toBe('turn_start')
+    expect(kinds).toContain('turn_end')
 
     const commits = frames.filter((frame) => frame.type === 'message.commit')
     expect(commits.length).toBeGreaterThanOrEqual(2) // 用户消息 + 占位回复

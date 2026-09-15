@@ -4,14 +4,15 @@ import { fetchHealth, type HealthResponse } from './api/health'
 import { AgentModule } from './pages/AgentModule'
 import { ModelModule } from './pages/ModelModule'
 import { ProjectModule } from './pages/ProjectModule'
+import { ToolsModule } from './pages/ToolsModule'
 
 const { Header, Content, Sider } = Layout
 
-type ModuleKey = 'project' | 'agent' | 'model'
+type ModuleKey = 'project' | 'agent' | 'model' | 'tools'
 
 /**
  * 首页四模块（docs/design/ui.md §1：项目 / Agent / 模型 / 工具），默认进**项目**模块。
- * 已接入：项目（S2）、Agent（S1）、模型（S1）；工具模块随工具注册表在 S4 接入。
+ * 已接入：项目（S2）、Agent（S1）、模型（S1）、工具（S4）。
  */
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
@@ -54,7 +55,7 @@ export function App() {
               { key: 'project', label: '项目' },
               { key: 'agent', label: 'Agent' },
               { key: 'model', label: '模型' },
-              { key: 'tools', label: '工具（S4）', disabled: true },
+              { key: 'tools', label: '工具' },
             ]}
           />
         </Sider>
@@ -71,6 +72,7 @@ export function App() {
           {active === 'project' && <ProjectModule />}
           {active === 'model' && <ModelModule />}
           {active === 'agent' && <AgentModule />}
+          {active === 'tools' && <ToolsModule />}
         </Content>
       </Layout>
     </Layout>

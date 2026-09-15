@@ -44,24 +44,20 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 
 ## 3. 内置 agent loop（执行模板，D4）
 
-> ⚠️ **实现现状（2026-09-14 重构 P6 如实标注，原文保留在下方以便对照）**
+> ✅ **实现现状（2026-09-15，S4 已补齐）**
 >
-> 本节原先描述的是**目标形态**；实际代码**目前并未实现策略注册表**，三者的差别只有"提示级"：
+> 本节描述的目标形态**已实现**，不再是"提示级差异"：
 >
-> | 本节承诺 | 代码实际（截至 2026-09-14） |
+> | 本节承诺 | 实现（S4） |
 > | --- | --- |
-> | "实现为策略注册表（strategy name → runner）" | **不存在注册表**。`AgentLoopRunner` 只有一个回合实现，三条策略共用它 |
-> | `direct` = 单轮一次模型调用 | 实际跑**无限轮工具循环**（`stepLimit = Infinity`，安全阀是"同工具+同入参+同结果连续 3 次"空转保护） |
-> | `reflective` = 生成 → 自查 → 修订 | **没有 critique 调用**。只在系统提示第 3 段注入一句"先给出初稿，再自查一遍…"，是否照做取决于模型 |
-> | `plan-execute` = 显式计划 → 逐步执行 → 验证 | **计划不来自模型**：代码在回合开始塞一条**硬编码单步** `plan` 事件（`steps: [{step:1, title:'执行任务并汇报'}]`），且**没有任何消费者**读取它（恢复逻辑实际用"缺 `turn_end` = 未完成"判定） |
-> | 通用参数 `maxIterations` / `stepModelOverride` / `toolBudget` | **无消费者**。`maxIterations` 只写在 4 个角色 YAML 的 `params` 里，从未被读取 |
+> | 策略注册表（strategy name → runner） | `LoopRegistry` + `application/agent-loop/strategies.ts` 三个策略 |
+> | `direct` = 单轮一次模型调用 | 一次调用；若模型要求工具则执行**一轮**工具后再汇总一次（≤2 次调用，工具轮数受 `toolBudget` 限制） |
+> | `reflective` = 生成 → 自查 → 修订 | **真 critique 调用** + 修订调用；轮数由 `maxIterations`（1~2）控制 |
+> | `plan-execute` = 显式计划 → 逐步执行 → 验证 | **计划由模型产出**（要求 JSON `{"steps":[…]}`，解析失败退化为单步）→ 落 `plan` 事件 → 逐步执行并回写 `plan.stepIndex/status` → 汇总 `message`；步数受 `maxIterations`、工具调用受 `toolBudget` 限制 |
+> | 通用参数 `maxIterations` / `stepModelOverride` / `toolBudget` | 三者均有消费者（步数、步骤级模型覆盖、工具调用上限） |
+> | 可中断点 | 每步开始检查中断（暂停 → abort 回合）；`plan` 事件写 `status='interrupted'` 后正常收尾 |
 >
-> 也就是说：**三条策略当前是"提示级策略"，不是执行编排**；角色间真正的能力差异来自
-> `tools:` 白名单（见 §6）。`docs/changes/2026-09-08-m3-runtime-tools.md` 当时已注明
-> "MVP 提示级差异，真实多步执行留 M8 验证"，但 M8 只验了工具链冒烟，未补策略机制。
->
-> 补齐需要：计划由模型结构化产出 → 每步回写 `stepIndex/status` → 恢复时消费 plan 事件 →
-> `maxIterations`/`toolBudget` 生效。这**改动行为**，属独立方案，不在本次纯重构范围内。
+> 仍未做：`plan` 事件的**跨重启消费**（恢复时读取计划续做）属 S8 的未完成回合恢复；本轮只保证事件与进度落盘。
 
 loop = 一次"Agent 处理一条新输入"的执行编排。**目标形态**为策略注册表（strategy name → runner），用户只做选择与参数配置（不写代码，MVP）。
 

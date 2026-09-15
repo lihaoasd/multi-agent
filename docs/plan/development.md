@@ -29,7 +29,7 @@
 | **S1** | **模型配置模块 + Agent 配置提交**（本轮设计落地） | 5 个协议适配器、`ModelConfigStore`/`ModelCatalog`、`/api/model-*`、模板与实例三项配置、前端"模型"模块 | S0 | 27~31 | **已完成（2026-09-15，模板层 + 模型配置）**：[方案](2026-09-15-s1-model-config.md) · [记录](../changes/2026-09-15-s1-model-config.md)｜实例层覆盖随 S2 |
 | **S2** | 存储底座与项目/团队 | `FileStore`/`LockManager`/`IdGenerator`/`Clock`/`Logger`、project CRUD、创建向导、实例快照与停用 | S0 | 8 | **已完成（2026-09-15）**：[方案](2026-09-15-s2-project-team.md) · [记录](../changes/2026-09-15-s2-project-team.md) |
 | **S3** | 会话与单工调度 | `SessionLogStore`（seq/轮转）、`SessionMetaStore`、dispatcher occupancy、WS 网关（先盘后推） | S2 | 1、5、9 | **已完成（2026-09-15）**：[方案](2026-09-15-s3-sessions-dispatcher.md) · [记录](../changes/2026-09-15-s3-sessions-dispatcher.md) |
-| **S4** | Agent loop 与工具执行 | `LoopRegistry`+三策略真实形态、`ContextBuilder`、`ToolRegistry`/`ToolExecutor`、沙箱与审批桥 | S1、S3 | 2、3、11、26 | 未开始 |
+| **S4** | Agent loop 与工具执行 | `LoopRegistry`+三策略真实形态、`ContextBuilder`、`ToolRegistry`/`ToolExecutor`、沙箱与审批桥 | S1、S3 | 2、3、11、26 | **已完成（2026-09-15）**：[方案](2026-09-15-s4-agent-loop-tools.md) · [记录](../changes/2026-09-15-s4-agent-loop-tools.md) |
 | **S5** | 记忆与检索 | `MemoryStore`、滚动摘要（可重放派生）、2-gram 倒排索引、检索接口 | S3 | 6、7、13 | 未开始 |
 | **S6** | 产出物、任务、询问 | `workdir_edit`+归属校验、artifact manifest+版本+回退、任务发布/领取/汇报、询问阻塞与答复 | S4、S5 | 4、10、12、15~18、21、24、25 | 未开始 |
 | **S7** | 编排画布与前端完整化 | `/api/projects/:pid/orchestration`、委派边约束、画布、项目页 2/3 栏、右栏三列表、工作日志 | S6 | 22、23 | 未开始 |

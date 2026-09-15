@@ -1,6 +1,6 @@
 import type { Result } from '../shared/result'
 import type { InstanceId, ProjectId } from './project'
-import type { NewEvent, SessionId, StoredEvent } from './session'
+import type { NewEvent, SessionId, SessionType, StoredEvent } from './session'
 
 /**
  * 回合执行端口（abstraction.md §4.6 的 TurnContext/TurnRunner 精简版）。
@@ -10,6 +10,7 @@ export interface TurnRunContext {
   readonly projectId: ProjectId
   readonly sessionId: SessionId
   readonly instanceId: InstanceId
+  readonly sessionType: SessionType
   readonly turn: number
   readonly userText: string
   readonly signal: AbortSignal

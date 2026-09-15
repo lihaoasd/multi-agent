@@ -32,7 +32,7 @@
 | GET | /api/projects/:pid/team | 实例列表+状态 |
 | GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏与画布用）；**S2 阶段 `state` 恒为 `idle`，dispatcher 于 S3 接管** |
 | GET | /api/projects/:pid/agents/:iid | **角色详情**（只读）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
-| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：按 user 会话实时拼装 → `{ preview: { sessionType:'user', blocks:[{id,origin,title,text}], text } }`；`origin=role-config` 仅第 1 段（实例提示词），其余为平台注入段；与运行期同源、不落盘；实例不存在 → 404 |
+| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：与运行期**同一 ContextBuilder** → `{ sessionType:"user", blocks:[{id,origin,title,text}], text }`；块 id/origin 现为 `role-config`（实例提示词）/`platform-role`/`tools`/`session-window`（S5/S6 会追加记忆、任务、产出索引段）；不落盘；实例不存在 → 404 |
 | POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）；**每模板至多 1 实例**（D14-3，重复 → `ERR_CONFLICT`）；创建时**快照模板默认值**（D16-⑤） |
 | PATCH | /api/projects/:pid/team/:iid | 改实例：`displayName` / `prompt` / `model` / `loop` / `enabled`；**传 `null` 表示清除覆盖回到快照**；仅覆盖变化时 `configVersion+1`；校验复用模板层同一套（提示词长度、loop 参数范围、模型须已启用） |
 | GET | /api/projects/:pid/team/:iid/effective-config | 有效配置解析结果（实例覆盖 → 模板快照 → 平台默认模型） |
@@ -60,8 +60,8 @@
 | GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12 |
 | GET | /api/projects/:pid/questions?status=pending\|answered&sessionId= | **询问列表**：Agent 向用户提问（一条记录含 `items[]`；`pending`=待答）；Agent 提问后状态 `waiting`，同一 Agent 至多 1 个 pending |
 | POST | /api/projects/:pid/questions/:qid/answer | 答复询问：`{answers:[{itemId?,choice?/choices?/text?}]}`；答复后唤醒该 Agent 继续（无排队提问时）|
-| GET | /api/projects/:pid/approvals?status=pending | 审批列表 |
-| POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 {decision, reason?} |
+| GET | /api/projects/:pid/approvals?status=pending\|approved\|rejected&actor= | 审批列表（按请求时间倒序）|
+| POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 `{decision:"approved"\|"rejected", reason?}`；**决定只能落一次**（重复 → `ERR_CONFLICT`）；落盘后唤醒等待中的回合（approved 继续执行 / rejected 回注 `ERR_APPROVAL_REJECTED`）|
 | GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
 | GET | /api/projects/:pid/memories?scope=global\|agent&instanceId=&type=&limit= | 记忆列表（只读浏览，M13；P1 支持钉住/编辑/删除 FR-19）|
 
@@ -92,12 +92,12 @@
 > 校验与失败语义见 model-config.md §8：**不新增错误码**，沿用 `ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`；引用者列表放 `detail.referrers`。
 > 启动初始化（model-config.md §11）：空配置 → 先导入 `MODELS__PROVIDERS`，仍为空则自动创建内置 `mock` 供应商 + 模型（保证无 Key 可跑通）。
 
-### 首页库（工具包只读；Agent 模板已开放 提示词/loop/模型 三项提交）
-
-| 方法 | 路径 | 用途 |
+### 首页库（工具包只读；Agent 模板已开放 提示词/loop/模型 三项提交）| 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET | /api/tool-packages | 工具包列表（含 `tools[]` 展开、`required`、`source`、`riskMax`）|
+| GET | /api/tool-packages | 工具包列表（含 `tools[]` 展开、`required`、`source`、`riskMax`）；每个工具带 `registered`（**展示态 vs 生效态**：已声明但当前版本未注册的工具标"未实现"）|
 | GET | /api/tool-packages/:packageId | 单包详情（含每个工具的作用/风险/网络/幂等/适用会话）|
+| GET | /api/tools | 已注册工具清单（名/包/风险/网络/是否需审批/幂等/适用会话）|
+| GET | /api/loops | 已注册 loop 策略（名 + 说明）|
 | GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要、`defaultModelAvailable`、`editable`；写路径同"角色库/团队"表）|
 | GET | /api/agent-templates/:roleId | 模板详情（身份/loop/**系统提示词预览**/工具按包展开/模型/审批规则）|
 | GET | /api/agent-templates/:roleId/history | 模板配置历史快照文件名列表（只增；仅用户模板有）|
@@ -148,7 +148,8 @@
 { type:"agent-config.updated", payload:{scope:"template"|"instance", roleId?, projectId?, instanceId?, configVersion} }  // Agent 配置提交（2026-09-15）
 { type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
 { type:"event.appended", payload:{projectId, sessionId, seq, kind, ts}}            // 事件已落盘并追加（含回合边界）
-{ type:"approval.requested", payload:{approval:…}}
+{ type:"approval.requested", payload:{projectId, approval:…}}   // 审批落盘后广播（Agent 转 waiting）
+{ type:"approval.decided", payload:{projectId, approval:…}}     // 用户决定后广播
 { type:"artifact.updated", payload:{artifactId, state}}
 { type:"question.asked", payload:{questionId, asker, kind, question, options, record}}  // Agent 提问：右栏询问列表新增待答项，Agent 转 waiting
 { type:"question.answered", payload:{questionId, asker, answer}}                       // 答复：撤卡/列表项转已答，Agent 继续

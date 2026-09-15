@@ -1,4 +1,9 @@
-import { createPlaceholderTurnRunner } from '../application/agent-loop/placeholder-runner'
+import { createLoopRegistry } from '../application/agent-loop/loop'
+import { createPromptPreviewService, type PromptPreviewService } from '../application/agent-loop/preview'
+import { createAgentLoopRunner } from '../application/agent-loop/runner'
+import { registerBuiltinLoops } from '../application/agent-loop/strategies'
+import { createApprovalService, type ApprovalService } from '../application/approval/approval-service'
+import { createToolExecutor } from '../application/tools/tool-executor'
 import { createDispatcher } from '../application/dispatcher/dispatcher'
 import { createModelCatalog } from '../application/model-config/catalog'
 import { createEventPipeline } from '../application/session/event-pipeline'
@@ -21,11 +26,17 @@ import { createDispatcherStateStore } from '../infra/file-store/dispatcher-state
 import { createProjectStore } from '../infra/file-store/project-store'
 import { createSessionLogStore } from '../infra/file-store/session-log-store'
 import { createSessionMetaStore } from '../infra/file-store/session-meta-store'
+import { createApprovalStore } from '../infra/file-store/approval-store'
 import { createRoleTemplateStore } from '../infra/file-store/role-template-store'
 import { createDirectoryBrowser } from '../infra/fs/directory-browser'
+import { createCmdRunner } from '../infra/sandbox/cmd-runner'
+import { createPathResolver } from '../infra/sandbox/path-resolver'
+import { registerBuiltinTools } from '../infra/tools/builtin'
+import { createToolPackageRegistry, createToolRegistry } from '../infra/tools/registry'
 import { createKeyedLockManager } from '../infra/lock/keyed-lock'
 import { createModelGateway } from '../infra/model/gateway'
 import { createYamlModelPresetProvider } from '../infra/model/presets'
+import { createPolicyEngine } from '../domain/rules/policy'
 import { createProviderKindRegistry, registerBuiltinProviderKinds } from '../infra/model/registry'
 import { createStaticAssetProvider } from '../infra/static/static-assets'
 import { createIdGenerator } from '../infra/util/id'
@@ -35,7 +46,12 @@ import type { Clock } from '../ports/clock'
 import type { ConfigProvider } from '../ports/config'
 import type { Container } from '../ports/container'
 import type { EventBroadcaster } from '../ports/events'
+import type { ApprovalStore } from '../ports/approval'
 import type { FileStore } from '../ports/file-store'
+import type { PathResolver } from '../ports/path-resolver'
+import type { PolicyEngine } from '../ports/policy'
+import type { CmdRunner } from '../ports/sandbox'
+import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
 import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
 import type { Dispatcher } from '../ports/dispatcher'
@@ -53,7 +69,7 @@ import type {
   SecretResolver,
 } from '../ports/model-config'
 import type { RoleTemplateStore } from '../ports/role-templates'
-import type { TurnRunner } from '../ports/turn'
+import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { StaticAssetProvider } from '../ports/static-assets'
 import { TOKENS } from '../ports/tokens'
 import { buildAppConfig, type AppConfig } from '../shared/config'
@@ -158,7 +174,18 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     }),
   )
   container.registerInstance(TOKENS.Realtime, createWsEventHub())
-  container.registerInstance(TOKENS.TurnRunner, createPlaceholderTurnRunner(ids))
+  container.registerInstance(TOKENS.PathResolver, createPathResolver())
+  container.registerInstance(TOKENS.CmdRunner, createCmdRunner())
+  container.registerInstance(TOKENS.PolicyEngine, createPolicyEngine())
+  container.registerInstance(
+    TOKENS.ApprovalStore,
+    createApprovalStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
   container.registerInstance(
     TOKENS.RoleTemplateStore,
     createRoleTemplateStore({
@@ -213,7 +240,10 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.SessionLogStore,
     TOKENS.DispatcherStateStore,
     TOKENS.Realtime,
-    TOKENS.TurnRunner,
+    TOKENS.PathResolver,
+    TOKENS.CmdRunner,
+    TOKENS.PolicyEngine,
+    TOKENS.ApprovalStore,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -251,6 +281,11 @@ export interface AppDeps {
   readonly team: TeamService
   readonly sessions: SessionService
   readonly dispatcher: Dispatcher
+  readonly approvals: ApprovalService
+  readonly toolRegistry: ToolRegistry
+  readonly toolPackages: ToolPackageRegistry
+  readonly loopRegistry: LoopRegistry
+  readonly promptPreview: PromptPreviewService
   readonly realtime: WsRealtime
   readonly broadcaster: EventBroadcaster
 }
@@ -344,11 +379,61 @@ export function resolveDeps(
     clock,
   })
 
+  const approvals = createApprovalService({
+    store: container.resolve<ApprovalStore>(TOKENS.ApprovalStore),
+    broadcaster,
+    ids,
+    clock,
+  })
+
+  const toolRegistry = createToolRegistry()
+  registerBuiltinTools(toolRegistry, {
+    paths: container.resolve<PathResolver>(TOKENS.PathResolver),
+    cmd: container.resolve<CmdRunner>(TOKENS.CmdRunner),
+    listOwnApprovals: async ({ projectId, instanceId }) => {
+      const listed = await approvals.list(projectId, { actor: instanceId })
+      return listed.ok
+        ? { ok: true as const, value: listed.value.map((item) => ({ id: item.id, kind: item.kind, status: item.status, summary: item.summary })) }
+        : listed
+    },
+  })
+  const toolPackages = createToolPackageRegistry()
+  const loopRegistry = createLoopRegistry()
+  registerBuiltinLoops(loopRegistry)
+
+  const toolExecutor = createToolExecutor({
+    registry: toolRegistry,
+    policy: container.resolve<PolicyEngine>(TOKENS.PolicyEngine),
+  })
+
+  const runner = createAgentLoopRunner({
+    projects: container.resolve(TOKENS.ProjectStore),
+    team,
+    sessions,
+    loops: loopRegistry,
+    gateway: container.resolve(TOKENS.ModelGateway),
+    tools: toolRegistry,
+    toolExecutor,
+    approvals,
+    broadcaster,
+    config: configProvider,
+    clock,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
+  const promptPreview = createPromptPreviewService({
+    projects: container.resolve(TOKENS.ProjectStore),
+    team,
+    tools: toolRegistry,
+    config: configProvider,
+  })
+
   const dispatcher = createDispatcher({
     stateStore: container.resolve(TOKENS.DispatcherStateStore),
     projectStore: container.resolve(TOKENS.ProjectStore),
     sessions,
-    runner: container.resolve<TurnRunner>(TOKENS.TurnRunner),
+    runner,
+    approvals,
     broadcaster,
     lock: container.resolve(TOKENS.LockManager),
     clock,
@@ -380,6 +465,11 @@ export function resolveDeps(
     team,
     sessions,
     dispatcher,
+    approvals,
+    toolRegistry,
+    toolPackages,
+    loopRegistry,
+    promptPreview,
     realtime,
     broadcaster,
   }

@@ -125,3 +125,10 @@ loop 步骤 → 模型输出 tool_call{callId, name, args}
 - `registerTool()`：新增工具（名称/描述/schema/scope/risk/审批规则/幂等/输出策略）。
 - 能力组与角色默认矩阵：角色模板 yaml 中 enable/disable + 项目实例覆盖。
 - 输出渲染：UI blocks 渲染器按工具名注册（会话窗口展示工具卡）。
+
+## 实现口径（2026-09-15，S4）
+
+- **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`。
+- **已声明未实现**：`memory_search`/`memory_append`（S5）、`session_search`（S5/S6）、`workdir_edit`/`artifact_submit`/`artifact_rollback`（S6）、`task_*`（S6）。展示态与生效态可区分：`GET /api/tool-packages` 每个工具带 `registered` 标记。
+- **`ToolDefinition.policyAction`**（2026-09-15 新增）：把调用参数映射成策略输入；`cmd_run` 用它产出 `{kind:'command', program, args}`，使命令风险表生效。返回 `null` 表示参数非法（执行前直接 `ERR_VALIDATION`）。
+- **执行链实现**：注册 → 会话类型 → 策略（deny/approval）→ 审批桥 → 工具处理（内部做路径边界与归属校验）→ 输出兜底截断；`tool_call`/`tool_result` 事件由 loop 落盘（审计投影）。

@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { agentTemplateApi, type AgentTemplateView } from '../api/agentTemplates'
 import { describeError } from '../api/client'
 import { modelConfigApi, type ModelView } from '../api/modelConfig'
+import { promptPreviewApi, type PromptPreviewView } from '../api/platform'
 import { SessionPanel } from './SessionPanel'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
@@ -161,6 +162,16 @@ export function ProjectModule() {
   const [instances, setInstances] = useState<InstanceView[]>([])
   const [instanceForm] = Form.useForm<InstanceFormValues>()
   const [editing, setEditing] = useState<InstanceView | null>(null)
+  const [preview, setPreview] = useState<PromptPreviewView | null>(null)
+
+  const showPreview = async (instance: InstanceView): Promise<void> => {
+    if (current === null) return
+    try {
+      setPreview(await promptPreviewApi.preview(current.id, instance.instanceId))
+    } catch (cause) {
+      message.error(describeError(cause))
+    }
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -394,6 +405,9 @@ export function ProjectModule() {
                     <Button size="small" onClick={() => void resetInstance(record)}>
                       恢复快照
                     </Button>
+                    <Button size="small" onClick={() => void showPreview(record)}>
+                      提示词预览
+                    </Button>
                   </Space>
                 ),
               },
@@ -512,6 +526,26 @@ export function ProjectModule() {
           ]}
         />
       </Card>
+
+      <Modal
+        open={preview !== null}
+        title="系统提示词预览（与运行期同源，不落盘）"
+        width={760}
+        onCancel={() => setPreview(null)}
+        footer={null}
+      >
+        {preview !== null && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {preview.blocks.map((block) => (
+              <Card key={block.id} size="small" title={`${block.title}（origin=${block.origin}）`}>
+                <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
+                  {block.text}
+                </Typography.Paragraph>
+              </Card>
+            ))}
+          </Space>
+        )}
+      </Modal>
 
       <Modal
         open={wizardOpen}

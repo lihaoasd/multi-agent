@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import type { PromptPreviewService } from '../../application/agent-loop/preview'
 import type { SessionService } from '../../application/session/session-service'
 import type { Dispatcher } from '../../ports/dispatcher'
 import type { ProjectService } from '../../application/project/service'
@@ -13,6 +14,7 @@ export interface ProjectRouteContext {
   readonly team: TeamService
   readonly sessions: SessionService
   readonly dispatcher: Dispatcher
+  readonly promptPreview: PromptPreviewService
   readonly broadcaster: EventBroadcaster
 }
 
@@ -57,7 +59,7 @@ function readInstancePatch(record: Record<string, unknown>): InstancePatch {
 
 /** 项目与团队路由（contract.md §2「项目」「角色库 / 团队」「目录浏览器」） */
 export function registerProjectRoutes(app: FastifyInstance, context: ProjectRouteContext): void {
-  const { project, team, sessions, dispatcher, broadcaster } = context
+  const { project, team, sessions, dispatcher, promptPreview, broadcaster } = context
   const notifyTeam = (projectId: string, instanceId: string, action: string): void => {
     broadcaster.broadcast({ type: 'team.updated', payload: { projectId, instanceId, action } })
   }
@@ -156,6 +158,12 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
       return replyFromResult(reply, updated)
     },
   )
+
+  // 完整系统提示词预览（与运行期同源，不落盘）
+  app.get<{ Params: { pid: string; iid: string } }>('/api/projects/:pid/agents/:iid/system-prompt', async (request, reply) => {
+    const preview = await promptPreview.preview(request.params.pid, request.params.iid, 'user')
+    return replyFromResult(reply, preview)
+  })
 
   app.get<{ Params: { pid: string; iid: string } }>(
     '/api/projects/:pid/team/:iid/effective-config',

@@ -40,6 +40,11 @@ async function main(): Promise<void> {
       dispatcher: deps.dispatcher,
       realtime: deps.realtime,
       ids: deps.ids,
+      approvals: deps.approvals,
+      toolRegistry: deps.toolRegistry,
+      toolPackages: deps.toolPackages,
+      loopRegistry: deps.loopRegistry,
+      promptPreview: deps.promptPreview,
       broadcaster: deps.broadcaster,
     },
   })

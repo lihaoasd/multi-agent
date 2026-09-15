@@ -145,3 +145,14 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 - 单元：路径解析（../、盘符、symlink 链、scheme 混用）、危险规则表判定、超时杀进程、env 白名单/密钥不注入。
 - 集成：审批拒绝→回注→Agent 换方案（Mock 剧本）；越界调用被拒并审计；npm install 在 workdir 正常执行且留痕。
 - 验收脚本片段：让 dev Agent `cmd_run` 尝试删除 workdir 根目录 → 弹审批 → 拒绝 → 无任何删除且审计有记录；让另一角色尝试改 dev 归属的文件 → `ERR_FORBIDDEN`（点名 owner）；读他人文件正常放行（共享可读）。
+
+## 9. 实现口径（2026-09-15，S4）
+
+- **路径边界**：`PathResolver` 只接受虚拟路径 `workdir://` / `ro://` / `runtime://`；拒绝绝对路径、`..` 逃逸，并对**最近的已存在祖先做 realpath 复核**以拒绝符号链接逃逸（`ERR_FORBIDDEN_PATH`）。`resolveForWrite` 只拒绝 `ro://`（workdir 与 runtime 可写）。
+- **命令执行**：`CmdRunner` 结构化 argv、**不经 shell**（program 含 shell 元字符直接 `ERR_CMD_FORBIDDEN`）、cwd 由调用方锁定为工作目录、超时（默认 60s，上限 300s）**杀进程树**、输出按上限截断（保留末尾）。
+- **命令风险表**（`domain/rules/policy.ts`，纯函数、可单测）：
+  - `deny`：`format`/`diskpart`/`mkfs`/`shutdown` 等系统级命令；`rm -rf /`|`~`|盘根；PowerShell 递归强删盘根；`dd of=/dev/*`；
+  - `high`（需审批）：递归强制删除、装依赖（`npm/pip/... install`）、`git reset|clean|rebase|push`、`chmod/chown`、杀进程、`curl/wget/ssh/scp`，以及**内联代码执行**（`node -e`/`python -c`/`bash -c`/`powershell -Command`）——后者可绕过风险表，故一律走审批；
+  - `low`：工作目录内写入（`mkdir/touch/cp/mv/...`）；`none`：其余只读命令。
+- **判定优先级**：`deny > approval > allow`；**离线模式（SANDBOX__NETWORK=offline）同时约束命令与工具**：出网命令（`CMD_NET`/安装类/`git push`）与 `network != none` 的工具一律 `NET_OFFLINE` 拒绝。
+- **审批**：命中的动作先落 `approvals.jsonl`（**append-only**，同 id 取最后一条）并广播 `approval.requested`，Agent 状态投影为 `waiting`；用户决定落盘后唤醒等待中的回合。跨重启：pending 保持、决定**不回放**（agent-runtime.md §7）。

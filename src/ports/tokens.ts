@@ -17,7 +17,11 @@ import type {
   ProviderKindRegistry,
   SecretResolver,
 } from './model-config'
+import type { ApprovalStore } from './approval'
+import type { PathResolver } from './path-resolver'
+import type { PolicyEngine } from './policy'
 import type { ProjectStore } from './project'
+import type { CmdRunner } from './sandbox'
 import type { RoleTemplateStore } from './role-templates'
 import type { StaticAssetProvider } from './static-assets'
 import type { TurnRunner } from './turn'
@@ -42,6 +46,7 @@ export const TOKENS = {
   SessionMetaStore: token<SessionMetaStore>('SessionMetaStore'),
   SessionLogStore: token<SessionLogStore>('SessionLogStore'),
   DispatcherStateStore: token<DispatcherStateStore>('DispatcherStateStore'),
+  ApprovalStore: token<ApprovalStore>('ApprovalStore'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),
   ModelPresetProvider: token<ModelPresetProvider>('ModelPresetProvider'),
@@ -49,6 +54,10 @@ export const TOKENS = {
   ProviderKindRegistry: token<ProviderKindRegistry>('ProviderKindRegistry'),
   ModelCatalog: token<ModelCatalog>('ModelCatalog'),
   ModelGateway: token<ModelGateway>('ModelGateway'),
+  // 执行与沙箱
+  PathResolver: token<PathResolver>('PathResolver'),
+  CmdRunner: token<CmdRunner>('CmdRunner'),
+  PolicyEngine: token<PolicyEngine>('PolicyEngine'),
   // 回合执行
   TurnRunner: token<TurnRunner>('TurnRunner'),
   // Agent 模板

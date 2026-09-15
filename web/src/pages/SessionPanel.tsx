@@ -1,6 +1,7 @@
 import { Alert, Badge, Button, Card, Empty, Input, Popconfirm, Space, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { describeError } from '../api/client'
+import { approvalApi, type ApprovalView } from '../api/platform'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
 import { useRealtime } from '../hooks/useRealtime'
 
@@ -42,6 +43,26 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAllKinds, setShowAllKinds] = useState(true)
+  const [approvals, setApprovals] = useState<ApprovalView[]>([])
+
+  const refreshApprovals = useCallback(async () => {
+    try {
+      setApprovals(await approvalApi.list(projectId, 'pending'))
+    } catch (cause) {
+      setError(describeError(cause))
+    }
+  }, [projectId])
+
+  const decide = async (approval: ApprovalView, decision: 'approved' | 'rejected'): Promise<void> => {
+    try {
+      await approvalApi.decide(projectId, approval.id, decision, decision === 'rejected' ? '用户在会话面板拒绝' : undefined)
+      message.success(decision === 'approved' ? '已批准，Agent 将继续执行' : '已拒绝，Agent 将调整方案')
+      await refreshApprovals()
+      await refreshStatuses()
+    } catch (cause) {
+      message.error(describeError(cause))
+    }
+  }
 
   const refreshStatuses = useCallback(async () => {
     try {
@@ -76,7 +97,8 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   useEffect(() => {
     void loadSessions()
     void refreshStatuses()
-  }, [loadSessions, refreshStatuses])
+    void refreshApprovals()
+  }, [loadSessions, refreshStatuses, refreshApprovals])
 
   useEffect(() => {
     if (activeSessionId !== null) void loadEvents(activeSessionId)
@@ -101,8 +123,9 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
             .catch(() => undefined)
         }
         if (frame.type === 'agent.state' || frame.type === 'team.updated') void refreshStatuses()
+        if (frame.type === 'approval.requested' || frame.type === 'approval.decided') void refreshApprovals()
       },
-      [activeSessionId, projectId, refreshStatuses],
+      [activeSessionId, projectId, refreshStatuses, refreshApprovals],
     ),
   )
 
@@ -252,6 +275,30 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
               })}
             </Space>
           </div>
+          {approvals.length > 0 && (
+            <Card size="small" title={`待审批（${approvals.length}）`} style={{ marginTop: 12 }}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {approvals.map((approval) => (
+                  <div key={approval.id} style={{ border: '1px solid #ffe58f', background: '#fffbe6', borderRadius: 6, padding: 8 }}>
+                    <Space size={6} wrap>
+                      <Tag color="orange">{approval.kind}</Tag>
+                      <Typography.Text strong>{approval.summary}</Typography.Text>
+                      <Typography.Text type="secondary">触发者 {approval.actor}</Typography.Text>
+                    </Space>
+                    <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 4 }}>{approval.detail}</div>
+                    <Space size={6} style={{ marginTop: 6 }}>
+                      <Button size="small" type="primary" onClick={() => void decide(approval, 'approved')}>
+                        批准
+                      </Button>
+                      <Button size="small" danger onClick={() => void decide(approval, 'rejected')}>
+                        拒绝
+                      </Button>
+                    </Space>
+                  </div>
+                ))}
+              </Space>
+            </Card>
+          )}
           <Space.Compact style={{ width: '100%', marginTop: 12 }}>
             <Input.TextArea
               value={draft}

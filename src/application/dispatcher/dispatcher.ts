@@ -19,6 +19,7 @@ export interface DispatcherOptions {
   readonly projectStore: ProjectStore
   readonly sessions: SessionService
   readonly runner: TurnRunner
+  readonly approvals: { hasPending(projectId: string, instanceId: string): Promise<boolean> }
   readonly broadcaster: EventBroadcaster
   readonly lock: LockManager
   readonly clock: Clock
@@ -36,7 +37,9 @@ export interface DispatcherOptions {
  * 游标在**回合结束后**推进（至少一次语义：崩溃时宁可重放，也不丢消息）。
  */
 export function createDispatcher(options: DispatcherOptions): Dispatcher {
-  const { stateStore, projectStore, sessions, runner, broadcaster, lock, clock, logger } = options
+  const { stateStore, projectStore, sessions, runner, approvals, broadcaster, lock, clock, logger } = options
+  /** 运行中回合的中断句柄：暂停/停止时 abort，回合在可中断点挂起（D19-⑥） */
+  const activeTurns = new Map<string, AbortController>()
 
   const loadState = async (projectId: string): Promise<Result<DispatcherState>> => stateStore.load(projectId)
 
@@ -118,19 +121,24 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }
 
       const text = typeof next.payload['text'] === 'string' ? (next.payload['text'] as string) : ''
+      const controller = new AbortController()
+      activeTurns.set(instanceId, controller)
       let turnResult: Result<void>
       try {
         turnResult = await runner.runTurn({
           projectId,
           sessionId,
           instanceId,
+          sessionType: 'user',
           turn,
           userText: text,
-          signal: new AbortController().signal,
+          signal: controller.signal,
           emit,
         })
       } catch (cause) {
         turnResult = err('ERR_INTERNAL', cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        activeTurns.delete(instanceId)
       }
 
       if (!turnResult.ok) {
@@ -179,10 +187,11 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       const occupancy = state.value.occupancy[instance.instanceId]
       const cursor = state.value.lastHandledSeq[instance.instanceId] ?? 0
       const pending = await pendingMessages(projectId, instance.instanceId, cursor)
+      const waiting = occupancy !== undefined && (await approvals.hasPending(projectId, instance.instanceId))
       statuses.push({
         instanceId: instance.instanceId,
         enabled: instance.enabled,
-        state: occupancy === undefined ? 'idle' : 'working',
+        state: occupancy === undefined ? 'idle' : waiting ? 'waiting' : 'working',
         paused: state.value.paused[instance.instanceId] === true,
         sessionId: occupancy?.sessionId ?? null,
         queued: pending.ok ? pending.value.length : 0,
@@ -281,6 +290,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
           ...state.value,
           paused: { ...state.value.paused, [instanceId]: paused },
         })
+        if (paused) {
+          // 暂停：中断当前回合（回合在可中断点挂起，游标不推进 → 消息仍在队列）
+          activeTurns.get(instanceId)?.abort()
+        }
         if (!saved.ok) return saved
         publishState(projectId, instanceId, 'idle', null)
         const statuses = await statusOf(projectId)
