@@ -49,6 +49,13 @@
 | 协议 kind（适配器） | 与供应商对接的代码级协议实现：`openai-compatible` / `anthropic` / `gemini` / `ollama` / `mock`（见 model-config.md §6） |
 | 配置审计（config-audit） | `data/config-audit.jsonl`：平台/模板/实例配置变更的 append-only 留痕（不含密钥明文与提示词全文，见 model-config.md §10） |
 
+| 未完成回合（unfinished turn） | 事件流中**缺 `turn_end`** 的回合；平台不自动续跑，由用户三选（汇报中断点/继续执行/忽略）或补全驱动恢复 |
+| 归属与署名（file-owners） | 工作目录文件的 owner 与 `ownerName`（署名）；非 owner 写入 → `ERR_FORBIDDEN`，无主文件首写即认领 |
+| 滚动摘要（L2） | 会话 log 的 `summary` 事件：`ofSeq/toSeq` 连续无重叠，替代更早的原文窗口（可重放派生视图） |
+| 长期条目（L3） | `memories/global.jsonl` 与 `memories/<instanceId>.jsonl` 的跨会话知识条目（active/superseded） |
+| 运行细条 | 顶部「n 个 Agent 正在工作」：占用者 + 当前任务 + 最近 `plan` 状态 + 队列，可停止生成/停止任务 |
+| 触达门禁 | `npm run coverage`：测试 → 传递 import 图可达性检查（替代行覆盖率工具链） |
+
 ## 3. 编号索引
 
 ### 3.1 需求与用户故事
@@ -69,6 +76,24 @@
 - `U9` Agent 配置提交**已部分收敛**（2026-09-15 D20-⑧）：提示词 / loop / 模型三项定案；**剩余**=工具与工具包挂载编辑、配置回滚交互。
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
+
+### 3.4 阶段编号（`S0`~`S9`，`plan/development.md` §6）
+
+| 阶段 | 主题 | 方案 / 记录 |
+| --- | --- | --- |
+| `S0` | 工程脚手架与依赖门禁 | [plan](plan/2026-09-15-s0-scaffold.md) · [changes](changes/2026-09-15-s0-scaffold.md) |
+| `S1` | 模型配置模块 + Agent 配置提交 | [plan](plan/2026-09-15-s1-model-config.md) · [changes](changes/2026-09-15-s1-model-config.md) |
+| `S2` | 存储底座与项目/团队 | [plan](plan/2026-09-15-s2-project-team.md) · [changes](changes/2026-09-15-s2-project-team.md) |
+| `S3` | 会话与单工调度 | [plan](plan/2026-09-15-s3-sessions-dispatcher.md) · [changes](changes/2026-09-15-s3-sessions-dispatcher.md) |
+| `S4` | Agent loop 与工具执行 | [plan](plan/2026-09-15-s4-agent-loop-tools.md) · [changes](changes/2026-09-15-s4-agent-loop-tools.md) |
+| `S5` | 记忆与检索 | [plan](plan/2026-09-15-s5-memory-search.md) · [changes](changes/2026-09-15-s5-memory-search.md) |
+| `S6` | 产出物、任务、询问 | [plan](plan/2026-09-15-s6-work-artifacts-tasks.md) · [changes](changes/2026-09-15-s6-work-artifacts-tasks.md) |
+| `S7` | 编排画布与前端完整化 | [plan](plan/2026-09-15-s7-orchestration-ui.md) · [changes](changes/2026-09-15-s7-orchestration-ui.md) |
+| `S8` | 恢复、运行控制与收口 | [plan](plan/2026-09-15-s8-recovery-runtime.md) · [changes](changes/2026-09-15-s8-recovery-runtime.md) |
+| `S9` | 全量验收与文档收口 | [plan](plan/2026-09-15-s9-acceptance-closure.md) · [changes](changes/2026-09-15-s9-acceptance-closure.md) |
+
+- **测试规则编号**（`testing/plan.md` §2，共 31 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
+- 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。
 
 ## 4. 维护约定
 

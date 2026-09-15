@@ -104,5 +104,37 @@ export function createDispatcherStateStore(options: DispatcherStateStoreOptions)
         return written.ok ? ok(state) : written
       })
     },
+
+    async update(
+      projectId: ProjectId,
+      mutate: (state: DispatcherState) => DispatcherState,
+    ): Promise<Result<DispatcherState>> {
+      return lock.withLock(`dispatcher-state:${projectId}`, async () => {
+        const loaded = await loadStateLocked(projectId)
+        if (!loaded.ok) return loaded
+        const next = mutate(loaded.value)
+        const written = await fileStore.writeJsonAtomic(statePathFor(projectId), next)
+        return written.ok ? ok(next) : written
+      })
+    },
+  }
+
+  /** 无锁读取（调用方必须已持有 `dispatcher-state:<pid>` 锁；KeyedLock 不可重入） */
+  async function loadStateLocked(projectId: ProjectId): Promise<Result<DispatcherState>> {
+    const path = statePathFor(projectId)
+    const text = await fileStore.readText(path)
+    if (!text.ok) {
+      return text.error.code === 'ERR_NOT_FOUND' ? ok(EMPTY_DISPATCHER_STATE) : text
+    }
+    try {
+      const parsed = parseDispatcherState(JSON.parse(text.value))
+      if (parsed.ok) return parsed
+    } catch {
+      // 落到备份分支
+    }
+    const backupPath = `${path}.bak-${clock.now().toISOString().replace(/[:.]/g, '-')}.json`
+    await fileStore.writeTextAtomic(backupPath, text.value)
+    await fileStore.remove(path)
+    return ok(EMPTY_DISPATCHER_STATE)
   }
 }

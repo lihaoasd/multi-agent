@@ -162,6 +162,7 @@ agent_haness/                    # 平台仓库
     "turns": { "dev_1": 2 } }           // 回合计数器（写入事件的 turn 字段）
   ```
   文件损坏 → 备份为 `runtime.state.json.bak-<ts>.json` 并按空状态启动（占用可由日志重建）。启动时清理**进程遗留的占用**（`resetStaleOccupancy`），但**不自动续跑**未完成回合（D17-⑤，恢复入口在 S8）。
+  - **实现口径（2026-09-15，S9）**：占用/游标/暂停/清理一律走 **`DispatcherStateStore.update(projectId, mutate)`（同一把项目锁内读改写）**。原因是回合内可能**嵌套**为其它 Agent 触发 `drain`（委派/询问/任务通知），若用外层捕获的整份 state 覆盖写，会丢掉内层刚写入的游标 → 同一条队列消息被重复处理（S9 验收实测发现并修复）。
 
 ## 5. 记忆文件（详见 memory.md）
 

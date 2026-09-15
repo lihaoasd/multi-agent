@@ -38,6 +38,15 @@ export const EMPTY_DISPATCHER_STATE: DispatcherState = {
 export interface DispatcherStateStore {
   load(projectId: ProjectId): Promise<Result<DispatcherState>>
   save(projectId: ProjectId, state: DispatcherState): Promise<Result<DispatcherState>>
+  /**
+   * 读改写（在同一把项目锁内）：**避免陈旧快照覆盖**──
+   * 回合内可能嵌套为其它 Agent 触发 drain（任务委派通知），若用外层捕获的整份 state 覆盖写，
+   * 会丢掉内层刚写入的游标/占用（表现为重复处理同一条队列消息）。
+   */
+  update(
+    projectId: ProjectId,
+    mutate: (state: DispatcherState) => DispatcherState,
+  ): Promise<Result<DispatcherState>>
 }
 
 /** 对外状态投影（左栏/画布用）：state 是派生值，occupancy 是真相 */

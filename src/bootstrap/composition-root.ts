@@ -407,6 +407,8 @@ export function resolveDeps(
     realtime?: WsRealtime
     /** 遗留键（MODELS__PROVIDERS）读取来源；默认进程环境 */
     envMap?: Readonly<Record<string, string | undefined>>
+    /** 模型网关替身（测试/验收的脚本化 Mock 用；缺省取容器内的真实网关） */
+    gateway?: ModelGateway
   } = {},
 ): AppDeps {
   const configProvider = container.resolve<ConfigProvider>(TOKENS.Config)
@@ -418,6 +420,7 @@ export function resolveDeps(
   const ids = container.resolve(TOKENS.IdGenerator)
   const realtime = overrides.realtime ?? container.resolve<WsRealtime>(TOKENS.Realtime)
   const broadcaster: EventBroadcaster = overrides.broadcaster ?? realtime
+  const gateway = overrides.gateway ?? container.resolve<ModelGateway>(TOKENS.ModelGateway)
   const envMap = overrides.envMap ?? process.env
 
   const modelConfig = createModelConfigService({
@@ -581,7 +584,7 @@ export function resolveDeps(
   const summary = createSummaryEngine({
     sessions,
     memory,
-    gateway: container.resolve(TOKENS.ModelGateway),
+    gateway,
     resolveModel: async (projectId, instanceId) => {
       const effective = await team.effectiveConfig(projectId, instanceId)
       return effective.ok ? ok(effective.value.model) : effective
@@ -598,7 +601,7 @@ export function resolveDeps(
     team,
     sessions,
     loops: loopRegistry,
-    gateway: container.resolve(TOKENS.ModelGateway),
+    gateway,
     tools: toolRegistry,
     toolExecutor,
     approvals,
@@ -699,7 +702,7 @@ export function resolveDeps(
     secrets: container.resolve(TOKENS.SecretResolver),
     kinds: container.resolve(TOKENS.ProviderKindRegistry),
     catalog,
-    gateway: container.resolve(TOKENS.ModelGateway),
+    gateway,
     modelConfig,
     agentConfig,
     project,

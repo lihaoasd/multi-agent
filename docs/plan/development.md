@@ -32,9 +32,9 @@
 | **S4** | Agent loop 与工具执行 | `LoopRegistry`+三策略真实形态、`ContextBuilder`、`ToolRegistry`/`ToolExecutor`、沙箱与审批桥 | S1、S3 | 2、3、11、26 | **已完成（2026-09-15）**：[方案](2026-09-15-s4-agent-loop-tools.md) · [记录](../changes/2026-09-15-s4-agent-loop-tools.md) |
 | **S5** | 记忆与检索 | `MemoryStore`、滚动摘要（可重放派生）、2-gram 倒排索引、检索接口 | S3 | 6、7、13 | **已完成（2026-09-15）**：[方案](2026-09-15-s5-memory-search.md) · [记录](../changes/2026-09-15-s5-memory-search.md) |
 | **S6** | 产出物、任务、询问 | `workdir_edit`+归属校验、artifact manifest+版本+回退、任务发布/领取/汇报、询问阻塞与答复 | S4、S5 | 4、10、12、15~18、21、24、25 | **已完成（2026-09-15）**：[方案](2026-09-15-s6-work-artifacts-tasks.md) · [记录](../changes/2026-09-15-s6-work-artifacts-tasks.md) |
-| **S7** | 编排画布与前端完整化 | `/api/projects/:pid/orchestration`、委派边约束、画布、项目页 2/3 栏、右栏三列表、工作日志 | S6 | 22、23 | 未开始 |
-| **S8** | 恢复、运行控制与验收收口 | 未完成回合恢复三选、排队消息恢复、暂停/停止、停止生成、进行中细条、导出 zip、`reindex`、文档回写 | S7 | 14、19、20 | 未开始 |
-| **S9** | 全量验收与文档收口 | prd §9 脚本 1~8 全绿、覆盖率达标、`contract.md`/`data-storage.md` 回写 | S8 | 全部 | 未开始 |
+| **S7** | 编排画布与前端完整化 | `/api/projects/:pid/orchestration`、委派边约束、画布、项目页 2/3 栏、右栏三列表、工作日志 | S6 | 22、23 | **已完成（2026-09-15）**：[方案](2026-09-15-s7-orchestration-ui.md) · [记录](../changes/2026-09-15-s7-orchestration-ui.md) |
+| **S8** | 恢复、运行控制与验收收口 | 未完成回合恢复三选、排队消息恢复、暂停/停止、停止生成、进行中细条、导出 zip、`reindex`、文档回写 | S7 | 14、19、20 | **已完成（2026-09-15）**：[方案](2026-09-15-s8-recovery-runtime.md) · [记录](../changes/2026-09-15-s8-recovery-runtime.md) |
+| **S9** | 全量验收与文档收口 | prd §9 脚本 1~8 全绿、覆盖率达标、`contract.md`/`data-storage.md` 回写 | S8 | 全部 | **已完成（2026-09-15）**：[方案](2026-09-15-s9-acceptance-closure.md) · [记录](../changes/2026-09-15-s9-acceptance-closure.md) |
 
 > 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）。
 
@@ -85,7 +85,7 @@
 | **S6 产出物、任务、询问** | `workdir_edit` + `file-owners` 归属校验、artifact manifest + `artifact-versions`（doc 快照 / code 补丁）+ 回退、任务发布→领取→汇报 + 去重 + 单 `in_progress`、`ask_user` 阻塞与答复续跑、doc 审批托盘。验收：非 owner 写他人文件 `ERR_FORBIDDEN`（规则 4/10/12/15~18/21/24/25）。**结果（2026-09-15）**：写通道唯一化 + 署名（`ERR_FORBIDDEN` 点名 ownerName）；`artifact-versions/<id>/v<n>/{manifest.json,diff.patch,files/,base/}` 与回退冲突前置校验（`force` 覆盖，新版本 `state=reverted`）；未结算改动按 `task-<id>`/`turn-<sid>-<n>` 聚合，任务 done/终止前结算为 `type=code` artifact；任务单 `in_progress`、去重、回报委派人；`ask_user` 落 pending 并阻塞（`waiting` 由 pending 询问派生）。**遗留**：托盘批量同意/信任开关 UI（D17-④）与 `task_assign` 出边约束（S7） |
 | **S7 编排画布与前端完整化** | `/api/projects/:pid/orchestration` 全量保存 + `version` 乐观并发 + 自环/重复边校验、Agent 委派**出边约束**（`ERR_ORCHESTRATION_EDGE`）、画布、项目页拓扑 2 栏 / 对话 3 栏、右栏三列表、工作日志折叠与 kind 过滤。验收：越边委派被拒且不建任务（规则 22/23）。**结果（2026-09-15）**：`orchestration.json`（原子写 + 单项目锁）+ `GET` 读取归一化（补节点/级联删边）+ `PUT` 全量保存（`version+1`、冲突 `ERR_CONFLICT` + `detail.currentVersion`、非法图 `ERR_ORCHESTRATION_INVALID`）、`orchestration.updated` 广播；`task_assign` 出边约束（越边不建任务，用户不受限）；前端零依赖 SVG 画布（拖拽/连线/删边/保存/暂停/跳会话）+ 拓扑 2 栏 + 对话 3 栏 + 工作日志折叠与 kind 过滤。**遗留**：停止任务/未完成回合三选与托盘批量审批（S8）；设计候选 React Flow 未引入（P1 选型） |
 | **S8 恢复、运行控制与收口** | 未完成回合横幅三选（缺 `turn_end`）、排队消息恢复、暂停/停止（未结算改动先结算快照）、"停止生成"、进行中细条、项目导出 zip。验收：跨重启会话/画布/记忆恢复（规则 14/19/20）。**结果（2026-09-15）**：`RecoveryService` 栈式配对判定未完成回合 + 三选（`report/continue/complete` 唤醒、`ignore` 静默、重复 `ERR_CONFLICT`）；`stop(turn/task)`（停生成保留队列 / 终止任务先结算 code artifact）；`GET /runtime` 细条（占用者 + 任务 + plan 状态 + 未完成回合 + 队列）；零依赖 STORE ZIP 导出运行时项目文件夹（附范围说明、不含工作目录）；启动自检记录未完成回合且**不自动续跑**。**遗留**：导入/恢复向导、流式压缩导出、多进程停止语义（S9 或 P1） |
-| **S9 全量验收与文档收口** | 跑通 prd §9 脚本 1~8；`contract.md`/`data-storage.md`/`testing/plan.md` 按实现回写；覆盖率门禁达标；`README.md` 编号索引同步 |
+| **S9 全量验收与文档收口** | 跑通 prd §9 脚本 1~8；`contract.md`/`data-storage.md`/`testing/plan.md` 按实现回写；覆盖率门禁达标；`README.md` 编号索引同步。**结果（2026-09-15）**：`tests/acceptance/prd-section9.test.ts` 8/8 通过（脚本化 Mock 网关让委派/唤醒/提问/审批真的经过 agent loop）；全量 44 files / 302 tests 全绿；`npm run coverage` 触达门禁 141/141；验收暴露并修复 4 个缺陷（调度态读改写、模板工具白名单、`GET /api/config`、死代码）；文档与索引已回写 |
 
 ## 7. 每阶段完成定义（DoD，缺一不算完成）
 

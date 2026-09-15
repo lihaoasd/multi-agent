@@ -20,6 +20,6 @@ defaultLoop:
   params:
     maxIterations: 6
 packages: [fs, cmd, memory, session, artifact, approval, task]
-tools: [task_assign, task_view, task_list, ask_user, fs_read_file, fs_list_dir, fs_search, memory_search, artifact_submit]
+tools: [fs_read_file, fs_list_dir, fs_search, memory_search, memory_append, session_search, artifact_submit, artifact_rollback, approval_query, task_view, task_list, task_assign, task_claim, task_update, ask_user]
 artifactTypes: [doc]
 defaultApprovalRules: []

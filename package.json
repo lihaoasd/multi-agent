@@ -19,6 +19,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "ratchet": "node scripts/import-ratchet.mjs",
+    "coverage": "node tools/coverage-gate.mjs",
     "reindex": "tsx src/bootstrap/reindex.ts"
   },
   "dependencies": {

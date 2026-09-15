@@ -52,6 +52,7 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 
 - 每个测试用例使用独立临时项目目录（os.tmpdir 下创建，测后清理），绝不触碰真实 workdir。
 - Mock 模型：可编程响应（按输入匹配/固定剧本），用于模拟多轮工具调用与"模型失败重试"。
+  - **脚本化 Mock（S9 落地）**：`tests/helpers-scripted-gateway.ts` 按"未消费的剧本步骤"返回文本与 `tool-call`（带条件的步骤优先于无条件兜底），使 prd §9 验收 1 的委派/领取/汇报/提问/高危命令**真的经过 agent loop**；`resolveDeps({ gateway })` 支持注入替身。
 - 覆盖 flaky 点：流式中断、审批超时、文件并发写（单进程串行验证）。
 
 ## 4. 执行与门禁
@@ -59,3 +60,28 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 - `npm run test`：单元+集成全绿是提交门槛。
 - 每里程碑按开发方案（`docs/plan/`）的"演示/验收"列人工验收；端到端跑 prd §9 完整脚本。
 - 覆盖率目标：domain 与 infra 关键模块 ≥ 80%（配置跳过 UI 层）。
+  - **实现口径（2026-09-15，S9）**：本仓库**未引入覆盖率依赖**（`@vitest/coverage-v8` 需新增依赖与联网安装），改用**文件级触达门禁** `npm run coverage`（`tools/coverage-gate.mjs`）：把 `src/**/*.ts` 与测试文件/验收脚本的 import 图对照，未被任何测试触达的文件（白名单：`bootstrap/main.ts`、纯类型/常量入口）即失败；同时输出分层统计。规则到用例的映射见 §6。
+
+## 5. 规则 → 用例映射（S9 收口）
+
+| 规则 | 主要用例文件 |
+| --- | --- |
+| 1/5/9/26 单工·会话日志·暂停 | `tests/integration/server/sessions-api.test.ts`、`tests/acceptance/prd-section9.test.ts`（脚本 3/7） |
+| 2 路径边界 | `tests/unit/infra/path-resolver.test.ts`、`tests/unit/infra/s6-stores.test.ts`、验收脚本 4 |
+| 3/11 审批与跨重启 | `tests/unit/domain/policy.test.ts`、`tests/integration/server/approvals-api.test.ts`、验收脚本 4 |
+| 4/10/21 提交制·回退·归属 | `tests/unit/application/artifact-service.test.ts`、`tests/integration/server/work-api.test.ts`、验收脚本 1/4 |
+| 6/13 记忆·时间线 | `tests/unit/application/{memory-service,summary-engine}.test.ts`、`tests/integration/server/memory-api.test.ts` |
+| 7 中文检索 | `tests/unit/shared/text.test.ts`、`tests/unit/infra/keyword-index.test.ts`、`tests/integration/server/memory-api.test.ts` |
+| 8/27/28/29/30/31 模型与 Agent 配置 | `tests/integration/server/{model-config-api,model-config-import,agent-templates-api}.test.ts`、`tests/unit/infra/model-adapters.test.ts`、验收脚本 2/8 |
+| 12/15/17/24 任务聚合·激活·终止·汇报 | `tests/unit/application/task-question-service.test.ts`、`tests/integration/server/work-api.test.ts`、验收脚本 1/6/7 |
+| 14/19/20 恢复·停止·细条 | `tests/unit/application/runtime-recovery.test.ts`、`tests/integration/server/runtime-api.test.ts`、验收脚本 3/7 |
+| 16/18 doc 审批预览与降噪 | `tests/integration/server/approvals-api.test.ts`（`previewRef`）；托盘批量与信任开关 UI 留 P1 |
+| 22/23 编排图与委派边 | `tests/unit/application/orchestration-service.test.ts`、`tests/integration/server/orchestration-api.test.ts`、验收脚本 6 |
+| 25 询问阻塞与答复 | `tests/unit/application/task-question-service.test.ts`、`tests/integration/server/{work-api,runtime-api}.test.ts`、验收脚本 7 |
+| prd §9 脚本 1~8 | `tests/acceptance/prd-section9.test.ts`（8 个用例与 §9 条目一一对应） |
+
+## 6. 验收执行记录
+
+| 日期 | 范围 | 结果 |
+| --- | --- | --- |
+| 2026-09-15（S9） | prd §9 脚本 1~8（`tests/acceptance/prd-section9.test.ts`） | 8/8 通过；全量 `npm run test` 44 files / 302 tests 全绿；发现并修复 2 个真实缺陷（见 `docs/changes/2026-09-15-s9-acceptance-closure.md`） |

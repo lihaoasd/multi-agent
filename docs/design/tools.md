@@ -126,10 +126,11 @@ loop 步骤 → 模型输出 tool_call{callId, name, args}
 - 能力组与角色默认矩阵：角色模板 yaml 中 enable/disable + 项目实例覆盖。
 - 输出渲染：UI blocks 渲染器按工具名注册（会话窗口展示工具卡）。
 
-## 实现口径（2026-09-15，S4/S5/S6）
+## 实现口径（2026-09-15，S4/S5/S6/S9）
 
 - **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`（S4）；`memory_append`、`memory_search`、`session_search`（S5）；`workdir_edit`、`artifact_submit`、`artifact_rollback`、`task_view`、`task_list`、`task_assign`、`task_claim`、`task_update`、`ask_user`（S6）——**7 个基础包的工具已全部真实注册**（展示态 = 生效态）。
 - **S5 口径**：记忆写入只落**本人角色记忆**（全局记忆写入白名单在 `application/memory/memory-service.ts`，工具层不可越权）；检索可见性走 `domain/rules/visibility.ts`（D18-②，与 `GET /search` 同一份判定）。
 - **S6 口径**：`workdir_edit` 是唯一写通道（归属校验 `ERR_FORBIDDEN` + 署名 + 未结算改动暂存）；`artifact_submit` 的审批门由 `PolicyAction.kind='submit'` 按项目 `artifactPolicy` 判定（通过后 `approvalId` 写入 manifest）；`artifact_rollback` 风险 high（走审批），只允许回退自己提交的（用户经接口以提交者身份代行）；`ask_user` 经注入的询问桥落 `questions.jsonl` 并阻塞等待答复（同一 Agent 至多 1 个 pending）。`task_assign` 的**出边约束**（`ERR_ORCHESTRATION_EDGE`）随 S7 编排图落地。
 - **`ToolDefinition.policyAction`**（2026-09-15 新增）：把调用参数映射成策略输入；`cmd_run` 用它产出 `{kind:'command', program, args}`，使命令风险表生效。返回 `null` 表示参数非法（执行前直接 `ERR_VALIDATION`）。
 - **执行链实现**：注册 → 会话类型 → 策略（deny/approval）→ 审批桥 → 工具处理（内部做路径边界与归属校验）→ 输出兜底截断；`tool_call`/`tool_result` 事件由 loop 落盘（审计投影）。
+- **S9 口径（模板工具白名单）**：8 个内置角色模板的 `tools:` 补齐**基础协作工具**（`task_view`/`task_list`/`task_claim`/`task_update`、`memory_append`、`session_search`、`approval_query`、`artifact_rollback`）——否则真实模型拿不到"领取/汇报"的 function schema，prd §9 脚本 1 的闭环会断（S9 验收实测发现）；productive 角色（product/architect/ui/ux）按 2026-09-12 决定补 `workdir_edit`；`pm` 仍**只协调不产出**（无 `workdir_edit`/`cmd_run`），`cmd_run` 仍只给 dev/ops/qa。

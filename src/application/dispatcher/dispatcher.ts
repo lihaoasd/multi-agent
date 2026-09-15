@@ -45,8 +45,15 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
   const loadState = async (projectId: string): Promise<Result<DispatcherState>> => stateStore.load(projectId)
 
-  const saveState = async (projectId: string, state: DispatcherState): Promise<Result<DispatcherState>> =>
-    stateStore.save(projectId, state)
+  /**
+   * 读改写（同一把项目锁内）：**不能用陈旧快照整份覆盖**──
+   * 回合内可能嵌套为别的 Agent 触发 drain（例如委派通知），覆盖写会丢掉内层刚写入的游标，
+   * 表现为同一条队列消息被重复处理（S9 验收发现的缺陷）。
+   */
+  const updateState = async (
+    projectId: string,
+    mutate: (current: DispatcherState) => DispatcherState,
+  ): Promise<Result<DispatcherState>> => stateStore.update(projectId, mutate)
 
   const publishState = (projectId: string, instanceId: string, state: string, sessionId: string | null): void => {
     broadcaster.broadcast({ type: 'agent.state', payload: { projectId, instanceId, state, sessionId } })
@@ -101,17 +108,15 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       const startedAt = clock.now().toISOString()
 
       // 占位 → 落盘（先盘后推由 EventPipeline 保证）
-      const occupied: DispatcherState = {
-        ...state.value,
+      const savedBusy = await updateState(projectId, (current) => ({
+        ...current,
         occupancy: {
-          ...state.value.occupancy,
+          ...current.occupancy,
           [instanceId]: { type: 'user', sessionId, since: startedAt },
         },
-        turns: { ...state.value.turns, [instanceId]: turn },
-      }
-      const savedBusy = await saveState(projectId, occupied)
+        turns: { ...current.turns, [instanceId]: turn },
+      }))
       if (!savedBusy.ok) return savedBusy
-      state = savedBusy
       publishState(projectId, instanceId, 'working', sessionId)
 
       const emit = async (event: NewEvent): Promise<Result<StoredEvent>> => {
@@ -158,14 +163,11 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }
 
       // 释放占用 + 推进游标（回合结束后推进：崩溃宁可重放不丢消息）
-      const released: DispatcherState = {
-        ...state.value,
-        occupancy: Object.fromEntries(
-          Object.entries(state.value.occupancy).filter(([key]) => key !== instanceId),
-        ),
-        lastHandledSeq: { ...state.value.lastHandledSeq, [instanceId]: next.seq },
-      }
-      const savedIdle = await saveState(projectId, released)
+      const savedIdle = await updateState(projectId, (current) => ({
+        ...current,
+        occupancy: Object.fromEntries(Object.entries(current.occupancy).filter(([key]) => key !== instanceId)),
+        lastHandledSeq: { ...current.lastHandledSeq, [instanceId]: next.seq },
+      }))
       if (!savedIdle.ok) return savedIdle
       state = savedIdle
       publishState(projectId, instanceId, 'idle', sessionId)
@@ -270,7 +272,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       if (!state.ok) return state
       const stale = Object.keys(state.value.occupancy)
       if (stale.length === 0) return ok(0)
-      const saved = await saveState(projectId, { ...state.value, occupancy: {} })
+      const saved = await updateState(projectId, (current) => ({ ...current, occupancy: {} }))
       if (!saved.ok) return saved
       for (const instanceId of stale) publishState(projectId, instanceId, 'idle', null)
       return ok(stale.length)
@@ -300,10 +302,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
         if ((state.value.paused[instanceId] === true) === paused) {
           return err('ERR_CONFLICT', paused ? '该角色已暂停' : '该角色未暂停', { instanceId })
         }
-        const saved = await saveState(projectId, {
-          ...state.value,
-          paused: { ...state.value.paused, [instanceId]: paused },
-        })
+        const saved = await updateState(projectId, (current) => ({
+          ...current,
+          paused: { ...current.paused, [instanceId]: paused },
+        }))
         if (paused) {
           // 暂停：中断当前回合（回合在可中断点挂起，游标不推进 → 消息仍在队列）
           activeTurns.get(instanceId)?.abort()
