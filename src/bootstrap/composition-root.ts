@@ -7,6 +7,7 @@ import { createMemoryService } from '../application/memory/memory-service'
 import { createSearchService } from '../application/search/search-service'
 import { createSummaryEngine, type SummaryEngine } from '../application/memory/summary-engine'
 import { createArtifactService } from '../application/artifact/artifact-service'
+import { createOrchestrationService } from '../application/orchestration/orchestration-service'
 import { createTaskService } from '../application/task/task-service'
 import { createQuestionService } from '../application/question/question-service'
 import { createToolExecutor } from '../application/tools/tool-executor'
@@ -29,6 +30,7 @@ import { createWsEventHub } from '../infra/events/ws-hub'
 import { createFileStore } from '../infra/file-store/file-store'
 import { createArtifactStore } from '../infra/file-store/artifact-store'
 import { createTaskStore } from '../infra/file-store/task-store'
+import { createOrchestrationStore } from '../infra/file-store/orchestration-store'
 import { createQuestionStore } from '../infra/file-store/question-store'
 import { createWorkdirFs } from '../infra/fs/workdir-fs'
 import { createMemoryStore } from '../infra/file-store/memory-store'
@@ -67,6 +69,7 @@ import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
 import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
 import type { ArtifactService, ArtifactStore } from '../ports/artifact'
+import type { OrchestrationService, OrchestrationStore } from '../ports/orchestration'
 import type { QuestionService, QuestionStore } from '../ports/question'
 import type { TaskService, TaskStore } from '../ports/task'
 import type { WorkdirFs } from '../ports/workdir'
@@ -266,6 +269,15 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
       dataDir: config.dataDir,
     }),
   )
+  container.registerInstance(
+    TOKENS.OrchestrationStore,
+    createOrchestrationStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
 
   // 3) 模型
   const presets = createYamlModelPresetProvider(DEFAULT_PRESET_PATH)
@@ -321,6 +333,7 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.ArtifactStore,
     TOKENS.TaskStore,
     TOKENS.QuestionStore,
+    TOKENS.OrchestrationStore,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -365,6 +378,7 @@ export interface AppDeps {
   readonly artifacts: ArtifactService
   readonly tasks: TaskService
   readonly questions: QuestionService
+  readonly orchestration: OrchestrationService
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -498,10 +512,20 @@ export function resolveDeps(
     await notifier.wake(input)
   }
 
+  const orchestration = createOrchestrationService({
+    store: container.resolve<OrchestrationStore>(TOKENS.OrchestrationStore),
+    projects: container.resolve(TOKENS.ProjectStore),
+    ids,
+    clock,
+    broadcaster,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
   const tasks = createTaskService({
     store: container.resolve<TaskStore>(TOKENS.TaskStore),
     projects: container.resolve(TOKENS.ProjectStore),
     artifacts,
+    orchestration,
     ids,
     clock,
     broadcaster,
@@ -650,6 +674,7 @@ export function resolveDeps(
     artifacts,
     tasks,
     questions,
+    orchestration,
     toolRegistry,
     toolPackages,
     loopRegistry,

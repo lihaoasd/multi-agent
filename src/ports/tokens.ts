@@ -20,6 +20,7 @@ import type {
 } from './model-config'
 import type { ApprovalStore } from './approval'
 import type { ArtifactStore } from './artifact'
+import type { OrchestrationStore } from './orchestration'
 import type { QuestionStore } from './question'
 import type { TaskStore } from './task'
 import type { WorkdirFs } from './workdir'
@@ -58,6 +59,7 @@ export const TOKENS = {
   ArtifactStore: token<ArtifactStore>('ArtifactStore'),
   TaskStore: token<TaskStore>('TaskStore'),
   QuestionStore: token<QuestionStore>('QuestionStore'),
+  OrchestrationStore: token<OrchestrationStore>('OrchestrationStore'),
   WorkdirFs: token<WorkdirFs>('WorkdirFs'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),

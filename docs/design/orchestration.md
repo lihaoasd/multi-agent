@@ -104,3 +104,12 @@
 ## 9. 未决
 
 - **U12**：是否允许下游**主动**向上游发起沟通（当前只允许"汇报沿反向"，不放开反向主动派单/沟通）。放开会把边从"委派权限"扩展为"双向通信权限"，需重新评估上下文与越权风险。
+
+## 10. 实现口径（2026-09-15，S7）
+
+- **落盘**：`projects/<pid>/orchestration.json`（原子写 + `orchestration:<pid>` 单项目锁）；文件缺失或损坏 → 视为 `version=0` 空图（图属可重建配置）。
+- **读取即归一化、不落盘**：`GET` 按当前 `team` 补齐缺失节点（网格默认位 80/60，步长 260/160，每行 3 个）、级联删除已移除实例的节点与边、去重并丢弃自环边；`PUT` 保存前再校验一次同样的规则。
+- **校验与错误码**：自环 / 重复边（`from+to`）/ 跨项目或未知实例 / 边端不在图中 → `ERR_ORCHESTRATION_INVALID`（`detail` 带 `from`/`to`/`instanceId`）；`expectedVersion` 不匹配 → `ERR_CONFLICT` + `detail.currentVersion`；保存成功 `version+1` 并发 `orchestration.updated`。
+- **委派约束落地**：`TaskService.create` 在 `creator !== 'user'` 时查 `canDelegate(creator, assignee)`，缺失直接返回 `ERR_ORCHESTRATION_EDGE` 且**不创建任务**（用户不受限）。汇报仍沿反向，不要求反向边。
+- **画布实现**：设计候选 React Flow **未引入**（避免新增重型依赖）；前端为零依赖 SVG 画布：拖拽移动、连线模式点两端建边、点选/标签删除边、全量保存（带 `version`）、冲突提示刷新重试、节点可就地暂停/继续与跳转会话。活动边动画/自动布局/子图/编排模板仍是 P1。
+- **未做**：`POST .../agents/:iid/stop`（S8）、多计划/多图与 U12。

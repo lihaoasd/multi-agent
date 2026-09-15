@@ -1,9 +1,10 @@
-import { Alert, Badge, Button, Card, Empty, Input, Popconfirm, Space, Tag, Typography, message } from 'antd'
+import { Alert, Badge, Button, Card, Collapse, Empty, Input, Popconfirm, Select, Space, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
 import { useRealtime } from '../hooks/useRealtime'
+import { RightColumn } from './RightColumn'
 
 interface SessionPanelProps {
   readonly projectId: string
@@ -42,7 +43,8 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showAllKinds, setShowAllKinds] = useState(true)
+  /** 事件 kind 过滤（ui.md §4：仅看对话 / 显示全部事件 / 指定 kind） */
+  const [kindFilter, setKindFilter] = useState<'message' | 'all' | string>('message')
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
 
   const refreshApprovals = useCallback(async () => {
@@ -175,7 +177,37 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
     }
   }
 
-  const visibleEvents = showAllKinds ? events : events.filter(isChatEvent)
+  const visibleEvents = useMemo(
+    () =>
+      kindFilter === 'all'
+        ? events
+        : events.filter((event) => (kindFilter === 'message' ? isChatEvent(event) : event.kind === kindFilter)),
+    [events, kindFilter],
+  )
+
+  /** 工作日志折叠：把连续的"非对话事件"合成一张可展开卡片（默认折叠，ui.md §4） */
+  const stream = useMemo(() => {
+    const groups: (
+      | { readonly kind: 'message'; readonly event: StoredEvent }
+      | { readonly kind: 'log'; readonly key: string; readonly events: readonly StoredEvent[] }
+    )[] = []
+    let buffer: StoredEvent[] = []
+    const flush = (): void => {
+      if (buffer.length === 0) return
+      groups.push({ kind: 'log', key: `log-${buffer[0]?.seq ?? 0}`, events: buffer })
+      buffer = []
+    }
+    for (const event of visibleEvents) {
+      if (isChatEvent(event)) {
+        flush()
+        groups.push({ kind: 'message', event })
+      } else {
+        buffer.push(event)
+      }
+    }
+    flush()
+    return groups
+  }, [visibleEvents])
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -184,7 +216,7 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
         type={realtime.connected ? 'success' : 'warning'}
         showIcon
         message={realtime.connected ? '实时通道已连接（事件先落盘后推送）' : '实时通道未连接，正在重试…'}
-        description="当前为 S3 阶段：回复由占位回合执行器生成，S4 接入真实 agent loop 后会替换为模型输出。"
+        description="回复由真实 agent loop 生成（S4 起）：工作日志默认折叠，可用右上角过滤按 kind 查看；右栏三列表实时刷新。"
       />
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <Card size="small" title="会话（每个 Agent 一个）" style={{ width: 280, flex: '0 0 280px' }}>
@@ -228,9 +260,23 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
           }
           extra={
             <Space>
-              <Button size="small" onClick={() => setShowAllKinds((value) => !value)}>
-                {showAllKinds ? '仅看对话' : '显示全部事件'}
-              </Button>
+              <Select
+                size="small"
+                style={{ width: 150 }}
+                value={kindFilter}
+                onChange={(value: string) => setKindFilter(value)}
+                options={[
+                  { value: 'message', label: '仅看对话' },
+                  { value: 'all', label: '显示全部事件（折叠）' },
+                  { value: 'thought', label: '思考 thought' },
+                  { value: 'plan', label: '计划 plan' },
+                  { value: 'tool_call', label: '工具调用 tool_call' },
+                  { value: 'tool_result', label: '工具结果 tool_result' },
+                  { value: 'summary', label: '摘要 summary' },
+                  { value: 'turn_start', label: '回合边界' },
+                  { value: 'error', label: '错误 error' },
+                ]}
+              />
               <Button size="small" onClick={() => activeSessionId !== null && void loadEvents(activeSessionId)}>
                 刷新
               </Button>
@@ -249,10 +295,37 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
           <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 8 }}>
             {visibleEvents.length === 0 && <Empty description="还没有消息：在下面输入框说点什么" />}
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {visibleEvents.map((event) => {
+              {stream.map((item) => {
+                if (item.kind === 'log') {
+                  return (
+                    <Collapse
+                      key={item.key}
+                      size="small"
+                      items={[
+                        {
+                          key: item.key,
+                          label: `工作日志 · ${item.events.length} 条（${[...new Set(item.events.map((event) => event.kind))].join('/')}）`,
+                          children: (
+                            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                              {item.events.map((event) => (
+                                <div key={event.seq} style={{ background: '#fafafa', borderRadius: 6, padding: '4px 8px' }}>
+                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                    #{event.seq} · {event.kind} · turn {event.turn}
+                                  </Typography.Text>
+                                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{eventText(event)}</div>
+                                </div>
+                              ))}
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+                  )
+                }
+                const event = item.event
                 const role = String(event.payload['role'] ?? '')
                 const align = role === 'user' ? 'flex-end' : 'flex-start'
-                const background = role === 'user' ? '#e6f4ff' : isChatEvent(event) ? '#f6ffed' : '#fafafa'
+                const background = role === 'user' ? '#e6f4ff' : '#f6ffed'
                 return (
                   <div key={event.seq} style={{ display: 'flex', justifyContent: align }}>
                     <div
@@ -324,6 +397,10 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
             </Typography.Text>
           )}
         </Card>
+
+        <div style={{ width: 340, flex: '0 0 340px' }}>
+          <RightColumn projectId={projectId} />
+        </div>
       </div>
     </Space>
   )

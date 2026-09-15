@@ -46,6 +46,7 @@ async function main(): Promise<void> {
       artifacts: deps.artifacts,
       tasks: deps.tasks,
       questions: deps.questions,
+      orchestration: deps.orchestration,
       toolRegistry: deps.toolRegistry,
       toolPackages: deps.toolPackages,
       loopRegistry: deps.loopRegistry,

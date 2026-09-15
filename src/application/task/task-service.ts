@@ -6,6 +6,7 @@ import type { InstanceId, ProjectId } from '../../ports/project'
 import type { ProjectStore } from '../../ports/project'
 import type { CreateTaskInput, TaskListFilter, TaskRecord, TaskService, TaskStore } from '../../ports/task'
 import type { ArtifactService } from '../../ports/artifact'
+import type { OrchestrationService } from '../../ports/orchestration'
 import { pendingKeyFor, TASK_ACTIVE_STATES, type TaskState } from '../../shared/artifacts'
 import { normalizeForSearch } from '../../shared/text'
 import { err, ok, type Result } from '../../shared/result'
@@ -23,6 +24,8 @@ export interface TaskServiceOptions {
   readonly store: TaskStore
   readonly projects: ProjectStore
   readonly artifacts: ArtifactService
+  /** 委派边约束（铁律 2）：Agent 只能沿自己的直接出边派单 */
+  readonly orchestration: OrchestrationService
   readonly ids: IdGenerator
   readonly clock: Clock
   readonly broadcaster: EventBroadcaster
@@ -41,7 +44,7 @@ export function normalizeTaskTitle(title: string): string {
 }
 
 export function createTaskService(options: TaskServiceOptions): TaskService {
-  const { store, projects, artifacts, ids, clock, broadcaster, logger } = options
+  const { store, projects, artifacts, orchestration, ids, clock, broadcaster, logger } = options
 
   const instanceOf = async (projectId: ProjectId, instanceId: InstanceId): Promise<Result<{ displayName: string }>> => {
     const project = await projects.get(projectId)
@@ -67,6 +70,19 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       if (input.desc.length > 4_000) return err('ERR_VALIDATION', '任务描述过长（≤4000 字）')
       const instance = await instanceOf(input.projectId, input.assignee)
       if (!instance.ok) return instance
+
+      // 委派边约束（orchestration.md §1 铁律 2/4）：Agent 发起的派单必须沿自己的直接出边；
+      // 用户（creator=user）不受边约束。越边时**不创建任务**。
+      if (input.creator !== 'user') {
+        const allowed = await orchestration.canDelegate(input.projectId, input.creator, input.assignee)
+        if (!allowed.ok) return allowed
+        if (!allowed.value) {
+          return err('ERR_ORCHESTRATION_EDGE', `编排图中没有 ${input.creator} → ${input.assignee} 的委派边，不能派单给该角色`, {
+            from: input.creator,
+            to: input.assignee,
+          })
+        }
+      }
 
       const existing = await store.list(input.projectId, { assignee: input.assignee })
       if (!existing.ok) return existing

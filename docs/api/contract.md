@@ -69,6 +69,12 @@
 | POST | /api/projects/:pid/search/reindex | 全量重建该项目索引（与 `npm run reindex` 同源；结果同上） |
 | GET | /api/projects/:pid/memories?scope=global\|agent&instanceId=&type=&state=&limit= | 记忆列表（只读浏览，M13；P1 支持钉住/编辑/删除 FR-19）。实现（S5）：返回 `{entries[],count}`，条目含 `id/ts/scope/instanceId/type/content/source{sessionId,seq}/tags/refs/state/supersededBy`；`type`/`state` 非法 → `ERR_VALIDATION` |
 
+### 编排图（2026-09-15，S7）
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | /api/projects/:pid/orchestration | 读取编排图；**按当前团队归一化**：补齐缺失实例节点（网格默认位）、级联删除已移除实例的节点与边、丢弃自环边；文件缺失/损坏 → `version=0` 空图。返回 `{schemaVersion,projectId,version,updatedAt,updatedBy,nodes[{instanceId,x,y,collapsed}],edges[{id,from,to,createdAt}]}` |
+| PUT | /api/projects/:pid/orchestration | **全量保存** `{version, nodes, edges}`：`version` 不匹配 → `ERR_CONFLICT`（`detail.currentVersion`）；自环/重复边/跨项目或未知实例/边端不在图中 → `ERR_ORCHESTRATION_INVALID`；缺 `version`/结构非法 → `ERR_VALIDATION`；成功 `version+1` 并广播 `orchestration.updated`；只有用户能编辑图 |
+
 ### 系统
 | GET | /api/config | 运行期只读总览：策略默认值、上下文上限、存储根等；**模型与供应商部分已迁出**（见下方"模型配置"）|
 | GET | /api/projects/:pid/export | 导出运行时项目文件夹为 zip（会话/记忆备份）|

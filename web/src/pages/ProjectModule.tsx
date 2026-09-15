@@ -28,6 +28,7 @@ import { promptPreviewApi, type PromptPreviewView } from '../api/platform'
 import { SessionPanel } from './SessionPanel'
 import { MemoryPanel } from './MemoryPanel'
 import { WorkPanel } from './WorkPanel'
+import { TopologyPanel } from './TopologyPanel'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
 const LOOP_STRATEGIES = [
@@ -161,6 +162,7 @@ export function ProjectModule() {
   const [selectedWorkdir, setSelectedWorkdir] = useState<{ path: string; inspection: WorkdirInspection } | null>(null)
   const [wizardForm] = Form.useForm<WizardValues>()
   const [current, setCurrent] = useState<ProjectSummary | null>(null)
+  const [activeTab, setActiveTab] = useState('topology')
   const [instances, setInstances] = useState<InstanceView[]>([])
   const [instanceForm] = Form.useForm<InstanceFormValues>()
   const [editing, setEditing] = useState<InstanceView | null>(null)
@@ -342,8 +344,14 @@ export function ProjectModule() {
           </Typography.Text>
         </Card>
         <Tabs
-          defaultActiveKey="team"
+          activeKey={activeTab}
+          onChange={setActiveTab}
           items={[
+            {
+              key: 'topology',
+              label: '拓扑',
+              children: <TopologyPanel projectId={current.id} onOpenSession={() => setActiveTab('session')} />,
+            },
             {
               key: 'team',
               label: '团队与配置',

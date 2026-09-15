@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createArtifactService } from '../../../src/application/artifact/artifact-service'
+import { createOrchestrationService } from '../../../src/application/orchestration/orchestration-service'
 import { createQuestionService } from '../../../src/application/question/question-service'
 import { createTaskService, normalizeTaskTitle } from '../../../src/application/task/task-service'
 import { createArtifactStore } from '../../../src/infra/file-store/artifact-store'
 import { createFileStore } from '../../../src/infra/file-store/file-store'
+import { createOrchestrationStore } from '../../../src/infra/file-store/orchestration-store'
 import { createProjectStore } from '../../../src/infra/file-store/project-store'
 import { createQuestionStore } from '../../../src/infra/file-store/question-store'
 import { createTaskStore } from '../../../src/infra/file-store/task-store'
@@ -49,6 +51,7 @@ interface Harness {
   readonly tasks: ReturnType<typeof createTaskService>
   readonly questions: ReturnType<typeof createQuestionService>
   readonly artifacts: ReturnType<typeof createArtifactService>
+  readonly orchestration: ReturnType<typeof createOrchestrationService>
   readonly notices: { projectId: string; instanceId: string; text: string }[]
 }
 
@@ -91,13 +94,23 @@ async function createHarness(): Promise<Harness> {
     clock,
     logger: createTestLogger(),
   })
+  const orchestration = createOrchestrationService({
+    store: createOrchestrationStore({ fileStore, lock, clock, dataDir: 'data' }),
+    projects,
+    ids,
+    clock,
+    broadcaster,
+    logger: createTestLogger(),
+  })
   return {
     notices,
     artifacts,
+    orchestration,
     tasks: createTaskService({
       store: createTaskStore({ fileStore, lock, clock, dataDir: 'data' }),
       projects,
       artifacts,
+      orchestration,
       ids,
       clock,
       broadcaster,
@@ -244,6 +257,16 @@ describe('application/task-service（规则 15/17/24）', () => {
 
   it('规则 24：done/blocked/terminated 汇报并回报委派人（用户创建则不通知自己）', async () => {
     const harness = await createHarness()
+    // Agent 发起派单必须沿编排图出边（规则 23）
+    const graph = await harness.orchestration.get(PROJECT)
+    expect(graph.ok).toBe(true)
+    if (!graph.ok) return
+    await harness.orchestration.save({
+      projectId: PROJECT,
+      expectedVersion: graph.value.version,
+      nodes: graph.value.nodes,
+      edges: [{ from: 'pm_1', to: 'dev_1' }],
+    })
     const fromAgent = await harness.tasks.create({
       projectId: PROJECT,
       title: '评审登录方案',
