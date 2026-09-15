@@ -1,7 +1,7 @@
 # 界面与交互设计 · Agent Haness
 
-> 类别：design · 状态：草稿(待评审) · 决策依据：D19-①⑦⑧、prd FR-25/FR-28/FR-29/FR-30/US-17/18
-> 关联：[orchestration.md](orchestration.md)（画布语义）、[agent-templates.md](agent-templates.md)（Agent 模块）、[tool-packages.md](tool-packages.md)（工具模块）、[contract.md](../api/contract.md)（接口）
+> 类别：design · 状态：草稿(待评审) · 决策依据：D19-①⑦⑧（①由 **D20** 修订为四模块）、**D20**、prd FR-25/FR-28/FR-29/FR-30/FR-34/FR-35/US-17/18/22/23
+> 关联：[orchestration.md](orchestration.md)（画布语义）、[agent-templates.md](agent-templates.md)（Agent 模块）、[model-config.md](model-config.md)（模型模块与配置提交口径）、[tool-packages.md](tool-packages.md)（工具模块）、[contract.md](../api/contract.md)（接口）
 > 本文件取代此前被删除的 `frontend/style.md`：全站布局、页面、交互与主题规范以本文件为准。
 
 ## 1. 全局信息架构
@@ -9,7 +9,8 @@
 ```
 顶部/左侧全局导航
 ├── 项目        ← 首页默认：项目列表 + 创建项目
-├── Agent       ← 系统模板库（含场景标签）
+├── Agent       ← 系统模板库（含场景标签；提示词/loop/模型可编辑）
+├── 模型        ← 模型供应商 + 模型条目 + 默认路由（D20）
 └── 工具        ← 工具包列表
 项目页（进入某项目后）
 ├── 拓扑        ← 2 栏：左画布 + 右三列表
@@ -19,7 +20,7 @@
 - 技术栈：React 18 + Vite（antd 组件 + 画布库，画布候选 React Flow）。
 - 主题：浅色（沿用既有浅色主题风格）；中文 UI；无账号体系（本机单用户）。
 
-## 2. 首页三模块
+## 2. 首页四模块（项目 / Agent / 模型 / 工具）
 
 ### 2.1 项目模块（默认页）
 
@@ -30,11 +31,27 @@
 
 ### 2.2 Agent 模块
 
-- 列表：卡片式，显示模板名称、分类、**场景标签**、职责一句话、默认 loop、默认模型、工具包数量。
-- 详情（点卡片）：身份 / loop / **系统提示词只读预览** / 工具（按包分组，标注"挂载但运行期不可用"）/ 模型 / 审批规则。
-- MVP 只展示：新建、编辑、复制、停用按钮置灰并提示"配置提交功能后续开放"（见 agent-templates.md §4）。
+- 列表：卡片式，显示模板名称、分类、**场景标签**、职责一句话、默认 loop、默认模型、工具包数量；卡片操作：[查看]、**[复制新建]**、**[编辑]**（内置模板的编辑置灰，提示"基于内置复制新建"，D16-⑤）。
+- 详情（点卡片）：身份 / loop / **系统提示词** / 工具（按包分组，标注"挂载但运行期不可用"）/ 模型 / 审批规则。
+- **可编辑（FR-35，本轮）**：提示词（多行编辑 + 长度校验 + "预览"按钮，预览与运行期同源拼装）、agent loop（策略下拉 + 参数表单：`maxIterations`/`toolBudget`/`stepModelOverride`）、模型（**仅列出已启用模型条目**，含供应商与能力徽标）。
+- **仍只读**：工具与工具包挂载（按钮置灰，提示"工具挂载编辑后续开放"，见 U9 剩余）。
+- 保存反馈：字数超限/参数越界/模型未启用即时标红；保存成功提示"已保存；将影响此后新建的实例"。
+- **项目内实例覆盖**：项目页 Agent 详情提供 [覆盖配置] 抽屉（同三项 + [恢复为模板快照]）；Agent 处于工作中时提示"下一回合生效（当前回合到可中断点）"。
 
-### 2.3 工具模块
+### 2.3 模型模块（D20）
+
+| 区块 | 内容 |
+| --- | --- |
+| 供应商列表 | 卡片/表格：名称、**kind 徽标**、`baseUrl`、密钥状态（`已配置 sk-***c3b2` / `未配置` / `环境变量 XXX`）、模型数、启用开关、[测试连接]、[编辑]、[删除] |
+| 新建/编辑供应商 | 抽屉：① 选预置模板（9 家 + "自定义"）→ 预填 kind/baseUrl 与建议模型；② 填凭证（**明文文件** 或 **环境变量名**，后者校验变量存在）；③ [测试连接]（`models` 或 `chat` 模式）；④ 可选"同时创建建议模型条目"；⑤ 保存前显示明文存储提示 |
+| 模型条目 | 表格：`id`、真实模型名、所属供应商、能力徽标（chat/stream/tools/reasoning）、上下文窗口、**被引用数**、启用开关、[编辑]/[删除]；工具栏 [从供应商拉取模型] → 多选批量登记（`/api/models/bulk`） |
+| 默认路由 | 全局默认模型 + loop 步骤默认（`act`/`plan`/`critique`）下拉；改动即时生效提示 |
+| 安全提示 | 常驻说明：密钥仅存本机 `data/model-config.json`（不入库）或环境变量；页面与接口只显示掩码 |
+
+- 失败与边界文案：删除被引用的供应商/模型 → 弹出引用清单（模板/实例）并禁用删除按钮；停用被引用模型 → 二次确认 + "运行期将报 ERR_MODEL"；连通性失败 → 展示 `status`/错误摘要（**已脱敏**）与常见排查建议（地址/密钥/网络）。
+- 空态：无供应商 → "还没有模型供应商。可先用 Mock 或本地 Ollama 跑通全流程"。
+
+### 2.4 工具模块
 
 - 列表：包卡片（`name`、`description`、工具数量、最高风险、是否基础包）；**7 个基础包全员必选**标记。
 - 展开：包内工具表格（作用 / 风险 / 网络 / 幂等 / 适用会话）。
@@ -99,13 +116,17 @@
 | 审批命中 | 会话内出现审批卡 + 右栏审批列表新增项；该 Agent 状态为 `waiting` |
 | 越权委派（Agent 沿非出边派单） | 工具返回 `ERR_ORCHESTRATION_EDGE`，会话内可见失败说明；画布不产生新边 |
 | 实例停用（`enabled=false`） | 画布卡片灰化并标注"已停用"；其边保留但不可派发；会话只读 |
-| 空态 | 项目无 Agent：画布提示"从 Agent 库添加成员"；无任务/询问/审批：列表空态；无工具包自定义：模块空态说明 |
+| 空态 | 项目无 Agent：画布提示"从 Agent 库添加成员"；无任务/询问/审批：列表空态；无工具包自定义：模块空态说明；无模型供应商：提示"可先用 Mock 或本地 Ollama 跑通全流程" |
+| 模型配置失败 | 连通性测试失败展示脱敏错误摘要与排查建议；保存时凭证/地址/模型引用校验不通过即时标红（不落盘） |
+| 删除被引用的模型资源 | 供应商/模型被模板或实例引用时禁用删除并列出引用清单；停用被引用模型需二次确认，运行期报 `ERR_MODEL`（不静默换模型） |
 
 ## 7. 与接口的对应
 
 | 界面动作 | 接口 |
 | --- | --- |
-| 首页三模块列表 | `GET /api/projects`、`GET /api/agent-templates`、`GET /api/tool-packages` |
+| 首页四模块列表 | `GET /api/projects`、`GET /api/agent-templates`、`GET /api/tool-packages`、`GET /api/model-presets` |
+| 模型模块（供应商/模型/路由/测试） | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET\|PUT /api/model-routing` |
+| Agent 模块（模板编辑与实例覆盖） | `POST\|PATCH /api/agent-templates[/:roleId]`、`GET\|PATCH /api/projects/:pid/team/:iid` |
 | 画布读取/保存 | `GET|PUT /api/projects/:pid/orchestration` |
 | 暂停/恢复/停止 | `POST /api/projects/:pid/agents/:iid/{pause,resume,stop}` |
 | 会话流与日志 | `GET /api/projects/:pid/sessions/:sid`、`GET .../log?fromSeq=&kind=` |
@@ -118,3 +139,4 @@
 - 会话：多标签并行查看、会话内搜索高亮、日志导出。
 - 列表：全量聚合（跨项目）、批量审批（doc 托盘）、未读汇总。
 - 主题与国际化：深色主题、i18n。
+- 模型：用量/费用统计（U13）、多 Key 轮换、网络代理设置（U16）、配置版本回滚 UI（U15）。

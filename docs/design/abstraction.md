@@ -1,7 +1,7 @@
 # 代码抽象设计 · Agent Haness
 
-> 类别：design · 状态：草稿(待评审) · 决策依据：D18-⑤c（核心端口清单）、D18-⑥（统一策略引擎）、D19（首页三模块/编排/动态配置诉求）、prd §6 可扩展性
-> 关联：[architecture.md](architecture.md)（§4 模块树 / §4.1 端口）、[agent-runtime.md](agent-runtime.md)、[orchestration.md](orchestration.md)、[tool-packages.md](tool-packages.md)、[data-storage.md](data-storage.md)、[contract.md](../api/contract.md)、[ui.md](ui.md)
+> 类别：design · 状态：草稿(待评审) · 决策依据：D18-⑤c（核心端口清单）、D18-⑥（统一策略引擎）、D19（首页三模块/编排/动态配置诉求）、**D20（模型配置与 Agent 配置提交）**、prd §6 可扩展性
+> 关联：[architecture.md](architecture.md)（§4 模块树 / §4.1 端口）、[agent-runtime.md](agent-runtime.md)、[model-config.md](model-config.md)（§12 端口落点表）、[orchestration.md](orchestration.md)、[tool-packages.md](tool-packages.md)、[data-storage.md](data-storage.md)、[contract.md](../api/contract.md)、[ui.md](ui.md)
 > 本文件是**端口与抽象契约的真源**：architecture.md §4.1 的 7 个端口在此扩展为完整清单，编码阶段以本文件为准。
 
 ## 1. 目标与原则
@@ -11,7 +11,7 @@
 | **高扩展**：新增工具 / 工具包 / loop 策略 / 模型 provider / 产出物类型 / 场景，不改核心代码 | 注册表（Registry）+ 策略（Strategy）+ 每回合解析的有效配置 |
 | **可替换**：文件存储、模型后端、锁、索引、时钟都可换 | 端口（Port）+ 适配器（Adapter），跨层只走接口 |
 | **可测**：领域逻辑零 IO、外部依赖可替身 | domain/ports 不依赖 node API；每端口配 Mock 适配器与契约测试 |
-| **用户可动态配置**（后续 U8/U9）：运行时改实例的工具与 loop，**不重建容器、不重启** | 依赖注入只注入稳定能力；实例配置作为 `TurnContext` **参数**传递；工具与 loop 运行期查表 |
+| **用户可动态配置**（U9 三项已定案 D20-⑧，工具挂载仍待定） | 运行时改**模型/loop/提示词**（模型配置范围见 model-config.md）与后续的工具挂载，**不重建容器、不重启** | 依赖注入只注入稳定能力；实例配置作为 `TurnContext` **参数**传递；工具与 loop 运行期查表 |
 | **简单可靠**：单进程、纯文件系统、零重型依赖 | 自研轻量容器；不引装饰器/反射库；不引 ORM/DB |
 
 设计原则（写进 code review 清单）：
@@ -121,9 +121,11 @@ domain/fsm/question.ts  pending → answered
 
 | 端口 | 职责 | 默认适配器 |
 | --- | --- | --- |
-| `ModelGateway` | 按实例有效模型路由到 provider，统一流式输出 | infra/model |
-| `ModelProvider` | 单个后端适配（openai-compatible / ollama / mock） | infra/model/providers |
-| `ProviderRegistry` | provider 注册与按 id 解析 | infra/model |
+| `ModelConfigStore` | 平台模型配置（`data/model-config.json`）读取/原子写 + `revision` 乐观并发 + 配置审计追加 | infra/file-store |
+| `ProviderKindAdapter` | **单个协议适配**：`stream` / `listModels?` / `test?` / `capabilities`（由原 `ModelProvider` 更名，避免与"用户配置的供应商"混淆） | infra/model/providers（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`） |
+| `ProviderKindRegistry` | `kind → 适配器` 注册与解析（由原 `ProviderRegistry` 更名） | infra/model |
+| `ModelCatalog` | `modelId → {provider, credential, model 名, params, kind}` 解析 + `revision` 缓存 + `invalidate()` | application/model-config |
+| `ModelGateway` | 按**模型条目 id** 路由到适配器，统一流式输出，外挂脱敏装饰 | infra/model |
 
 ### 4.3 执行类
 
@@ -221,7 +223,7 @@ export interface ToolExecutor {
 
 // ── ports/model.ts ────────────────────────────────────────────────
 export interface ModelRequest {
-  model: ProviderId; messages: ChatMessage[]; tools?: ToolSchema[]
+  model: ModelId; messages: ChatMessage[]; tools?: ToolSchema[]   // ModelId = 模型条目 id（D20-①），不再是 provider id
   temperature?: number; maxTokens?: number; signal: AbortSignal
 }
 export type ModelChunk =
@@ -231,9 +233,59 @@ export type ModelChunk =
   | { type: 'usage'; inputTokens: number; outputTokens: number }
 
 export interface ModelGateway {
-  /** 统一流式：provider 差异在此归一化；失败返回 ERR_MODEL（错误事件回注） */
+  /** 统一流式：provider 差异在此归一化；失败返回 ERR_MODEL（错误事件回注，detail 已脱敏） */
   stream(req: ModelRequest): AsyncIterable<ModelChunk>
-  listProviders(): ProviderInfo[]
+  listModels(): ModelInfo[]
+}
+
+// ── ports/model-config.ts（D20，schema 见 model-config.md §3~§4）────
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama' | 'mock'
+export type Credential =
+  | { mode: 'file'; value: string }               // 存 data/model-config.json（data/ 不入库）
+  | { mode: 'env'; envName: string }              // 只存变量名
+export interface ModelProviderConfig {
+  id: ProviderId; name: string; kind: ProviderKind; baseUrl: string
+  credential: Credential; headers?: Record<string, string>
+  enabled: boolean; timeoutMs?: number; presetId?: string | null
+}
+export interface ModelEntry {
+  id: ModelId; providerId: ProviderId; model: string; displayName: string
+  capabilities: Array<'chat' | 'stream' | 'tools' | 'reasoning'>
+  contextWindow?: number; maxOutputTokens?: number
+  defaultParams?: { temperature?: number; maxTokens?: number }
+  enabled: boolean
+}
+export interface ModelRouting {
+  defaultModelId: ModelId
+  stepOverrides?: Partial<Record<LoopStepName, ModelId>>
+}
+export interface ModelConfigSnapshot {
+  schemaVersion: 1; revision: number
+  providers: ModelProviderConfig[]; models: ModelEntry[]; routing: ModelRouting
+}
+export interface ModelConfigStore {
+  load(): Promise<Result<ModelConfigSnapshot>>
+  /** 原子写 + revision 乐观并发（expectedRevision 不符 → ERR_CONFLICT） */
+  save(next: ModelConfigSnapshot, expectedRevision: number): Promise<Result<ModelConfigSnapshot>>
+  appendAudit(entry: ConfigAuditEntry): Promise<Result<void>>   // 不含密钥明文/提示词全文
+}
+/** 单个协议适配：kind 差异只在这里；失败语义 ERR_MODEL */
+export interface ProviderKindAdapter {
+  readonly kind: ProviderKind
+  readonly capabilities: { stream: boolean; tools: boolean; reasoning: boolean }
+  stream(provider: ModelProviderConfig, entry: ModelEntry, req: ModelRequest): AsyncIterable<ModelChunk>
+  listModels?(provider: ModelProviderConfig): Promise<Result<string[]>>
+  test?(provider: ModelProviderConfig, opts: { mode: 'models' | 'chat'; entry?: ModelEntry }): Promise<Result<{ latencyMs: number; models?: string[] }>>
+}
+export interface ProviderKindRegistry {
+  register(adapter: ProviderKindAdapter): void
+  get(kind: ProviderKind): ProviderKindAdapter | undefined
+  list(): ProviderKind[]
+}
+/** modelId → 解析结果（带 revision 缓存与失效）；凭证只在此内部流转，不进日志 */
+export interface ModelCatalog {
+  resolve(modelId: ModelId): Promise<Result<ResolvedModel>>
+  invalidate(): void
 }
 
 // ── ports/policy.ts ───────────────────────────────────────────────
@@ -263,7 +315,7 @@ export interface EffectiveAgentConfig {
   loop: { strategy: LoopStrategyName; params: LoopParams }
   packages: PackageId[]
   tools: ToolName[]
-  model: ProviderId
+  model: ModelId                       // 模型条目 id（D20-①）
   approvalRules: RuleRef[]
 }
 export interface TurnContext {
@@ -359,8 +411,11 @@ export async function buildContainer(env: Env): Promise<Container> {
   // 3) 策略（纯函数）
   c.register(TOKENS.PolicyEngine, () => createPolicyEngine({ rules: builtinRules }), { lifetime: 'singleton' })
   c.register(TOKENS.PathResolver, () => createPathResolver(c.resolve(TOKENS.Config)), { lifetime: 'singleton' })
-  // 4) 模型
-  c.register(TOKENS.ModelGateway, () => createModelGateway(c.resolve(TOKENS.ProviderRegistry)), { lifetime: 'singleton' })
+  // 4) 模型（D20：协议 kind 注册表 + 平台模型配置 + 目录解析）
+  c.register(TOKENS.ModelConfigStore, () => new FileModelConfigStore(c.resolve(TOKENS.FileStore)), { lifetime: 'singleton' })
+  c.register(TOKENS.ModelCatalog, () => new ModelCatalog(c.resolve(TOKENS.ModelConfigStore)), { lifetime: 'singleton' })
+  registerBuiltinProviderKinds(c.resolve(TOKENS.ProviderKindRegistry))
+  c.register(TOKENS.ModelGateway, () => createModelGateway({ kinds: c.resolve(TOKENS.ProviderKindRegistry), catalog: c.resolve(TOKENS.ModelCatalog) }), { lifetime: 'singleton' })
   // 5) 注册表（扩展点集中登记）
   registerBuiltinTools(c.resolve(TOKENS.ToolRegistry), { deps: c })
   registerBuiltinPackages(c.resolve(TOKENS.ToolPackageRegistry))
@@ -389,24 +444,33 @@ export async function buildContainer(env: Env): Promise<Container> {
 时序（用户改配置 → 生效）：
 
 ```
-用户改实例工具/循环（后续 U9）
+用户改实例 提示词 / loop / 模型（D20-⑧；工具挂载仍待定 U9）
   → 写入实例配置 + configVersion+1（审计）
   → EffectiveAgentConfigResolver.invalidate(projectId, instanceId)
   → 该 Agent 下一个回合开始时重新解析 → TurnContext.config 为新值
   → 运行中的回合：到可中断点后生效（不打断当前工具调用）
+  → 容器 / 注册表 / 进程：均不变（无需重启）
+
+用户改平台模型配置（供应商 / 模型条目 / 默认路由，D20-⑤）
+  → 原子写 data/model-config.json + revision+1（审计）
+  → ModelCatalog.invalidate()
+  → 下一次模型调用即用新配置（进行中的流式请求不中断）
   → 容器 / 注册表 / 进程：均不变（无需重启）
 ```
 
 | 用户动作 | 生效机制 | 需重建容器？ | 需重启？ |
 | --- | --- | --- | --- |
 | 改实例 loop 策略/参数 | 下回合解析 + `LoopRegistry.get` | 否 | 否 |
+| 改实例/模板 提示词 | 下回合解析 `EffectiveAgentConfig.systemPrompt` | 否 | 否 |
 | 挂载/取消工具包 | 下回合重算 `tools` 白名单 | 否 | 否 |
 | 新增自定义工具包（U8） | `ToolPackageRegistry.register` + `ToolRegistry.register` | 否 | 否 |
 | 新增 loop 策略 | `LoopRegistry.register` | 否 | 否 |
-| 换模型 provider | `ProviderRegistry.register` + 实例 `model` 指向新 id | 否 | 否 |
+| **新增/编辑供应商或模型条目**（D20） | 原子写 `model-config.json` → `ModelCatalog.invalidate()`（`revision` 变化） | 否 | 否 |
+| **新增一种协议 kind** | 实现 `ProviderKindAdapter` + `ProviderKindRegistry.register`（组合根一行的注册） | 否 | 否 |
+| 改全局默认路由 | 下回合 `EffectiveAgentConfigResolver` 重新解析 | 否 | 否 |
 | 单个 Agent 暂停/恢复 | dispatcher 运行期态（不入容器） | 否 | 否 |
 | 换存储后端/换锁实现 | 换端口实现 | **是**（启动期） | 是 |
-| 改平台 `.env` 配置 | 启动期读取 | 是 | 是 |
+| 改平台 `.env` 配置（含 `MODELS__CONFIG_FILE`/超时上限） | 启动期读取 | 是 | 是 |
 
 ## 6. 设计模式清单
 
@@ -415,7 +479,7 @@ export async function buildContainer(env: Env): Promise<Container> {
 | Ports & Adapters（六边形） | 全部跨层交互 | 存储/模型/执行可替换、可 Mock | `ports/` + `infra/` |
 | Composition Root + DI | 进程启动 | 依赖集中装配、启动期暴露缺失依赖 | `bootstrap/composition-root.ts` |
 | Strategy | loop 策略、产出物类型 diff、检索提供者 | 新增策略不改调度代码 | `LoopRegistry`、`ArtifactTypeRegistry`、`SearchProvider` |
-| Registry | 工具、工具包、provider、loop、产出物类型、场景 | "注册即扩展"，避免 if/else | `infra/*/registry.ts` |
+| Registry | 工具、工具包、**协议 kind**、loop、产出物类型、场景 | "注册即扩展"，避免 if/else | `infra/*/registry.ts` |
 | Repository | 每个 `*Store` | 隔离文件布局与用例逻辑 | `infra/file-store/*` |
 | Unit of Work + KeyedLock | 任务槽位、manifest、归属表、编排图保存 | 串行化读改写、避免丢更新 | `infra/lock` + `application/*` |
 | Observer / Pub-Sub | `EventBus` → WS、索引、摘要、列表刷新 | 一个事件多处投影，解耦 | `infra/events` |
@@ -444,7 +508,8 @@ export async function buildContainer(env: Env): Promise<Container> {
 | **新增工具** | ① `domain/models/tool.ts` 补类型；② `infra/tools/builtin/<name>.ts` 写 `ToolDefinition` + `ToolHandler`；③ 在 `registerBuiltinTools` 登记；④ 视需要加入工具包与角色矩阵；⑤ 补测试（校验链 + 审计） | 否（`register` 即可） |
 | **新增工具包** | ① `src/shared/tool-packages/<id>.yaml` 加包元数据；② 工具侧 `package` 指到该 id；③ 启动自检校验包内一致 | 否 |
 | **新增 loop 策略** | ① 实现 `AgentLoopStrategy`；② `registerBuiltinLoops` 登记；③ 角色模板 `defaultLoop.strategy` 可引用 | 否 |
-| **新增模型 provider** | ① 实现 `ModelProvider`；② `ProviderRegistry.register`；③ `.env` 的 `MODELS__PROVIDERS` 增加条目（id 与 `model` 必须引用同一 id） | 否（provider 注册表运行期注册） |
+| **新增协议 kind** | ① 实现 `ProviderKindAdapter`（`stream`/可选 `listModels`/`test`）；② 组合根 `ProviderKindRegistry.register`；③ `shared/model-presets.yaml` 加预置条目（可选） | 否 |
+| **新增一家预置供应商** | ① `src/shared/model-presets.yaml` 加条目（`presetId/name/kind/baseUrl/credentialHint/suggestedModels`，**不含密钥**）；② 若 kind 已存在则无需改代码 | 否 |
 | **新增产出物类型** | ① 注册类型（默认路径/校验/diff 器）；② 更新落盘布局规则 | 否 |
 | **新增场景（U10）** | ① 模板 YAML 加 `scenario: general`；② 首页筛选自动生效 | 否 |
 | **新增 WS 事件** | ① `domain/events` 登记 kind；② `contract.md` 补下行映射；③ 在投影装配里订阅 | 否 |
@@ -466,7 +531,7 @@ src/
 │   ├── project/ team/ session/ task/ question/ approval/ artifact/
 │   ├── orchestration/      # 编排图用例 + 委派校验
 │   ├── agent-loop/         # runner / context-builder / loop strategies
-│   ├── memory/ search/ model-gateway/ tool-package/
+│   ├── memory/ search/ model-gateway/ model-config/ tool-package/
 │   └── tools/              # 校验链、审批桥用例
 ├── infra/
 │   ├── file-store/ indexer/ model/ tools/ sandbox/ lock/ events/ static/ util/
@@ -511,8 +576,9 @@ tests/{unit,integration,e2e,mocks}
 | 阶段 | 会新增/替换 | 影响面 |
 | --- | --- | --- |
 | MVP | 本文全部端口 + 文件系统适配器 + InMemory 替身 | — |
+| **D20 模型配置模块**（本轮设计） | `ModelConfigStore` / `ModelCatalog` / `ProviderKindAdapter`×5 + `data/model-config.json` + 配置审计 | 不动容器 |
 | U8 自定义工具包 | `ToolPackageRegistry.register` + 包安装的审批与信任 | 不动容器 |
-| U9 Agent 配置提交 | 实例配置写入 + `EffectiveAgentConfigResolver.invalidate` + 版本审计 | 不动容器 |
+| U9 Agent 配置提交（**部分已随 D20 定案**） | 提示词/loop/模型三项：实例配置写入 + `EffectiveAgentConfigResolver.invalidate` + 版本审计；**剩余**工具挂载编辑 | 不动容器 |
 | U11 第三方/MCP 工具 | 新增 `ExternalToolProvider` 端口（进程/远端）+ 隔离与超时 | 组合根加一行绑定 |
 | P1 向量检索 | 换 `SearchIndex`/新增 `EmbeddingProvider` 实现 | 组合根换绑定 |
 | P2 多进程/并发 | 换 `LockManager`（文件锁/DB 锁）与 `EventBus`（跨进程） | 端口不变，实现替换 |
@@ -526,4 +592,4 @@ tests/{unit,integration,e2e,mocks}
 | 事件投影顺序问题（先盘后推） | 落盘成功后才 `publish`；投影失败只告警不阻断主流程（D18-⑤a） |
 | 自研容器缺生态 | `Container` 是端口，可整体替换实现 |
 
-未决：U8/U9/U11 的具体包格式与信任模型、是否引入 `AsyncLocalStorage` 传递 `TurnContext`（当前显式传参，避免隐式上下文）、前端状态管理选型（画布与列表共享实时状态）。
+未决：U8（工具包格式与信任模型）、U9 剩余（工具挂载编辑与配置回滚）、U11（第三方/MCP 接入）；是否引入 `AsyncLocalStorage` 传递 `TurnContext`（当前显式传参，避免隐式上下文）；前端状态管理选型（画布与列表共享实时状态）。

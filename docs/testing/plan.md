@@ -1,6 +1,6 @@
 # 测试计划 · Agent Haness
 
-> 类别：testing · 状态：草稿(待评审) · 关联：[开发方案目录](../plan/)（里程碑与验收）、[prd.md](../requirements/prd.md)（验收）
+> 类别：testing · 状态：草稿(待评审) · 关联：[开发方案目录](../plan/)（里程碑与验收）、[prd.md](../requirements/prd.md)（验收）、[model-config.md](../design/model-config.md)（规则 27~31 的设计依据）
 
 ## 1. 测试分层与工具
 
@@ -42,6 +42,11 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 24. 领取与汇报闭环（D19-⑤）：`todo`→`claim`→`in_progress`（每 Agent 至多 1 个，超出返回 `ERR_CONFLICT`）→`done`/`blocked`/`terminated`；完成/受阻回报派发者。
 25. 询问阻塞与答复续跑（D19-⑦）：`ask_user` → Agent `waiting` + 右栏待答项；答复后继续该回合；同一 Agent 第二个提问被拒（`ERR_QUESTION_PENDING`）；跨重启 question 保持 `pending`。
 26. 暂停/停止（D19-⑥）：暂停后不再领新任务、当前回合到可中断点挂起，`resume` 继续处理队列；停止终止当前任务，存在未结算改动时先结算为 code artifact 快照。
+27. **模型配置校验与引用保护（D20/FR-34）**：非法 `id`/`kind`/`baseUrl`/凭证被拒（`ERR_VALIDATION`）；`env` 模式变量不存在时保存即失败；删除被引用的供应商/模型返回 `ERR_CONFLICT` 且 `detail.referrers` 点名；停用被引用模型需确认，之后该 Agent 回合报 `ERR_MODEL`。
+28. **凭证不外泄（D20-④）**：供应商列表/详情响应、`config-audit.jsonl`、平台日志、`kind=error` 事件与 `ERR_MODEL` 的 `detail` 中**均不出现明文密钥**（只掩码 `hasValue`/`masked`）；供应商原始错误正文截断且脱敏。
+29. **Agent 配置提交与生效（D20-⑦/FR-35）**：模板保存只影响此后新建实例（既有实例快照不变）；实例覆盖下一回合生效、运行中回合到可中断点；提示词超长、loop 参数越界、`stepModelOverride` 指向未启用模型均被拒；每次保存各写一条历史快照与 `config-audit` 记录（审计不含提示词全文）。
+30. **模型调用不静默换模型（D20-⑥）**：解析失败（模型被删/停用/供应商禁用/凭证缺失）时回合报 `ERR_MODEL` 并落 `error` 事件，**不得**回退到 `defaultModelId` 或其它模型。
+31. **协议适配器归一化（D20-②）**：五种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`）的流式增量统一归一为 `ModelChunk`（`text-delta`/`reasoning-delta`/`tool-call`/`usage`），含错误映射为 `ERR_MODEL`；Mock 剧本可驱动完整 E2E。
 
 ## 3. 测试数据与隔离
 

@@ -19,10 +19,10 @@
 | HTTP/WS 服务 | Fastify（REST + 静态托管 + @fastify/websocket 或 ws） |
 | 前端 | React 18 + Vite + Ant Design 5（聊天/工作台组件） |
 | 实时通道 | WebSocket（事件推送 + 消息流式 chunk）；无 SSE 时退回轮询（不推荐） |
-| 模型 Provider | openai-compatible / ollama / mock（**自研轻量网关，不引重型 SDK 依赖**，便于换后端） |
+| 模型 Provider | 五种协议适配器：`openai-compatible` / `anthropic` / `gemini` / `ollama` / `mock`（**自研轻量网关，不引重型 SDK 依赖**，便于换后端）；供应商与模型条目由用户在 UI 配置（D20 / [model-config.md](model-config.md)） |
 | 存储 | 纯文件系统 + 手写 JSONL/JSON/Markdown 读写层 + 自建关键词倒排索引 |
 | 测试 | Vitest（单元+集成，Mock 模型可重复） |
-| 配置 | `.env`（平台级，2026-09-13 起替代 config.yaml；模板 `.env.example`）+ project.json（项目级）+ role 模板文件 |
+| 配置 | `.env`（平台级引导与边界默认，2026-09-13 起替代 config.yaml；模板 `.env.example`）+ **`data/model-config.json`（平台模型配置，UI 可改、即时生效）** + project.json（项目级）+ role 模板文件 |
 
 ## 3. 进程与部署形态
 
@@ -59,6 +59,7 @@ src/
 │   ├── task/               # 轻量任务委派与状态
 │   ├── approval/           # 审批队列(高危命令/策略提交) 与策略解析
 │   ├── search/             # 关键词检索(索引维护+查询)
+│   ├── model-config/       # 模型供应商/模型条目/路由的增删改查、连通性测试与发现（D20）
 │   └── model-gateway/      # 模型路由与统一调用(流式)
 ├── domain/
 │   ├── models/             # Project/Team/Agent/Instance/Session/Message/Artifact/Task…(纯类型+行为)
@@ -68,7 +69,7 @@ src/
 ├── infra/
 │   ├── file-store/         # JSON/JSONL/MD 读写、原子写、path 边界校验、watch(工作目录变化)
 │   ├── indexer/            # 倒排索引构建/增量/查询
-│   ├── model/              # providers: openai-compatible/ollama/mock + 流式封装
+│   ├── model/              # providers: openai-compatible/anthropic/gemini/ollama/mock + 流式归一化（D20）
 │   ├── tools/              # 工具注册表与执行器（注册/校验/白名单/审计；规范见 design/tools.md）
 │   ├── sandbox/            # 逻辑沙箱：路径边界/命令执行器/风险分级/审批桥（规范见 design/sandbox.md）
 │   └── util/               # 日志、id、时间、错误码
@@ -171,7 +172,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | --- | --- |
 | 角色模板 | 系统角色库：模板文件（提示词/默认模型/默认 loop/工具集/权限）可增删。 |
 | agent loop | `agent-loop` strategy 注册表：实现统一接口(strategyName, buildSteps)，配置即用。 |
-| 模型 Provider | model-gateway provider 注册表：openai-compatible/ollama/mock + 自定义。 |
+| 模型 Provider | `infra/model/providers/` 五实现 + `ProviderKindRegistry` 注册表；供应商/模型条目/默认路由由 UI 写入 `data/model-config.json`（`ModelConfigStore`），改完即时生效、不重启（[model-config.md](model-config.md)）。 |
 | 工具 | tools 注册表（名称/schema/实现/白名单级别/是否高危）。 |
 | 产出物类型 | 类型注册表（文档/代码/配置/测试/部署…）：默认路径、校验、diff 器。 |
 | 审批策略 | 规则函数：按命令/动作/类型/范围返回 needApproval 布尔。 |
@@ -179,7 +180,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 
 ## 10. 端口与接口约定（详见 api/contract.md）
 
-- REST：`/api/projects`、`/api/projects/:id/team|sessions|artifacts|tasks|questions|approvals|search|orchestration`、`/api/projects/:pid/agents/:iid/{pause,resume,stop}`、`/api/roles`、`/api/agent-templates`、`/api/tool-packages`、`/api/fs/browse`(目录选择) 、`/api/config`
+- REST：`/api/projects`、`/api/projects/:id/team|sessions|artifacts|tasks|questions|approvals|search|orchestration`、`/api/projects/:pid/agents/:iid/{pause,resume,stop}`、`/api/agent-templates`（含写路径）、`/api/tool-packages`、`/api/fs/browse`(目录选择)、`/api/config`、**`/api/model-presets|model-providers|models|model-routing|model-config/import`（D20 模型配置）**
 - WS：`/ws` 事件推送（见 contract.md）；文本协议 JSON。
 - 全部错误返回统一 `{ code, message }`。
 
@@ -188,7 +189,8 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | 页面 | 对应服务 |
 | --- | --- |
 | 首页 · 项目模块（列表 + 创建向导：选工作目录 + 勾选角色） | project/team + fs/browse |
-| 首页 · Agent 模块（模板库：loop/提示词/工具/模型/场景，只读） | team(模板) + tool-package |
+| 首页 · Agent 模块（模板库：loop/提示词/工具/模型/场景；**提示词/loop/模型可提交**，工具只读） | team(模板) + model-config(模型条目) + tool-package |
+| 首页 · 模型模块（供应商/模型条目/默认路由/连通性测试） | model-config + ws |
 | 首页 · 工具模块（7 个基础包展示，只读） | tool-package |
 | 项目页 · 拓扑导航（**2 栏**：左画布 + 右三列表） | orchestration + agent.state + ws |
 | 项目页 · 对话导航（**3 栏**：左会话切换 + 中会话流含工作日志 + 右三列表） | session + ws |

@@ -1,7 +1,7 @@
 # 数据与存储设计 · Agent Haness
 
-> 类别：design · 状态：草稿(待评审) · 决策依据：D5/D6/D7（不用 SQLite、纯文件系统、双层记忆+关键词检索）
-> 关联：[architecture.md](architecture.md)、[memory.md](memory.md)、[workspaces-artifacts.md](workspaces-artifacts.md)
+> 类别：design · 状态：草稿(待评审) · 决策依据：D5/D6/D7（不用 SQLite、纯文件系统、双层记忆+关键词检索）、D20（平台模型配置落盘）
+> 关联：[architecture.md](architecture.md)、[memory.md](memory.md)、[workspaces-artifacts.md](workspaces-artifacts.md)、[model-config.md](model-config.md)（平台模型配置与配置审计，2026-09-15）
 
 ## 1. 存储原则
 
@@ -16,11 +16,15 @@
 
 ```
 agent_haness/                    # 平台仓库
-├── .env                         # 平台配置（2026-09-13 起；此前为 config.yaml）：host/port/模型/数据根/角色库/审批策略默认值
+├── .env                         # 平台配置（2026-09-13 起；此前为 config.yaml）：host/port/数据根/角色库/审批策略默认值/模型配置引导键（**模型本体在 data/model-config.json**，2026-09-15）
 │                                #   命名约定：`__` 分层、数组用 JSON；模板见入库的 .env.example
 ├── data/                        # 运行时数据根（不入库；DATA_DIR 可改）
+│   ├── model-config.json        # 【平台模型配置】供应商 + 模型条目 + 全局默认路由（2026-09-15；schema 见 model-config.md §3~§4）
+│   ├── model-config.v0.bak.json # 旧形状自动备份（仅当检测到无 schemaVersion 的遗留文件时生成）
+│   ├── config-audit.jsonl       # 配置变更审计：平台/模板/实例（append-only，2026-09-15）
 │   ├── roles/                   # 【系统角色库】用户自建/修改的模板（内置模板随仓库 src/shared/roles）
-│   │   └── <roleId>.yaml
+│   │   ├── <roleId>.yaml
+│   │   └── <roleId>.history/<ts>.yaml   # 模板配置历史快照（只增不改，2026-09-15）
 │   └── projects/
 │       └── <projectId>/         # 【运行时项目文件夹】＝ 拷贝即迁移的最小单元
 │           ├── project.json            # 元数据 + 团队 + 策略（见 §3）
@@ -61,8 +65,9 @@ agent_haness/                    # 平台仓库
       "roleTemplateId": "pm",
       "displayName": "项目经理",
       "prompt": null,                     // 创建实例时快照模板默认值写入实例；示例以 null 占位。此后模板变更不影响本实例（D16-⑤）
-      "model": "deepseek-chat",           // provider id 引用（config.models.providers[].id，口径见 agent-runtime §5）；覆盖模板默认
+      "model": "deepseek-chat",           // **模型条目 id** 引用（data/model-config.json 的 models[].id，口径见 model-config.md §2）；覆盖模板 defaultModel
       "loop": { "strategy": "plan-execute", "params": {} },
+      "configVersion": 3,                 // 实例配置版本：prompt/model/loop 每次覆盖 +1，供 EffectiveAgentConfigResolver 缓存失效与审计（2026-09-15）
       "tools": null,                      // 同上：创建时快照模板默认工具集，可再覆盖（D16-⑤）
       "enabled": true,                    // false = 停用（保留全部数据，D14-9；MVP 每模板至多 1 实例，D14-3）
       "createdAt": "…"
@@ -213,6 +218,8 @@ agent_haness/                    # 平台仓库
 - 模板结构：`{ roleId, name, category, scenario, description, systemPrompt, defaultModel,
   defaultLoop:{strategy,params}, packages:[], tools:[], artifactTypes:[], defaultApprovalRules }`（`scenario` 与 `packages` 为 2026-09-14 新增，见 agent-templates.md / tool-packages.md）。
 - 项目内实例配置见 §3 team 数组（prompt/model/loop/tools 覆盖模板）；实例创建时**快照**模板默认值（D16-⑤），此后模板增删改不影响既有实例；`roleTemplateId` 仅作溯源（模板被删除时 UI 标「模板已移除」）。
+- **模板可编辑（2026-09-15，FR-35）**：首页 Agent 模块可提交 **`systemPrompt` / `defaultLoop` / `defaultModel`** 三项；内置模板（`src/shared/roles/`）只读，变更须"基于内置复制新建"（新 roleId 落 `data/roles/`）；`packages`/`tools` 本轮仍只读（U9 剩余）。
+- **`defaultModel` 口径**：引用 `data/model-config.json` 的**模型条目 id**（不再是 provider id，见 model-config.md §2/§11）。
 
 ## 9. 迁移 / 备份 / 损坏恢复
 
@@ -225,6 +232,8 @@ agent_haness/                    # 平台仓库
 | runtime.state.json 丢失 | 从 session meta/log 重建 agent 状态（视为 cache，非真相源）。 |
 | 半截写 | 原子写保证；异常退出后启动自检未完成临时文件。 |
 | 换机重设 workdir（M14 定稿） | 重设后旧 manifest 的 relPath 语义变为相对**新** workdir；下一次提交/回退由提交服务对该批 relPath 重新做存在性与冲突校验（提示用户确认文件映射），不自动改文件。 |
+| 平台模型配置损坏/缺失（2026-09-15） | `data/model-config.json` 解析失败 → 备份为 `.bak` 并以空配置启动（无可用模型，UI 引导重新配置）；缺失且 `.env` 有 `MODELS__PROVIDERS` → 一次性导入，详见 model-config.md §11。 |
+| 配置变更留痕 | `data/config-audit.jsonl` 与 `data/roles/<roleId>.history/` 只增不改；审计不含密钥明文与提示词全文（model-config.md §10）。 |
 
 ## 10. 检索索引（关键词，MVP）
 

@@ -56,7 +56,7 @@
 | GET | `/api/tool-packages/:packageId` | 单包详情（含每个工具的作用/风险/网络/幂等/适用会话） |
 
 - 数据来源：内置包元数据随仓库（`src/shared/tool-packages/*.yaml`，只读）；用户自定义包目录 `data/packages/<packageId>/` 为后续能力（当前仅预留，不读取不展示）。
-- UI 呈现见 [ui.md](ui.md) §3。
+- UI 呈现见 [ui.md](ui.md) §2.4（工具模块）。
 
 ## 6. 扩展位与未决
 

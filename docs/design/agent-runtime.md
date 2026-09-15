@@ -1,7 +1,7 @@
 # Agent 运行时设计 · Agent Haness
 
 > 类别：design · 状态：草稿(待评审) · 决策依据：D1/D4/D11/D12、prd FR-02/04/10/13/14
-> 关联：[architecture.md](architecture.md)、[data-storage.md](data-storage.md)、[sessions.md](sessions.md)、[memory.md](memory.md)
+> 关联：[architecture.md](architecture.md)、[data-storage.md](data-storage.md)、[sessions.md](sessions.md)、[memory.md](memory.md)、[model-config.md](model-config.md)（§5 模型路由的配置真源）
 
 ## 1. 三层角色抽象（可扩展的关键）
 
@@ -114,16 +114,18 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 
 **任务上下文**（D15 → D19-⑤）：受派 Agent 回合内由 dispatcher 注入其**当前激活任务**（标题/受派者/状态/关联会话），仅用于告知职责与**代码产物按任务聚合的归属锚点**（workspaces-artifacts §2.2）。**激活规则（D16-④ 修订为 D17-①）**：每 Agent 至多 1 个 `in_progress` 任务——已有 in_progress 时**新任务不可置为 in_progress**（UI 置位被拦并提示原因，新任务可先置 `todo` 排队；**无静默自动回退**）；槽位仅由「任务完成（用户确认 done）」或「用户显式**终止**」释放。**激活即唤醒（D18-③）**：任务置 `in_progress` 时 dispatcher 向受派者 user 会话注入一条唤醒消息「请开始执行任务 t_…」，作为确定性开工触发（不依赖用户另行发消息）。**终止语义（D17-①）**：终止入口带确认；存在未结算改动时**先结算为一条 code artifact 快照**（归属落袋、可回退）再置 `terminated`；若 Agent 正在执行该任务，终止到**当前可中断点**生效并回注 Agent「任务已被用户终止」、停止该任务后续计划步骤（未执行步骤作废，不回放）。仅 `in_progress` 任务被注入上下文并充当代码聚合锚点；`todo` 任务与会话内口头指派不入上下文（对应改动按回合兜底，workspaces-artifacts §2.2）；状态流转由受派者领取/汇报驱动（D19-⑤：`todo`→`claim`→`in_progress`→`done`/`blocked`/`terminated`），用户可随时干预。
 
-## 5. 模型路由（D4/D5）
+## 5. 模型路由（D4/D5；**2026-09-15 按 D20 修订口径**）
 
-- Provider 注册表：`openai-compatible`（DeepSeek 等）/ `ollama` / `mock`。
-- 路由规则（`.env` 的 `MODELS__DEFAULT` 全局默认 + 实例覆盖）：
-  1. 实例 `model` 优先；
-  2. 未配置则用模板 `defaultModel`；
-  3. 再退回 `.env` 的 `MODELS__DEFAULT`；
-  4. loop 步骤可 `stepModelOverride`（如反思用更强模型）。
-- 口径（B8 定稿）：实例/模板的 `model` 字段值一律引用 **provider id**（`config.models.providers[].id`，如 `deepseek-chat`/`ollama-qwen`/`mock`），具体模型名由 provider 内部指定；避免"provider/模型名"二义。
-- 流式：模型网关统一返回增量，chunk 落 log(合并为 message 事件)并推送；中断/超时重试策略见架构 §7。
+- **配置真源**：[model-config.md](model-config.md)。供应商（连接）与模型条目（具体模型）在那里定义；本节只讲"某个 Agent 的某一回合用哪个模型"。
+- 路由规则（解析链固定，任一层未命中即向下，**全部未命中则失败，不外推到"随便挑一个"**）：
+  1. 实例 `model` 覆盖；
+  2. 模板 `defaultModel`（创建实例时写入快照，D16-⑤）；
+  3. loop 步骤默认 `routing.stepOverrides[step]`（如 critique 用更强模型）；
+  4. 平台默认 `routing.defaultModelId`。
+- **口径（D20-①，修订原 B8 "`model` 引用 provider id"）**：实例/模板的 `model` 字段值引用 **模型条目 id**（`data/model-config.json` 的 `models[].id`，如 `deepseek-chat`/`gpt-4o`/`ollama-qwen`），模型条目再指向供应商并携带真实模型名与默认参数；旧值（provider id）兼容解析见 model-config.md §11。
+- **失败语义（D20-⑥）**：目标模型不存在/未启用/凭证缺失/调用失败 → `ERR_MODEL`（`detail` 含 `providerId`/`modelId`/`status`，**已脱敏**），落 `kind=error` 事件并回注 Agent；**不自动改用其它模型**（避免"悄悄换模型"）。
+- **适配器与流式**：五种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`）的差异在 `infra/model/providers/` 内归一化为统一 `ModelChunk`；`ModelGateway` 统一返回增量，chunk 落 log（合并为 message 事件）并推送；中断/超时重试策略见架构 §7（默认退避 ≤3 次，超时上限取 `MODELS__REQUEST_TIMEOUT_MS`）。
+- **生效时机**：平台模型配置改动即时生效（下一次模型调用）；实例 `model` 改动在下一回合开始生效（运行中回合到可中断点），见 model-config.md §9。
 
 ## 6. 工具集与安全边界（概要）
 
