@@ -81,3 +81,13 @@
 ## 8. 扩展点（向量检索）
 
 预留 `SearchProvider` 接口与 `semantic/` 目录：L1 事件与 L3 条目的"可向量化文本"提取器 + embedding 服务注入点（FR-22，P2）。MVP 全部关键词检索即可，不引依赖。
+
+## 9. 实现口径（2026-09-15，S5）
+
+- **文件**：`memories/global.jsonl` 与 `memories/<instanceId>.jsonl` **append-only**；`supersede` 不原地改，而是追加一条"同 id、`state=superseded, supersededBy=…`"的行，读取时同 id 取最后一条（与 `approvals.jsonl` 同构，崩溃不产生半更新）。
+- **写入权限落地**：`MemoryService.appendOwn`（角色记忆，工具 `memory_append` 走这里）/ `recordGlobal`（**白名单** `decision|requirement|progress`，其余 → `ERR_FORBIDDEN`）。
+- **摘要触发**：累计 `DEFAULT_SUMMARY_TRIGGER_MESSAGES = 40` 条**未摘要** `message` 事件（`src/shared/loop.ts`）；不足阈值**不调模型**（返回 `below-threshold`）。摘要由该实例的有效模型产出 JSON `{topic,goals,decisions,facts,todos,questions}`，解析失败退化为 `digest.text`。
+- **摘要事件字段**：`{summaryId, ofSeq, toSeq, digest, model, coveredMessages}`；`ofSeq` = 窗口首条消息 seq、`toSeq` = 末条消息 seq，**下一条摘要的 `ofSeq` 必大于上一条 `toSeq`**（可重放派生视图；重复调用只处理新窗口）。
+- **引擎自动提取（L3）**：每次摘要成功同时向该角色记忆追加一条 `progress` 条目（`source={sessionId, toSeq}`）。决策/需求类的全局条目仍走用户确认路径（S6），不做自动识别以免污染。
+- **检索实现**：`search-index/index.json` 为单文件倒排（token → `s:<sessionId>:<seq>` / `m:<entryId>`），查询前按 `lastSeq`/条目 id **增量 sync**，损坏或缺失即视为空索引重建；中文用 **2-gram 主索引 + 汉字单字回退索引**（单字查询弱命中，长查询不放松以免噪声）。
+- **可见性**：`domain/rules/visibility.ts` 纯函数同时供工具（`session_search`/`memory_search`）与 `GET /search` 使用；用户侧不受限，Agent 侧仅本人会话 ∪ 全局记忆 ∪ 本人角色记忆。

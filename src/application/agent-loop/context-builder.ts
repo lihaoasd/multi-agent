@@ -1,7 +1,10 @@
 import type { ChatMessage, ToolSchema } from '../../ports/model'
+import type { MemoryEntry } from '../../ports/memory'
+import type { SearchHit } from '../../ports/search'
 import type { StoredEvent } from '../../ports/session'
 import type { ProjectMeta } from '../../ports/project'
-import { DEFAULT_MAX_PROMPT_CHARS } from '../../shared/loop'
+import { DEFAULT_MAX_PROMPT_CHARS, SUMMARY_PROMPT_CHARS } from '../../shared/loop'
+import { digestToText, type SummaryDigest } from '../memory/summary-engine'
 import type { EffectiveAgentConfig } from '../team/effective-config'
 
 /**
@@ -15,6 +18,7 @@ export type ContextBlockOrigin =
   | 'global-memory'
   | 'role-memory'
   | 'session-window'
+  | 'retrieval'
   | 'task-context'
   | 'artifact-index'
   | 'tools'
@@ -40,10 +44,15 @@ export interface BuildContextInput {
   /** 会话历史事件（按时间正序） */
   readonly history: readonly StoredEvent[]
   readonly toolSchemas: readonly ToolSchema[]
+  /** 激活的 L3 记忆条目（global + 本人角色）；缺省表示不注入（预览/测试可省略） */
+  readonly memories?: readonly MemoryEntry[]
+  /** 检索命中片段（按需注入，最多 `contextLimits.search.maxSnippets` 条） */
+  readonly snippets?: readonly SearchHit[]
   readonly limits: {
     readonly rawWindow: number
     readonly maxCharsPerMsg: number
     readonly maxPromptChars: number
+    readonly maxSnippets?: number
   }
 }
 
@@ -51,32 +60,64 @@ function trim(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n…（已截断）`
 }
 
-function historyToMessages(history: readonly StoredEvent[], limits: BuildContextInput['limits']): readonly ChatMessage[] {
+function messageText(event: StoredEvent): string {
+  const direct = event.payload['text']
+  if (typeof direct === 'string') return direct
+  const content = event.payload['content']
+  if (typeof content === 'object' && content !== null) {
+    const text = (content as Record<string, unknown>)['text']
+    if (typeof text === 'string') return text
+  }
+  return ''
+}
+
+/** 最近一条滚动摘要（L2）：既决定"摘要替代哪段原文"，也用于拼 `【历史摘要】` 段 */
+function latestSummary(history: readonly StoredEvent[]): { readonly toSeq: number; readonly text: string } | null {
+  let found: { readonly toSeq: number; readonly text: string } | null = null
+  for (const event of history) {
+    if (event.kind !== 'summary') continue
+    const toSeq = event.payload['toSeq']
+    if (typeof toSeq !== 'number' || !Number.isFinite(toSeq)) continue
+    const digest = event.payload['digest']
+    const text =
+      typeof digest === 'object' && digest !== null
+        ? digestToText(digest as SummaryDigest)
+        : typeof event.payload['text'] === 'string'
+          ? (event.payload['text'] as string)
+          : ''
+    if (text.trim().length > 0) found = { toSeq, text }
+  }
+  return found
+}
+
+function historyToMessages(
+  history: readonly StoredEvent[],
+  limits: BuildContextInput['limits'],
+  coveredToSeq: number,
+): readonly ChatMessage[] {
   const messages: ChatMessage[] = []
   for (const event of history) {
-    if (event.kind !== 'message') continue
+    if (event.kind !== 'message' || event.seq <= coveredToSeq) continue
     const role = event.payload['role']
     if (role !== 'user' && role !== 'agent') continue
-    const raw =
-      typeof event.payload['text'] === 'string'
-        ? (event.payload['text'] as string)
-        : (() => {
-            const content = event.payload['content']
-            if (typeof content === 'object' && content !== null) {
-              const text = (content as Record<string, unknown>)['text']
-              if (typeof text === 'string') return text
-            }
-            return ''
-          })()
+    const raw = messageText(event)
     if (raw.trim().length === 0) continue
     messages.push({ role: role === 'user' ? 'user' : 'assistant', content: trim(raw, limits.maxCharsPerMsg) })
   }
   return messages.slice(-limits.rawWindow)
 }
 
+function memoryLines(entries: readonly MemoryEntry[]): string {
+  if (entries.length === 0) return '（暂无）'
+  return entries
+    .map((entry) => `- [${entry.type}] ${entry.content}（source=${entry.source.sessionId}#${entry.source.seq}）`)
+    .join('\n')
+}
+
 export function buildAgentContext(input: BuildContextInput): BuiltContext {
   const { effective, project } = input
   const blocks: ContextBlock[] = []
+  const summary = latestSummary(input.history)
 
   blocks.push({
     id: 'role-config',
@@ -97,6 +138,51 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
     ].join('\n'),
   })
 
+  if (input.memories !== undefined) {
+    blocks.push({
+      id: 'global-memory',
+      origin: 'global-memory',
+      title: '全局记忆',
+      text: memoryLines(input.memories.filter((entry) => entry.scope === 'global')),
+    })
+    blocks.push({
+      id: 'role-memory',
+      origin: 'role-memory',
+      title: '个人记忆',
+      text: memoryLines(input.memories.filter((entry) => entry.scope === 'agent')),
+    })
+  }
+
+  const historyMessages = historyToMessages(input.history, input.limits, summary?.toSeq ?? 0)
+  blocks.push({
+    id: 'session-window',
+    origin: 'session-window',
+    title: '会话窗口',
+    text: [
+      ...(summary === null ? [] : [`【历史摘要（至 seq ${summary.toSeq}）】\n${trim(summary.text, SUMMARY_PROMPT_CHARS)}`]),
+      historyMessages.length === 0
+        ? '（没有需要逐条回顾的近期消息）'
+        : historyMessages
+            .map((message) => `${message.role === 'user' ? '用户' : effective.displayName}：${message.content}`)
+            .join('\n'),
+    ].join('\n\n'),
+  })
+
+  const snippets = (input.snippets ?? []).slice(0, input.limits.maxSnippets ?? 3)
+  if (snippets.length > 0) {
+    blocks.push({
+      id: 'retrieval',
+      origin: 'retrieval',
+      title: '检索片段',
+      text: snippets
+        .map((hit) => {
+          const where = hit.scope === 'session' ? `会话 ${hit.sessionId}#${hit.seq}` : `记忆 ${hit.entryId}`
+          return `- [${where}] ${hit.text}`
+        })
+        .join('\n'),
+    })
+  }
+
   if (input.toolSchemas.length > 0) {
     blocks.push({
       id: 'tools',
@@ -108,19 +194,6 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
       ].join('\n'),
     })
   }
-
-  const historyMessages = historyToMessages(input.history, input.limits)
-  blocks.push({
-    id: 'session-window',
-    origin: 'session-window',
-    title: '会话窗口',
-    text:
-      historyMessages.length === 0
-        ? '（本次对话还没有历史消息）'
-        : historyMessages
-            .map((message) => `${message.role === 'user' ? '用户' : effective.displayName}：${message.content}`)
-            .join('\n'),
-  })
 
   const systemText = blocks.map((block) => `## ${block.title}\n${block.text}`).join('\n\n')
   return {

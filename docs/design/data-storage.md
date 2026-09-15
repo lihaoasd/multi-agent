@@ -170,6 +170,7 @@ agent_haness/                    # 平台仓库
 - 条目行：`{ id, ts, type: fact|decision|preference|commitment|requirement|progress|artifact_index,
   content, source:{sessionId,seq}, tags:[], refs:[artifactId], state: active|superseded }`
 - 滚动摘要行**属于会话文件**（`summary` kind 事件）；会话总摘要条目在会话归档后写入上述记忆文件。
+- **实现口径（2026-09-15，S5）**：文件 append-only；`state` 变更（被取代）以**追加一条同 id 的新行**表达（读取同 id 取最后一条），不原地改写。`source.seq` 为触发写入的会话事件 seq（工具写入取当回合最后一条事件 seq，摘要引擎取窗口 `toSeq`）。
 
 ## 6. 产出物 manifest（artifacts.jsonl）
 
@@ -271,3 +272,4 @@ agent_haness/                    # 平台仓库
 - 更新：事件写 log 时增量 append 索引（同进程内串行，成本可控）；重建接口全量扫。
 - 中文分词：MVP 用**二元组(2-gram)+字符**回退，避免引入重型分词依赖；精度不足时换 jieba 类（记扩展点）。
 - 向量检索：预留 `semantic/` 目录与 `SearchProvider` 接口（memory.md §8），MVP 不启用。
+- **实现口径（2026-09-15，S5）**：索引落盘为 `search-index/index.json`（单文件：`postings`/`charPostings`/`docs`/`indexedSeq`/`indexedMemoryIds`，含 `schemaVersion`），而非 `<scope>.idx` 多文件；查询前按会话 `lastSeq` 与记忆条目 id **增量 sync**，无事件订阅；损坏或缺失即视为空索引重建（`GET .../search/stats`、`POST .../search/reindex`、`npm run reindex [--project <id>]`）。

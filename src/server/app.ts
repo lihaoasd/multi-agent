@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { ModelConfigService } from '../application/model-config/service'
 import type { ApprovalService } from '../application/approval/approval-service'
+import type { MemoryService } from '../ports/memory'
+import type { SearchService } from '../ports/search'
 import type { PromptPreviewService } from '../application/agent-loop/preview'
 import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
@@ -22,6 +24,7 @@ import { registerModelConfigRoutes } from './http-routes/model-config'
 import { registerProjectRoutes } from './http-routes/projects'
 import { registerSessionRoutes } from './http-routes/sessions'
 import { registerApprovalRoutes } from './http-routes/approvals'
+import { registerMemoryRoutes } from './http-routes/memory'
 import { registerToolRoutes } from './http-routes/tools'
 import { registerWsGateway } from './ws/gateway'
 import { registerStaticRoutes } from './static'
@@ -37,6 +40,8 @@ export interface ServerServices {
   readonly broadcaster: EventBroadcaster
   readonly ids: IdGenerator
   readonly approvals: ApprovalService
+  readonly memory: MemoryService
+  readonly search: SearchService
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -103,6 +108,10 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     broadcaster: options.services.broadcaster,
   })
   registerApprovalRoutes(app, { approvals: options.services.approvals })
+  registerMemoryRoutes(app, {
+    memory: options.services.memory,
+    search: options.services.search,
+  })
   registerToolRoutes(app, {
     tools: options.services.toolRegistry,
     packages: options.services.toolPackages,

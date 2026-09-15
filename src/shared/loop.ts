@@ -18,5 +18,11 @@ export const LOOP_PARAM_LIMITS = {
 /** 提示词默认长度上限（可被 MODELS__MAX_PROMPT_CHARS 覆盖） */
 export const DEFAULT_MAX_PROMPT_CHARS = 20_000
 
+/** 滚动摘要触发阈值：累计多少条未摘要消息后生成摘要（memory.md §3.1 的"~40 条"） */
+export const DEFAULT_SUMMARY_TRIGGER_MESSAGES = 40
+
+/** 摘要请求里会话原文的最大字符数（成本护栏） */
+export const SUMMARY_PROMPT_CHARS = 8_000
+
 /** 平台内置的 7 个基础工具包（全员必选，D19-②） */
 export const BASE_TOOL_PACKAGES = ['fs', 'cmd', 'memory', 'session', 'artifact', 'approval', 'task'] as const

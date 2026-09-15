@@ -9,6 +9,7 @@ import type { DirectoryBrowser } from './fs-browse'
 import type { IdGenerator } from './id'
 import type { LockManager } from './lock'
 import type { Logger } from './logger'
+import type { MemoryStore } from './memory'
 import type { ModelGateway } from './model'
 import type {
   ModelCatalog,
@@ -23,6 +24,7 @@ import type { PolicyEngine } from './policy'
 import type { ProjectStore } from './project'
 import type { CmdRunner } from './sandbox'
 import type { RoleTemplateStore } from './role-templates'
+import type { SearchIndex } from './search'
 import type { StaticAssetProvider } from './static-assets'
 import type { TurnRunner } from './turn'
 
@@ -47,6 +49,8 @@ export const TOKENS = {
   SessionLogStore: token<SessionLogStore>('SessionLogStore'),
   DispatcherStateStore: token<DispatcherStateStore>('DispatcherStateStore'),
   ApprovalStore: token<ApprovalStore>('ApprovalStore'),
+  MemoryStore: token<MemoryStore>('MemoryStore'),
+  SearchIndex: token<SearchIndex>('SearchIndex'),
   // 模型
   ModelConfigStore: token<ModelConfigStore>('ModelConfigStore'),
   ModelPresetProvider: token<ModelPresetProvider>('ModelPresetProvider'),

@@ -6,8 +6,9 @@ import type { CmdRunner } from '../../../ports/sandbox'
 import type { ToolDefinition, ToolHandler, ToolOutcome } from '../../../ports/tools'
 import { classifyCommand } from '../../../domain/rules/policy'
 import { err, ok, type Result } from '../../../shared/result'
+import { memoryTools, type MemoryToolDeps } from './memory'
 
-/** 内置工具（S4 范围：只读 fs 三件套 + cmd_run + approval_query） */
+/** 内置工具（S4：只读 fs 三件套 + cmd_run + approval_query；S5：记忆与检索三件套） */
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -317,18 +318,23 @@ export function approvalQueryTool(options: {
   }
 }
 
-export function registerBuiltinTools(registry: import('../../../ports/tools').ToolRegistry, deps: BuiltinToolDeps & {
-  readonly listOwnApprovals: (context: {
-    readonly projectId: string
-    readonly instanceId: string
-  }) => Promise<Result<readonly { id: string; kind: string; status: string; summary: string }[]>>
-}): void {
+export function registerBuiltinTools(
+  registry: import('../../../ports/tools').ToolRegistry,
+  deps: BuiltinToolDeps &
+    MemoryToolDeps & {
+      readonly listOwnApprovals: (context: {
+        readonly projectId: string
+        readonly instanceId: string
+      }) => Promise<Result<readonly { id: string; kind: string; status: string; summary: string }[]>>
+    },
+): void {
   const tools = [
     fsReadFileTool(deps),
     fsListDirTool(deps),
     fsSearchTool(deps),
     cmdRunTool(deps),
     approvalQueryTool({ listOwn: deps.listOwnApprovals }),
+    ...memoryTools({ memory: deps.memory, search: deps.search }),
   ]
   for (const tool of tools) registry.register(tool.definition, tool.handler)
 }

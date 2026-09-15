@@ -26,6 +26,7 @@ import { describeError } from '../api/client'
 import { modelConfigApi, type ModelView } from '../api/modelConfig'
 import { promptPreviewApi, type PromptPreviewView } from '../api/platform'
 import { SessionPanel } from './SessionPanel'
+import { MemoryPanel } from './MemoryPanel'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
 const LOOP_STRATEGIES = [
@@ -420,6 +421,11 @@ export function ProjectModule() {
               key: 'session',
               label: '会话',
               children: <SessionPanel projectId={current.id} />,
+            },
+            {
+              key: 'memory',
+              label: '记忆与检索',
+              children: <MemoryPanel projectId={current.id} />,
             },
           ]}
         />

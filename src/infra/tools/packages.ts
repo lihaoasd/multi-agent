@@ -3,7 +3,7 @@ import type { ToolPackageInfo } from '../../ports/tools'
 /**
  * 内置工具包元数据（D19-②：7 个基础包全员必选）。
  * ⚠️ 这里是**声明**（展示态）；运行期是否可用取决于 `ToolRegistry` 里是否真的注册了对应工具
- * （S4 已实现 fs/cmd/approval 三个包的工具，其余包的工具随 S5/S6 落地，UI 按"挂载但运行期不可用"标注）。
+ * （S4 实现 fs/cmd/approval，S5 实现 memory/session，artifact/task 随 S6 落地，UI 按"挂载但运行期不可用"标注）。
  *
  * 位置说明：包元数据是**适配器数据**（要引用 ports 的 `ToolPackageInfo` 类型），因此放 infra 而非 shared
  * （shared 层不得依赖其它层，abstraction §2；由依赖门禁强制）。

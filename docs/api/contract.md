@@ -32,7 +32,7 @@
 | GET | /api/projects/:pid/team | 实例列表+状态 |
 | GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏与画布用）；**S2 阶段 `state` 恒为 `idle`，dispatcher 于 S3 接管** |
 | GET | /api/projects/:pid/agents/:iid | **角色详情**（只读）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
-| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：与运行期**同一 ContextBuilder** → `{ sessionType:"user", blocks:[{id,origin,title,text}], text }`；块 id/origin 现为 `role-config`（实例提示词）/`platform-role`/`tools`/`session-window`（S5/S6 会追加记忆、任务、产出索引段）；不落盘；实例不存在 → 404 |
+| GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：与运行期**同一 ContextBuilder** → `{ sessionType:"user", blocks:[{id,origin,title,text}], text }`；块顺序 `role-config`（实例提示词）→ `platform-role` → `global-memory` → `role-memory` → `session-window`（含最近滚动摘要）→ [`retrieval`（有检索片段时）] → `tools`（S5 起记忆块已接入；S6 再追加任务/产出索引段）；不落盘；实例不存在 → 404 |
 | POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）；**每模板至多 1 实例**（D14-3，重复 → `ERR_CONFLICT`）；创建时**快照模板默认值**（D16-⑤） |
 | PATCH | /api/projects/:pid/team/:iid | 改实例：`displayName` / `prompt` / `model` / `loop` / `enabled`；**传 `null` 表示清除覆盖回到快照**；仅覆盖变化时 `configVersion+1`；校验复用模板层同一套（提示词长度、loop 参数范围、模型须已启用） |
 | GET | /api/projects/:pid/team/:iid/effective-config | 有效配置解析结果（实例覆盖 → 模板快照 → 平台默认模型） |
@@ -62,8 +62,10 @@
 | POST | /api/projects/:pid/questions/:qid/answer | 答复询问：`{answers:[{itemId?,choice?/choices?/text?}]}`；答复后唤醒该 Agent 继续（无排队提问时）|
 | GET | /api/projects/:pid/approvals?status=pending\|approved\|rejected&actor= | 审批列表（按请求时间倒序）|
 | POST | /api/projects/:pid/approvals/:apid/decide | 批准/拒绝 `{decision:"approved"\|"rejected", reason?}`；**决定只能落一次**（重复 → `ERR_CONFLICT`）；落盘后唤醒等待中的回合（approved 继续执行 / rejected 回注 `ERR_APPROVAL_REJECTED`）|
-| GET | /api/projects/:pid/search?q=&scope=&type= | 关键词检索（会话/记忆分组）|
-| GET | /api/projects/:pid/memories?scope=global\|agent&instanceId=&type=&limit= | 记忆列表（只读浏览，M13；P1 支持钉住/编辑/删除 FR-19）|
+| GET | /api/projects/:pid/search?q=&scope=\|type=&sessionId=&limit= | 关键词检索（会话/记忆分组）。实现（2026-09-15，S5）：`scope` 与 `type` 同义（`all\|session\|memory`），2-gram 中文匹配 + 汉字单字回退；返回 `{query,count,sessionHits[],memoryHits[]}`，命中带 `(sessionId,seq)` 或 `entryId`、`kind`、`score`、`tokens[]`（供高亮与跳转）。用户视角不受可见性限制 |
+| GET | /api/projects/:pid/search/stats | 索引规模（派生投影）：`{documents,tokens,builtAt}` |
+| POST | /api/projects/:pid/search/reindex | 全量重建该项目索引（与 `npm run reindex` 同源；结果同上） |
+| GET | /api/projects/:pid/memories?scope=global\|agent&instanceId=&type=&state=&limit= | 记忆列表（只读浏览，M13；P1 支持钉住/编辑/删除 FR-19）。实现（S5）：返回 `{entries[],count}`，条目含 `id/ts/scope/instanceId/type/content/source{sessionId,seq}/tags/refs/state/supersededBy`；`type`/`state` 非法 → `ERR_VALIDATION` |
 
 ### 系统
 | GET | /api/config | 运行期只读总览：策略默认值、上下文上限、存储根等；**模型与供应商部分已迁出**（见下方"模型配置"）|

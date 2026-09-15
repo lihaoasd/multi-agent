@@ -50,6 +50,8 @@ export interface ToolCallContext {
   readonly sessionId: string
   readonly sessionType: SessionType
   readonly turn: number
+  /** 触发本次工具调用的会话事件 seq（记忆条目溯源用；缺省 0 表示无锚点） */
+  readonly sourceSeq?: number
   /** 项目工作目录/运行时目录（绝对路径） */
   readonly roots: import('./path-resolver').PathRoots
   /** 注入当前回合的审批等待回调（审批桥用） */

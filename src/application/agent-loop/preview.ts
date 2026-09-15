@@ -3,6 +3,7 @@ import type { ProjectStore } from '../../ports/project'
 import type { SessionType } from '../../ports/session'
 import type { ToolRegistry } from '../../ports/tools'
 import { ok, type Result } from '../../shared/result'
+import type { MemoryService } from '../../ports/memory'
 import type { TeamService } from '../team/team-service'
 import { buildAgentContext, type ContextBlock } from './context-builder'
 
@@ -11,6 +12,8 @@ export interface PromptPreviewServiceOptions {
   readonly team: TeamService
   readonly tools: ToolRegistry
   readonly config: ConfigProvider
+  /** 与运行期同源的记忆来源（预览可见 global-memory / role-memory 块） */
+  readonly memory: MemoryService
 }
 
 export interface PromptPreview {
@@ -39,16 +42,21 @@ export function createPromptPreviewService(options: PromptPreviewServiceOptions)
 
       const toolNames = effective.value.tools.length > 0 ? effective.value.tools : options.tools.list().map((item) => item.name)
       const toolSchemas = options.tools.schemasFor(toolNames, sessionType)
+      const memories = await options.memory.activeFor(projectId, instanceId)
 
       const built = buildAgentContext({
         project: { id: project.value.id, name: project.value.name, workdir: project.value.workdir },
         effective: effective.value,
         history: [],
         toolSchemas,
+        memories: memories.ok ? memories.value : [],
+        // 检索片段依赖"本次用户消息"，预览无消息故不注入（运行期才可能出现 retrieval 块）
+        snippets: [],
         limits: {
           rawWindow: platform.context.session.rawWindow,
           maxCharsPerMsg: platform.context.session.maxCharsPerMsg,
           maxPromptChars: platform.models.maxPromptChars,
+          maxSnippets: platform.context.search.maxSnippets,
         },
       })
       return ok({ sessionType, blocks: built.blocks, text: built.text })

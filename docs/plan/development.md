@@ -30,7 +30,7 @@
 | **S2** | 存储底座与项目/团队 | `FileStore`/`LockManager`/`IdGenerator`/`Clock`/`Logger`、project CRUD、创建向导、实例快照与停用 | S0 | 8 | **已完成（2026-09-15）**：[方案](2026-09-15-s2-project-team.md) · [记录](../changes/2026-09-15-s2-project-team.md) |
 | **S3** | 会话与单工调度 | `SessionLogStore`（seq/轮转）、`SessionMetaStore`、dispatcher occupancy、WS 网关（先盘后推） | S2 | 1、5、9 | **已完成（2026-09-15）**：[方案](2026-09-15-s3-sessions-dispatcher.md) · [记录](../changes/2026-09-15-s3-sessions-dispatcher.md) |
 | **S4** | Agent loop 与工具执行 | `LoopRegistry`+三策略真实形态、`ContextBuilder`、`ToolRegistry`/`ToolExecutor`、沙箱与审批桥 | S1、S3 | 2、3、11、26 | **已完成（2026-09-15）**：[方案](2026-09-15-s4-agent-loop-tools.md) · [记录](../changes/2026-09-15-s4-agent-loop-tools.md) |
-| **S5** | 记忆与检索 | `MemoryStore`、滚动摘要（可重放派生）、2-gram 倒排索引、检索接口 | S3 | 6、7、13 | 未开始 |
+| **S5** | 记忆与检索 | `MemoryStore`、滚动摘要（可重放派生）、2-gram 倒排索引、检索接口 | S3 | 6、7、13 | **已完成（2026-09-15）**：[方案](2026-09-15-s5-memory-search.md) · [记录](../changes/2026-09-15-s5-memory-search.md) |
 | **S6** | 产出物、任务、询问 | `workdir_edit`+归属校验、artifact manifest+版本+回退、任务发布/领取/汇报、询问阻塞与答复 | S4、S5 | 4、10、12、15~18、21、24、25 | 未开始 |
 | **S7** | 编排画布与前端完整化 | `/api/projects/:pid/orchestration`、委派边约束、画布、项目页 2/3 栏、右栏三列表、工作日志 | S6 | 22、23 | 未开始 |
 | **S8** | 恢复、运行控制与验收收口 | 未完成回合恢复三选、排队消息恢复、暂停/停止、停止生成、进行中细条、导出 zip、`reindex`、文档回写 | S7 | 14、19、20 | 未开始 |
@@ -81,7 +81,7 @@
 | **S2 存储与项目/团队** | `file-store`（原子写/JSONL 追加/列举/watch）、`KeyedLockManager`、project CRUD + 创建向导（`/api/fs/browse` 选目录）、`project.json` 按 data-storage §3、团队实例快照（D16-⑤）与停用/启用（D14-9）。验收：创建项目后目录结构与 §2 一致；同模板第 2 个实例被拒；停用后会话只读、可重新启用（规则 8） |
 | **S3 会话与单工调度** | `SessionLogStore`（seq 单调、`segments[]` 轮转、逐行容错）、`SessionMetaStore`、dispatcher `occupancy`/`lastHandledSeq`、消息排队、WS 网关（**先盘后推**）。验收：同时刻一个 Agent 只在一个会话；seq 跨轮转连续（规则 1/5/9） |
 | **S4 Agent loop 与工具执行** | `LoopRegistry` + 三策略**真实形态**（`reflective` 真调 critique、`plan-execute` 计划由模型产出并消费、`maxIterations`/`toolBudget` 生效——修正 agent-runtime §3 的"提示级"现状）、`ContextBuilder`（与提示词预览同源）、`ToolRegistry`/`ToolPackageRegistry`/`ToolExecutor` 校验链、`PathResolver`/`PolicyEngine`、`cmd_run` 沙箱与审批桥。验收：Mock 剧本驱动多轮工具调用；越界路径拒绝（规则 2/3/11/26） |
-| **S5 记忆与检索** | `MemoryStore`（global/角色）、滚动摘要作为**可重放派生视图**、2-gram 倒排 + `reindex`、`GET /search`。验收：摘要 ofSeq/toSeq 连续无重叠、中文检索命中（规则 6/7/13） |
+| **S5 记忆与检索** | `MemoryStore`（global/角色）、滚动摘要作为**可重放派生视图**、2-gram 倒排 + `reindex`、`GET /search`。验收：摘要 ofSeq/toSeq 连续无重叠、中文检索命中（规则 6/7/13）。**结果（2026-09-15）**：`memories/*.jsonl` append-only + `supersede` 状态行；滚动摘要阈值 40 条消息、`summary` 事件 `ofSeq/toSeq` 实测 `1~41`（下一条必接其上）；`search-index/index.json` 可删可重建（`npm run reindex`）；中文 2-gram 命中并返回可跳转 `(sessionId, seq)`；`memory_append`/`memory_search`/`session_search` 三工具真实注册；上下文新增 `global-memory`/`role-memory`（+按需 `retrieval`）块 |
 | **S6 产出物、任务、询问** | `workdir_edit` + `file-owners` 归属校验、artifact manifest + `artifact-versions`（doc 快照 / code 补丁）+ 回退、任务发布→领取→汇报 + 去重 + 单 `in_progress`、`ask_user` 阻塞与答复续跑、doc 审批托盘。验收：非 owner 写他人文件 `ERR_FORBIDDEN`（规则 4/10/12/15~18/21/24/25） |
 | **S7 编排画布与前端完整化** | `/api/projects/:pid/orchestration` 全量保存 + `version` 乐观并发 + 自环/重复边校验、Agent 委派**出边约束**（`ERR_ORCHESTRATION_EDGE`）、画布（React Flow）、项目页拓扑 2 栏 / 对话 3 栏、右栏三列表、工作日志折叠与 kind 过滤。验收：越边委派被拒且不建任务（规则 22/23） |
 | **S8 恢复、运行控制与收口** | 未完成回合横幅三选（缺 `turn_end`）、排队消息恢复、暂停/停止（未结算改动先结算快照）、"停止生成"、进行中细条、项目导出 zip。验收：跨重启会话/画布/记忆恢复（规则 14/19/20） |

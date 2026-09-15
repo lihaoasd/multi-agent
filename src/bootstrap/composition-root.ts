@@ -3,6 +3,9 @@ import { createPromptPreviewService, type PromptPreviewService } from '../applic
 import { createAgentLoopRunner } from '../application/agent-loop/runner'
 import { registerBuiltinLoops } from '../application/agent-loop/strategies'
 import { createApprovalService, type ApprovalService } from '../application/approval/approval-service'
+import { createMemoryService } from '../application/memory/memory-service'
+import { createSearchService } from '../application/search/search-service'
+import { createSummaryEngine, type SummaryEngine } from '../application/memory/summary-engine'
 import { createToolExecutor } from '../application/tools/tool-executor'
 import { createDispatcher } from '../application/dispatcher/dispatcher'
 import { createModelCatalog } from '../application/model-config/catalog'
@@ -21,6 +24,8 @@ import {
 import { createSecretResolver } from '../infra/config/secret-resolver'
 import { createWsEventHub } from '../infra/events/ws-hub'
 import { createFileStore } from '../infra/file-store/file-store'
+import { createMemoryStore } from '../infra/file-store/memory-store'
+import { createKeywordIndex } from '../infra/indexer/keyword-index'
 import { createModelConfigStore } from '../infra/file-store/model-config-store'
 import { createDispatcherStateStore } from '../infra/file-store/dispatcher-state-store'
 import { createProjectStore } from '../infra/file-store/project-store'
@@ -54,6 +59,8 @@ import type { CmdRunner } from '../ports/sandbox'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
 import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
+import type { MemoryService, MemoryStore } from '../ports/memory'
+import type { SearchIndex, SearchService } from '../ports/search'
 import type { Dispatcher } from '../ports/dispatcher'
 import type { WsRealtime } from '../ports/events'
 import type { ProjectStore } from '../ports/project'
@@ -73,6 +80,7 @@ import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { StaticAssetProvider } from '../ports/static-assets'
 import { TOKENS } from '../ports/tokens'
 import { buildAppConfig, type AppConfig } from '../shared/config'
+import { ok } from '../shared/result'
 import { resolve } from 'node:path'
 import { createContainer } from './container'
 
@@ -196,6 +204,28 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     }),
   )
 
+  // 4) 记忆与检索（L3 条目 + 派生倒排索引）
+  container.registerInstance(
+    TOKENS.MemoryStore,
+    createMemoryStore({
+      fileStore: container.resolve(TOKENS.FileStore),
+      lock: container.resolve(TOKENS.LockManager),
+      clock,
+      dataDir: config.dataDir,
+    }),
+  )
+  container.registerInstance(
+    TOKENS.SearchIndex,
+    createKeywordIndex({
+      fileStore: container.resolve(TOKENS.FileStore),
+      clock,
+      dataDir: config.dataDir,
+      sessionMetaStore: container.resolve(TOKENS.SessionMetaStore),
+      sessionLogStore: container.resolve(TOKENS.SessionLogStore),
+      memoryStore: container.resolve(TOKENS.MemoryStore),
+    }),
+  )
+
   // 3) 模型
   const presets = createYamlModelPresetProvider(DEFAULT_PRESET_PATH)
   // 启动自检：预置目录随仓库只读，坏了必须立刻暴露（否则每次请求都 500）
@@ -244,6 +274,8 @@ export function buildContainer(options: BuildContainerOptions = {}): Container {
     TOKENS.CmdRunner,
     TOKENS.PolicyEngine,
     TOKENS.ApprovalStore,
+    TOKENS.MemoryStore,
+    TOKENS.SearchIndex,
     TOKENS.ModelConfigStore,
     TOKENS.RoleTemplateStore,
     TOKENS.ModelPresetProvider,
@@ -282,6 +314,9 @@ export interface AppDeps {
   readonly sessions: SessionService
   readonly dispatcher: Dispatcher
   readonly approvals: ApprovalService
+  readonly memory: MemoryService
+  readonly search: SearchService
+  readonly summary: SummaryEngine
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -386,10 +421,24 @@ export function resolveDeps(
     clock,
   })
 
+  const memory = createMemoryService({
+    store: container.resolve<MemoryStore>(TOKENS.MemoryStore),
+    ids,
+    clock,
+    config: configProvider,
+  })
+
+  const search = createSearchService({
+    index: container.resolve<SearchIndex>(TOKENS.SearchIndex),
+    memory,
+  })
+
   const toolRegistry = createToolRegistry()
   registerBuiltinTools(toolRegistry, {
     paths: container.resolve<PathResolver>(TOKENS.PathResolver),
     cmd: container.resolve<CmdRunner>(TOKENS.CmdRunner),
+    memory,
+    search,
     listOwnApprovals: async ({ projectId, instanceId }) => {
       const listed = await approvals.list(projectId, { actor: instanceId })
       return listed.ok
@@ -406,6 +455,21 @@ export function resolveDeps(
     policy: container.resolve<PolicyEngine>(TOKENS.PolicyEngine),
   })
 
+  const summary = createSummaryEngine({
+    sessions,
+    memory,
+    gateway: container.resolve(TOKENS.ModelGateway),
+    resolveModel: async (projectId, instanceId) => {
+      const effective = await team.effectiveConfig(projectId, instanceId)
+      return effective.ok ? ok(effective.value.model) : effective
+    },
+    lock: container.resolve(TOKENS.LockManager),
+    ids,
+    clock,
+    config: configProvider,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
   const runner = createAgentLoopRunner({
     projects: container.resolve(TOKENS.ProjectStore),
     team,
@@ -415,6 +479,9 @@ export function resolveDeps(
     tools: toolRegistry,
     toolExecutor,
     approvals,
+    memory,
+    search,
+    summary,
     broadcaster,
     config: configProvider,
     clock,
@@ -426,6 +493,7 @@ export function resolveDeps(
     team,
     tools: toolRegistry,
     config: configProvider,
+    memory,
   })
 
   const dispatcher = createDispatcher({
@@ -466,6 +534,9 @@ export function resolveDeps(
     sessions,
     dispatcher,
     approvals,
+    memory,
+    search,
+    summary,
     toolRegistry,
     toolPackages,
     loopRegistry,

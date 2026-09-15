@@ -41,6 +41,8 @@ async function main(): Promise<void> {
       realtime: deps.realtime,
       ids: deps.ids,
       approvals: deps.approvals,
+      memory: deps.memory,
+      search: deps.search,
       toolRegistry: deps.toolRegistry,
       toolPackages: deps.toolPackages,
       loopRegistry: deps.loopRegistry,

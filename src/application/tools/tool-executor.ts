@@ -11,6 +11,8 @@ export interface ToolExecutionContext {
   readonly sessionId: string
   readonly sessionType: SessionType
   readonly turn: number
+  /** 触发本次调用的会话事件 seq（透传给工具做溯源） */
+  readonly sourceSeq?: number
   readonly roots: PathRoots
   readonly projectPolicy: ProjectPolicy
   readonly signal: AbortSignal
@@ -102,6 +104,7 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
         sessionId: context.sessionId,
         sessionType: context.sessionType,
         turn: context.turn,
+        ...(context.sourceSeq === undefined ? {} : { sourceSeq: context.sourceSeq }),
         roots: context.roots,
         requestApproval: context.requestApproval,
         signal: context.signal,

@@ -97,6 +97,10 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 
 组装顺序固定，可配置 `contextLimits`。检索到的旧会话片段按需注入（tag 为引用片段）。
 
+> **实现口径（2026-09-15，S5）**：块顺序落地为 `role-config → platform-role → global-memory → role-memory → session-window → retrieval? → tools`（`tools` 按本节口径排在最后；此前 S4 的 `tools` 在 `session-window` 之前已修正）。
+> `global-memory`/`role-memory` 取 `memory.activeFor`（global 与本人角色分别限量、时间倒序）；`session-window` 先给**最近一条 `summary` 事件的 digest**（`【历史摘要（至 seq N）】`），再列该摘要覆盖范围之后的最近 `rawWindow` 条原文；
+> `retrieval` 块仅在检索到"不在本次窗口内"的片段时出现（上限 `context.search.maxSnippets`，每条 ≤600 字），检索词取本次用户消息，可见性同 D18-②（Agent 只可能命中本人会话与可见记忆）。
+
 **contextLimits MVP 默认值**（`.env` 集中配置，键名如 `CONTEXT__SESSION__RAW_WINDOW`，可全局/实例覆盖，M11 定稿）：
 
 | 配置键 | 默认 | 含义 |

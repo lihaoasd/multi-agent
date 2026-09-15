@@ -8,6 +8,9 @@ import type { ProjectStore } from '../../ports/project'
 import type { ToolCall } from '../../ports/tools'
 import type { TurnRunContext, TurnRunner } from '../../ports/turn'
 import type { ApprovalService } from '../approval/approval-service'
+import type { MemoryService } from '../../ports/memory'
+import type { SearchService } from '../../ports/search'
+import type { SummaryEngine } from '../memory/summary-engine'
 import type { SessionService } from '../session/session-service'
 import type { TeamService } from '../team/team-service'
 import { AppFailure, err, ok, toAppErrorFrom, type Result } from '../../shared/result'
@@ -25,6 +28,12 @@ export interface AgentLoopRunnerOptions {
   readonly tools: ToolRegistry
   readonly toolExecutor: ToolExecutor
   readonly approvals: ApprovalService
+  /** L3 记忆：上下文注入（读）与摘要引擎回写（写） */
+  readonly memory: MemoryService
+  /** 检索：按用户消息取"已在窗口之外"的相关片段注入（memory.md §5） */
+  readonly search: SearchService
+  /** L2 滚动摘要引擎：回合结束后按阈值维护 */
+  readonly summary: SummaryEngine
   readonly broadcaster: EventBroadcaster
   readonly config: ConfigProvider
   readonly clock: Clock
@@ -123,17 +132,35 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
       const toolNames = config.tools.length > 0 ? config.tools : options.tools.list().map((item) => item.name)
       const toolSchemas = options.tools.schemasFor(toolNames, context.sessionType)
 
+      // L3：激活记忆条目（global + 本人角色，上限取 contextLimits）
+      const memories = await options.memory.activeFor(context.projectId, context.instanceId)
+      // 检索注入：只补充"不在本次窗口内"的片段，避免与 session-window 重复
+      const windowKeys = new Set(history.value.map((event) => `${event.sessionId}#${event.seq}`))
+      const retrieved = await options.search.search({
+        projectId: context.projectId,
+        query: context.userText,
+        viewer: { kind: 'agent', instanceId: context.instanceId },
+        limit: Math.max(platform.context.search.maxSnippets, 1),
+      })
+      const snippets = retrieved.ok
+        ? retrieved.value.filter((hit) => hit.sessionId === null || !windowKeys.has(`${hit.sessionId}#${hit.seq}`))
+        : []
+
       const built = buildAgentContext({
         project: { id: project.value.id, name: project.value.name, workdir: project.value.workdir },
         effective: config,
         history: history.value,
         toolSchemas,
+        memories: memories.ok ? memories.value : [],
+        snippets,
         limits: {
           rawWindow: platform.context.session.rawWindow,
           maxCharsPerMsg: platform.context.session.maxCharsPerMsg,
           maxPromptChars: platform.models.maxPromptChars,
+          maxSnippets: platform.context.search.maxSnippets,
         },
       })
+      const sourceSeq = history.value[history.value.length - 1]?.seq ?? 0
 
       const strategyName = config.loop.strategy
       const strategy = options.loops.get(strategyName)
@@ -234,6 +261,7 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
             sessionId: context.sessionId,
             sessionType: context.sessionType,
             turn: context.turn,
+            sourceSeq,
             roots,
             projectPolicy,
             signal: context.signal,
@@ -280,6 +308,19 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
       }
 
       await context.emit({ kind: 'turn_end', turn: context.turn, payload: { ok: result.ok } })
+
+      // L2 滚动摘要：回合结束后按阈值维护（不足阈值不调模型，失败不影响回合结果）
+      const maintained = await options.summary.maintain(context.projectId, context.sessionId, {
+        turn: context.turn,
+      })
+      if (!maintained.ok) {
+        options.logger.warn('滚动摘要维护失败', {
+          projectId: context.projectId,
+          sessionId: context.sessionId,
+          code: maintained.error.code,
+          message: maintained.error.message,
+        })
+      }
       return ok(undefined)
     },
   }

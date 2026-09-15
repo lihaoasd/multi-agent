@@ -66,6 +66,8 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
       realtime,
       ids: deps.ids,
       approvals: deps.approvals,
+      memory: deps.memory,
+      search: deps.search,
       toolRegistry: deps.toolRegistry,
       toolPackages: deps.toolPackages,
       loopRegistry: deps.loopRegistry,
