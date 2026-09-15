@@ -12,10 +12,10 @@
 | `docs/api/` | 接口约定（REST + WS + 错误码） | [contract.md](api/contract.md) |
 | `docs/testing/` | 测试计划（分层、规则清单、门禁） | [plan.md](testing/plan.md) |
 | `docs/operations/` | 部署与运维（本机部署、配置、备份迁移） | [deploy.md](operations/deploy.md) |
-| `docs/plan/` | 开发方案（改动前必写，按日期命名） | `YYYY-MM-DD-<topic>.md` |
+| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S9` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
 | `docs/changes/` | 修改记录（每次改动追加，与 diff 一一对应） | `YYYY-MM-DD-<topic>.md` |
 
-**阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md`。
+**阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md` → **`plan/development.md`（编码阶段执行顺序）**。
 **改动流程**：先写 `docs/plan/` 方案 → 改文档 → 追加 `docs/changes/` 记录 → 复核链接与术语（见 `prd` §9）。
 
 ## 2. 术语表
