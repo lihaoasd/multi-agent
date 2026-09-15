@@ -123,9 +123,9 @@
 
 | 能力 | 接口 | 行为 |
 | --- | --- | --- |
-| 连通性测试 | `POST /api/model-providers/:id/test` `{mode:"models"\|"chat"}` | `models`：调用供应商列模型端点（最省额度）；`chat`：对指定模型发一次 `max_tokens=1` 的非流式最小请求。返回 `{ok, latencyMs, models?, error?}` |
-| 模型发现 | `GET /api/model-providers/:id/discover` | 拉取该供应商可用模型名列表（§6.2"模型发现"列）；不支持或失败 → 返回 `ERR_MODEL` + 建议手工填写，UI 不阻断 |
-| 批量导入 | `POST /api/models/bulk` `{providerId, models:[{model, displayName?}]}` | 把发现/建议清单批量建成模型条目；已存在的 `model` 名跳过并回报 |
+| 连通性测试 | `POST /api/model-providers/:id/test` `{mode:"models"\|"chat", modelId?}` | `models`：调用供应商列模型端点（最省额度）；`chat`：对指定模型发一次 `max_tokens=1` 的非流式最小请求。**成功**返回 `{latencyMs, models?}`，**失败**走统一错误体 `{code,message,detail}` |
+| 模型发现 | `GET /api/model-providers/:id/discover` | 拉取该供应商可用模型名列表（§6.2"模型发现"列），返回 `{models:[…]}`；不支持或失败 → `ERR_MODEL` + 建议手工填写，UI 不阻断 |
+| 批量导入 | `POST /api/models/bulk` `{providerId, models:[{model, displayName?}]}` | 把发现/建议清单批量建成模型条目，返回 `{created:[…], skipped:[…]}`（同供应商同名跳过）；条目 id 由 `<providerId>-<模型名>` 归一化生成并保证唯一 |
 
 - 连通性测试只做**最小代价**调用；结果**不写会话日志**，只写平台审计（`action:"test"`）。
 - 测试与真实调用走同一适配器路径（同一凭证解析、同一脱敏装饰），避免"测试通过但调用失败"。
@@ -137,7 +137,7 @@
 | 1 | `provider.id` / `model.id` 格式合法且全局唯一 | `ERR_VALIDATION` |
 | 2 | `kind` 必须是已注册适配器 | `ERR_VALIDATION`（点名可用 kind） |
 | 3 | `baseUrl` 为 http/https 且非空（`mock` 免） | `ERR_VALIDATION` |
-| 4 | `env` 模式：`envName` 合规且**当前环境存在该变量** | `ERR_VALIDATION` |
+| 4 | `env` 模式：`envName` 合规且**当前环境存在该变量**（含 `.env` 文件：统一按"文件 + 进程环境"合并后的映射判定，`process.env` 优先） | `ERR_VALIDATION` |
 | 5 | `file` 模式：新增时 `value` 非空；编辑省略=保持 | `ERR_VALIDATION` |
 | 6 | `model.providerId` 必须存在且 `enabled` | `ERR_VALIDATION` |
 | 7 | `model.model` 非空；同一供应商下 `model` 名不重复 | `ERR_VALIDATION` |
@@ -148,7 +148,7 @@
 | 12 | `stepOverrides` 的 key 必须是已注册 loop 步骤名、value 指向已启用模型 | `ERR_VALIDATION` |
 | 13 | Agent 提示词：非空、长度 ≤ 上限（默认 20000 字符，平台可配） | `ERR_VALIDATION` |
 | 14 | Agent loop：`strategy` 已注册；`maxIterations` 1..20、`toolBudget` 0..200、`stepModelOverride` 指向已启用模型 | `ERR_VALIDATION` |
-| 15 | 内置模板不可原地修改/删除 | `ERR_FORBIDDEN`（提示"基于内置复制新建"） |
+| 15 | 内置模板不可原地修改/停用 | `ERR_FORBIDDEN`（提示"基于内置复制新建"） |
 
 - 错误码沿用 `contract.md` §4 既有集合（`ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`），**不新增错误码**；引用者与供应商原始错误放 `detail`。
 - 供应商返回的 HTTP 错误映射为 `ERR_MODEL`，`detail` 含 `{ providerId, modelId, status, code?, message(截断+脱敏) }`。
@@ -199,6 +199,8 @@
 3. **遗留 `data/model-config.json` 旧形状**（`{entries[], defaultModel}`，无 `schemaVersion`）：视为 v0 → 启动自检**不自动导入**，备份为 `model-config.v0.bak.json` 并在 UI 提示一次；用户点"导入"走 `POST /api/model-config/import?source=v0`。
 4. **遗留 `data/agent-models.json`**（旧 `roleId → 条目 id` 映射，已被本轮设计取代）：不再读取；提示用户其映射应写入角色模板 `defaultModel`（不自动改文件）。
 5. `schemaVersion` 当前为 `1`；未来不兼容变更递增版本并要求显式迁移（与 `data-storage.md` §9 一致）。
+6. **首次初始化兜底（2026-09-15 实现口径）**：启动时按序执行 —— ① 配置文件不存在 → 空配置；② 检测到 v0/坏文件 → 备份后空配置；③ 空配置且 `MODELS__IMPORT_FROM_ENV=true` → 从合并环境映射的 `MODELS__PROVIDERS` 导入；④ **仍为空 → 自动创建内置 `mock` 供应商 + `mock` 模型并设为默认**，保证"无任何 Key 也能跑通全流程"（prd §9 验收 2）。
+7. **`.env` 文件的读取口径**：`.env` 内容**不会**写回 `process.env`，因此 env 模式凭证与遗留导入统一读"**`.env` 文件 + 进程环境变量**"合并后的映射（后者优先）；`process.env` 优先于 `.env`。
 
 ## 12. 端口与代码落点（对齐 abstraction.md）
 

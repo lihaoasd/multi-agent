@@ -70,17 +70,19 @@
 | POST | /api/model-providers | 新建：`{presetId?}` 走预置模板，或 `{id, name, kind, baseUrl, credential, headers?, timeoutMs?}` 自定义 |
 | PATCH | /api/model-providers/:pid | 编辑（`credential` 省略=保持原值；`""`=清除）；改 `kind` 必须同时给 `baseUrl` |
 | DELETE | /api/model-providers/:pid | 删除；其下存在模型条目 → `ERR_CONFLICT` + `detail.referrers` |
-| POST | /api/model-providers/:pid/test | 连通性测试 `{mode:"models"\|"chat", modelId?}` → `{ok, latencyMs, models?, error?}`；不写会话日志 |
-| GET | /api/model-providers/:pid/discover | 拉取供应商可用模型名；不支持/失败 → `ERR_MODEL`（UI 提示手工填写，不阻断）|
-| GET | /api/models | 模型条目列表（含供应商摘要、能力、启用状态、被引用次数）|
+| POST | /api/model-providers/:pid/test | 连通性测试 `{mode:"models"\|"chat", modelId?}` → 成功 `{latencyMs, models?}`（失败走统一错误体）；不写会话日志 |
+| GET | /api/model-providers/:pid/discover | 拉取供应商可用模型名 → `{models:[…]}`；不支持/失败 → `ERR_MODEL`（UI 提示手工填写，不阻断）|
+| GET | /api/models | 模型条目列表（含供应商摘要、能力、启用状态、被引用者标签 `referrers[]`）|
 | POST | /api/models | 新建模型条目 `{id, providerId, model, displayName?, capabilities?, contextWindow?, maxOutputTokens?, defaultParams?}` |
-| POST | /api/models/bulk | 批量登记 `{providerId, models:[{model, displayName?}]}`（发现/建议清单一键导入，重名跳过并回报）|
-| PATCH | /api/models/:mid | 编辑（含 `enabled`）；停用被引用模型需 `?confirm=true`，否则 `ERR_CONFLICT` + `detail.referrers` |
-| DELETE | /api/models/:mid | 删除；被模板/实例引用 → `ERR_CONFLICT` + `detail.referrers` |
+| POST | /api/models/bulk | 批量登记 `{providerId, models:[{model, displayName?}]}` → `{created:[…], skipped:[…]}`（同供应商同名跳过；id 由 `<providerId>-<模型名>` 归一化且唯一）|
+| PATCH | /api/models/:mid | 编辑（含 `enabled`）；停用**被模板/实例引用**的模型需 `confirm:true`，否则 `ERR_CONFLICT` + `detail.referrers` |
+| DELETE | /api/models/:mid | 删除；被引用时需 `?confirm=true`，否则 `ERR_CONFLICT` + `detail.referrers`；删默认模型会同时清空路由指向 |
 | GET/PUT | /api/model-routing | 全局默认模型与 loop 步骤默认：`{defaultModelId, stepOverrides:{act?, plan?, critique?}}` |
-| POST | /api/model-config/import | 一次性导入遗留配置 `?source=env\|v0`（`.env` 的 `MODELS__PROVIDERS` / 旧 `data/model-config.json`）→ 回报导入条目与跳过项 |
+| GET | /api/model-config/overview | 一次取回 `{revision, providers[], models[], routing, notices[]}`（UI 首屏用；`notices` 为 v0/坏文件备份提示）|
+| POST | /api/model-config/import | 一次性导入遗留配置 `?source=env\|v0`（`.env` 的 `MODELS__PROVIDERS` / 旧 `data/model-config.json`）→ `{imported, skipped[]}` |
 
 > 校验与失败语义见 model-config.md §8：**不新增错误码**，沿用 `ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`；引用者列表放 `detail.referrers`。
+> 启动初始化（model-config.md §11）：空配置 → 先导入 `MODELS__PROVIDERS`，仍为空则自动创建内置 `mock` 供应商 + 模型（保证无 Key 可跑通）。
 
 ### 首页库（工具包只读；Agent 模板已开放 提示词/loop/模型 三项提交）
 
@@ -88,10 +90,11 @@
 | --- | --- | --- |
 | GET | /api/tool-packages | 工具包列表（含 `tools[]` 展开、`required`、`source`、`riskMax`）|
 | GET | /api/tool-packages/:packageId | 单包详情（含每个工具的作用/风险/网络/幂等/适用会话）|
-| GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要；写路径同"角色库/团队"表）|
+| GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要、`defaultModelAvailable`、`editable`；写路径同"角色库/团队"表）|
 | GET | /api/agent-templates/:roleId | 模板详情（身份/loop/**系统提示词预览**/工具按包展开/模型/审批规则）|
+| GET | /api/agent-templates/:roleId/history | 模板配置历史快照文件名列表（只增；仅用户模板有）|
 
-> 2026-09-15 更新：Agent 模板的**提示词 / loop / 模型**已开放提交（FR-35，写路径见"角色库 / 团队"表）；**工具包制作（U8）仍只读**。
+> 2026-09-15 更新：Agent 模板的**提示词 / loop / 模型**已开放提交（FR-35，写路径见"角色库 / 团队"表）；**工具包制作（U8）仍只读**。内置模板的编辑与停用均返回 `ERR_FORBIDDEN`（须"基于内置复制新建"）。
 > 项目内实例覆盖走 `PATCH /api/projects/:pid/team/:iid`（字段 `prompt`/`loop`/`model`，校验见 model-config.md §8 #13/#14）。
 
 ### 项目编排（拓扑图）

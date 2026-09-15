@@ -1,0 +1,132 @@
+# 内置模型供应商预置目录（随仓库、只读；**不含任何密钥**）
+# 用途：UI「新增供应商」时预填 kind / baseUrl / 建议模型；用户可改地址（自建代理/中转站）。
+# 真源与校验口径见 docs/design/model-config.md §6.2；新增一家供应商只需在此追加条目。
+presets:
+  - presetId: deepseek
+    name: DeepSeek
+    kind: openai-compatible
+    baseUrl: https://api.deepseek.com/v1
+    credentialHint: "API Key（Authorization: Bearer）"
+    supportsModelDiscovery: true
+    docsUrl: https://platform.deepseek.com/
+    suggestedModels:
+      - model: deepseek-chat
+        displayName: DeepSeek Chat
+        capabilities: [chat, stream, tools]
+      - model: deepseek-reasoner
+        displayName: DeepSeek Reasoner
+        capabilities: [chat, stream, reasoning]
+
+  - presetId: openai
+    name: OpenAI
+    kind: openai-compatible
+    baseUrl: https://api.openai.com/v1
+    credentialHint: "API Key（Authorization: Bearer）"
+    supportsModelDiscovery: true
+    docsUrl: https://platform.openai.com/docs/api-reference
+    suggestedModels:
+      - model: gpt-4o
+        displayName: GPT-4o
+        capabilities: [chat, stream, tools]
+      - model: gpt-4o-mini
+        displayName: GPT-4o mini
+        capabilities: [chat, stream, tools]
+
+  - presetId: anthropic
+    name: Anthropic Claude
+    kind: anthropic
+    baseUrl: https://api.anthropic.com/v1
+    credentialHint: "API Key（x-api-key + anthropic-version）"
+    supportsModelDiscovery: true
+    docsUrl: https://docs.anthropic.com/
+    suggestedModels:
+      - model: claude-sonnet-4-5
+        displayName: Claude Sonnet 4.5
+        capabilities: [chat, stream, tools]
+
+  - presetId: gemini
+    name: Google Gemini
+    kind: gemini
+    baseUrl: https://generativelanguage.googleapis.com/v1beta
+    credentialHint: "API Key（x-goog-api-key）"
+    supportsModelDiscovery: true
+    docsUrl: https://ai.google.dev/gemini-api/docs
+    suggestedModels:
+      - model: gemini-2.5-pro
+        displayName: Gemini 2.5 Pro
+        capabilities: [chat, stream, tools]
+      - model: gemini-2.5-flash
+        displayName: Gemini 2.5 Flash
+        capabilities: [chat, stream, tools]
+
+  - presetId: dashscope
+    name: 阿里通义千问（百炼）
+    kind: openai-compatible
+    baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+    credentialHint: "API Key（Authorization: Bearer）"
+    supportsModelDiscovery: true
+    docsUrl: https://help.aliyun.com/zh/model-studio/
+    suggestedModels:
+      - model: qwen-max
+        displayName: 通义千问 Max
+        capabilities: [chat, stream, tools]
+      - model: qwen-plus
+        displayName: 通义千问 Plus
+        capabilities: [chat, stream, tools]
+
+  - presetId: moonshot
+    name: 月之暗面 Kimi
+    kind: openai-compatible
+    baseUrl: https://api.moonshot.cn/v1
+    credentialHint: "API Key（Authorization: Bearer）"
+    supportsModelDiscovery: true
+    docsUrl: https://platform.moonshot.cn/docs
+    suggestedModels:
+      - model: moonshot-v1-128k
+        displayName: Moonshot v1 128k
+        capabilities: [chat, stream, tools]
+
+  - presetId: zhipu
+    name: 智谱 GLM
+    kind: openai-compatible
+    baseUrl: https://open.bigmodel.cn/api/paas/v4
+    credentialHint: "API Key（Authorization: Bearer）"
+    supportsModelDiscovery: true
+    docsUrl: https://open.bigmodel.cn/dev/api
+    suggestedModels:
+      - model: glm-4-plus
+        displayName: GLM-4-Plus
+        capabilities: [chat, stream, tools]
+
+  - presetId: volcengine-ark
+    name: 火山方舟 豆包
+    kind: openai-compatible
+    baseUrl: https://ark.cn-beijing.volces.com/api/v3
+    credentialHint: "API Key（Authorization: Bearer）"
+    # 方舟的 model 字段是「推理接入点 id」（ep-xxxx），无法用 /models 枚举，需手工填写
+    supportsModelDiscovery: false
+    docsUrl: https://www.volcengine.com/docs/82379
+    suggestedModels: []
+
+  - presetId: ollama
+    name: Ollama（本地）
+    kind: ollama
+    baseUrl: http://127.0.0.1:11434
+    credentialHint: "无需密钥（本地服务）"
+    supportsModelDiscovery: true
+    docsUrl: https://github.com/ollama/ollama/blob/main/docs/api.md
+    suggestedModels:
+      - model: qwen3:8b
+        displayName: Qwen3 8B（本地）
+        capabilities: [chat, stream, tools]
+
+  - presetId: mock
+    name: Mock（离线演示）
+    kind: mock
+    baseUrl: ''
+    credentialHint: "无需密钥；用于无 Key 跑通全流程（prd §9 验收 2）"
+    supportsModelDiscovery: false
+    suggestedModels:
+      - model: mock
+        displayName: Mock 模型
+        capabilities: [chat, stream, tools]

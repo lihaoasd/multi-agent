@@ -1,13 +1,30 @@
 import { createServer } from '../server/app'
+import { loadEnvMap } from '../infra/config/env-config'
 import { buildContainer, resolveDeps } from './composition-root'
 
 async function main(): Promise<void> {
-  const container = buildContainer()
-  const deps = resolveDeps(container)
+  // `.env` 文件内容不会写回 process.env，故显式加载一次并同时用于配置与遗留导入
+  const envMap = loadEnvMap()
+  const container = buildContainer({ envMap })
+  const deps = resolveDeps(container, { envMap })
+
+  // 首次启动的遗留配置导入（`.env` 的 MODELS__PROVIDERS → data/model-config.json，model-config.md §11）
+  const initialized = await deps.modelConfig.ensureInitialized()
+  if (!initialized.ok) {
+    deps.logger.warn('模型配置初始化失败', { code: initialized.error.code, message: initialized.error.message })
+  } else if (initialized.value.imported > 0) {
+    deps.logger.info('已从 .env 导入遗留模型配置', { imported: initialized.value.imported })
+  }
+
   const app = await createServer({
     config: deps.config,
     logger: deps.logger,
     staticAssets: deps.staticAssets,
+    services: {
+      modelConfig: deps.modelConfig,
+      agentConfig: deps.agentConfig,
+      broadcaster: deps.broadcaster,
+    },
   })
   const { host, port } = deps.config.server
 
@@ -32,6 +49,7 @@ async function main(): Promise<void> {
     health: `http://${host}:${port}/health`,
     dataDir: deps.config.dataDir,
     webDist: deps.staticAssets.distDir(),
+    providers: deps.kinds.list().length,
   })
 }
 

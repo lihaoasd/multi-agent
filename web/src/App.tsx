@@ -1,16 +1,21 @@
-import { Alert, Card, Descriptions, Layout, Spin, Typography } from 'antd'
+import { Alert, Layout, Menu, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 import { fetchHealth, type HealthResponse } from './api/health'
+import { AgentModule } from './pages/AgentModule'
+import { ModelModule } from './pages/ModelModule'
 
-const { Header, Content } = Layout
+const { Header, Content, Sider } = Layout
+
+type ModuleKey = 'status' | 'agent' | 'model'
 
 /**
- * S0 空壳：只验证"前端 → 服务端 /health"链路与主题骨架。
- * 首页四模块（项目 / Agent / 模型 / 工具）在 S1 起逐步接入（docs/design/ui.md §2）。
+ * 首页骨架（docs/design/ui.md §1）：全局导航为 项目 / Agent / 模型 / 工具。
+ * 本阶段（S1）已接入 **Agent** 与 **模型**；项目与工具随后续阶段补齐。
  */
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [healthError, setHealthError] = useState<string | null>(null)
+  const [active, setActive] = useState<ModuleKey>('model')
 
   useEffect(() => {
     let cancelled = false
@@ -19,7 +24,7 @@ export function App() {
         if (!cancelled) setHealth(data)
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+        if (!cancelled) setHealthError(cause instanceof Error ? cause.message : String(cause))
       })
     return () => {
       cancelled = true
@@ -28,29 +33,55 @@ export function App() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center' }}>
+      <Header style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <Typography.Title level={4} style={{ margin: 0, color: '#fff' }}>
           Agent Haness
         </Typography.Title>
+        <Typography.Text style={{ color: 'rgba(255,255,255,0.65)' }}>
+          {health === null ? '连接中…' : `v${health.version} · 数据目录 ${health.dataDir} · 联网 ${health.sandboxNetwork}`}
+        </Typography.Text>
       </Header>
-      <Content style={{ padding: 24, maxWidth: 960, margin: '0 auto', width: '100%' }}>
-        <Card title="服务状态">
-          {error !== null && <Alert type="error" showIcon message="无法连接服务端" description={error} />}
-          {error === null && health === null && <Spin tip="加载中…" />}
-          {health !== null && (
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label="状态">{health.status}</Descriptions.Item>
-              <Descriptions.Item label="应用">{`${health.name} v${health.version}`}</Descriptions.Item>
-              <Descriptions.Item label="运行时长">{`${Math.round(health.uptimeMs / 1000)} 秒`}</Descriptions.Item>
-              <Descriptions.Item label="数据目录">{health.dataDir}</Descriptions.Item>
-              <Descriptions.Item label="联网模式">{health.sandboxNetwork}</Descriptions.Item>
-            </Descriptions>
+      <Layout>
+        <Sider width={168} theme="light">
+          <Menu
+            mode="inline"
+            selectedKeys={[active]}
+            onClick={({ key }) => setActive(key as ModuleKey)}
+            items={[
+              { key: 'status', label: '服务状态' },
+              { key: 'agent', label: 'Agent' },
+              { key: 'model', label: '模型' },
+              { key: 'project', label: '项目（S2）', disabled: true },
+              { key: 'tools', label: '工具（S4）', disabled: true },
+            ]}
+          />
+        </Sider>
+        <Content style={{ padding: 24 }}>
+          {healthError !== null && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="无法连接服务端"
+              description={healthError}
+            />
           )}
-        </Card>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 16 }}>
-          当前为 S0 脚手架阶段：仅服务骨架与依赖门禁。四模块界面（项目 / Agent / 模型 / 工具）随后续阶段接入。
-        </Typography.Paragraph>
-      </Content>
+          {active === 'status' && (
+            <Alert
+              type="success"
+              showIcon
+              message="服务运行中"
+              description={
+                health === null
+                  ? '正在获取健康信息…'
+                  : `应用 ${health.name} v${health.version}｜运行 ${Math.round(health.uptimeMs / 1000)} 秒｜数据目录 ${health.dataDir}`
+              }
+            />
+          )}
+          {active === 'model' && <ModelModule />}
+          {active === 'agent' && <AgentModule />}
+        </Content>
+      </Layout>
     </Layout>
   )
 }

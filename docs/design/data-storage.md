@@ -20,8 +20,9 @@ agent_haness/                    # 平台仓库
 │                                #   命名约定：`__` 分层、数组用 JSON；模板见入库的 .env.example
 ├── data/                        # 运行时数据根（不入库；DATA_DIR 可改）
 │   ├── model-config.json        # 【平台模型配置】供应商 + 模型条目 + 全局默认路由（2026-09-15；schema 见 model-config.md §3~§4）
-│   ├── model-config.v0.bak.json # 旧形状自动备份（仅当检测到无 schemaVersion 的遗留文件时生成）
-│   ├── config-audit.jsonl       # 配置变更审计：平台/模板/实例（append-only，2026-09-15）
+│   ├── model-config.v0.bak.json # 旧形状自动备份（检测到无 schemaVersion 的遗留文件时生成）
+│   ├── model-config.invalid.bak.json # 坏 JSON 自动备份（解析失败时生成）
+│   ├── config-audit.jsonl       # 配置变更审计：平台/模板/实例（append-only，2026-09-15；路径随 DATA_DIR，即 `<DATA_DIR>/config-audit.jsonl`）
 │   ├── roles/                   # 【系统角色库】用户自建/修改的模板（内置模板随仓库 src/shared/roles）
 │   │   ├── <roleId>.yaml
 │   │   └── <roleId>.history/<ts>.yaml   # 模板配置历史快照（只增不改，2026-09-15）
@@ -215,6 +216,7 @@ agent_haness/                    # 平台仓库
 
 - 内置：`src/shared/roles/<roleId>.yaml`（随仓库版本，**只读**，升级可覆盖）。
 - 用户自建：`data/roles/<roleId>.yaml`（B12/D16-⑤）：内置模板**只读、不可原地改/删**；需变更时在 UI「基于内置复制新建」（新 roleId）。**不存在"同名文件覆盖内置"路径**。
+- **目录归属判定（2026-09-15 实现口径）**：`ROLE_DIRS` 中**位于数据根下**的那份（默认 `data/roles`）视为用户模板目录（可写），其余为内置目录（只读）；同名 roleId 同时存在时用户文件优先（属异常配置，UI 只允许用新 roleId 复制）。
 - 模板结构：`{ roleId, name, category, scenario, description, systemPrompt, defaultModel,
   defaultLoop:{strategy,params}, packages:[], tools:[], artifactTypes:[], defaultApprovalRules }`（`scenario` 与 `packages` 为 2026-09-14 新增，见 agent-templates.md / tool-packages.md）。
 - 项目内实例配置见 §3 team 数组（prompt/model/loop/tools 覆盖模板）；实例创建时**快照**模板默认值（D16-⑤），此后模板增删改不影响既有实例；`roleTemplateId` 仅作溯源（模板被删除时 UI 标「模板已移除」）。

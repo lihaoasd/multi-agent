@@ -48,3 +48,29 @@ export function unwrapOrThrow<T>(result: Result<T>): T {
 export function mapResult<T, U>(result: Result<T>, map: (value: T) => U): Result<U> {
   return result.ok ? ok(map(result.value)) : result
 }
+
+/**
+ * 携带统一错误码的异常：用于**无法返回 Result 的位置**（流式迭代中途、适配器内部回调）。
+ * 边界层（server/loop）捕获后转回 Result 或错误事件。
+ */
+export class AppFailure extends Error {
+  readonly appError: AppError
+
+  constructor(error: AppError) {
+    super(error.message)
+    this.name = 'AppFailure'
+    this.appError = error
+  }
+}
+
+export function toAppErrorFrom(cause: unknown, fallbackCode: ErrorCode = 'ERR_INTERNAL'): AppError {
+  if (cause instanceof AppFailure) return cause.appError
+  if (cause instanceof Error) {
+    const code = (cause as { code?: unknown }).code
+    if (typeof code === 'string' && code.startsWith('ERR_')) {
+      return { code: code as ErrorCode, message: cause.message }
+    }
+    return { code: fallbackCode, message: cause.message }
+  }
+  return { code: fallbackCode, message: String(cause) }
+}
