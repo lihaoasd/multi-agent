@@ -65,6 +65,11 @@ export interface Dispatcher {
   /** 恢复：重启后对"队列非空且无占用"的 Agent 补一轮（D18-③；不续跑缺 turn_end 的回合） */
   resumeQueued(projectId: ProjectId): Promise<Result<{ readonly resumed: readonly InstanceId[] }>>
   setPaused(projectId: ProjectId, instanceId: InstanceId, paused: boolean): Promise<Result<AgentStatus>>
+  /**
+   * 中断当前回合（"停止生成"与"停止任务"共用）：回合在可中断点结束、**游标不推进**（消息仍在队列）。
+   * 返回是否真的中断了一个活动回合。
+   */
+  abortTurn(projectId: ProjectId, instanceId: InstanceId): boolean
   /** 启动时清掉进程崩溃遗留的占用（进程重启后不可能还有活跃回合）；返回清理条数 */
   resetStaleOccupancy(projectId: ProjectId): Promise<Result<number>>
 }

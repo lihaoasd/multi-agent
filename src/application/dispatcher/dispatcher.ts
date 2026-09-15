@@ -254,6 +254,15 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
     status: statusOf,
 
+    /** 中断当前回合（可中断点收尾；游标不推进 → 消息留在队列） */
+    abortTurn(projectId: string, instanceId: string): boolean {
+      void projectId
+      const controller = activeTurns.get(instanceId)
+      if (controller === undefined) return false
+      controller.abort()
+      return true
+    },
+
     async resetStaleOccupancy(projectId: string): Promise<Result<number>> {
       // 进程重启后不可能仍有活跃回合：清掉占用，游标保持不变（未处理消息仍在队列里，等用户决定）
       // 不额外加锁：stateStore.save 内部已按项目串行；本操作只在启动期执行一次。

@@ -75,9 +75,18 @@
 | GET | /api/projects/:pid/orchestration | 读取编排图；**按当前团队归一化**：补齐缺失实例节点（网格默认位）、级联删除已移除实例的节点与边、丢弃自环边；文件缺失/损坏 → `version=0` 空图。返回 `{schemaVersion,projectId,version,updatedAt,updatedBy,nodes[{instanceId,x,y,collapsed}],edges[{id,from,to,createdAt}]}` |
 | PUT | /api/projects/:pid/orchestration | **全量保存** `{version, nodes, edges}`：`version` 不匹配 → `ERR_CONFLICT`（`detail.currentVersion`）；自环/重复边/跨项目或未知实例/边端不在图中 → `ERR_ORCHESTRATION_INVALID`；缺 `version`/结构非法 → `ERR_VALIDATION`；成功 `version+1` 并广播 `orchestration.updated`；只有用户能编辑图 |
 
+### 运行控制与恢复（2026-09-15，S8）
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | /api/projects/:pid/runtime | 运行细条：`{working[{instanceId,displayName,state,paused,queued,sessionId,turn,startedAt,taskTitle,planStatus,unfinishedTurn}],idle,paused,queuedTotal}`（占用来自 `runtime.state.json`，只列非 idle） |
+| POST | /api/projects/:pid/agents/:iid/stop | `{scope:'turn'\|'task'}`：`turn`=停当前回合输出（队列保留）；`task`=终止当前任务（**先结算未结算改动**为 code artifact）→ `{aborted,taskId,settledArtifactId,queued}`；非法 scope → `ERR_VALIDATION` |
+| GET | /api/projects/:pid/recovery | 项目内未完成回合列表（缺 `turn_end`）：`[{sessionId,instanceId,turn,turnId,startedAt,loopStep,lastPlan{steps,status},resolvedBy}]` |
+| GET | /api/projects/:pid/sessions/:sid/recovery | 该会话的未完成回合（无则 `null`） |
+| POST | /api/projects/:pid/sessions/:sid/recovery | 三选 + 补全 `{turn, action:'report'\|'continue'\|'ignore'\|'complete'}` → `{resumed,text}`；`report/continue/complete` 落 `state` 标记并注入系统消息唤醒一轮，`ignore` 只落标记；重复处理 → `ERR_CONFLICT`；`turn` 不匹配 → `ERR_CONFLICT`；非法 action → `ERR_VALIDATION` |
+
 ### 系统
 | GET | /api/config | 运行期只读总览：策略默认值、上下文上限、存储根等；**模型与供应商部分已迁出**（见下方"模型配置"）|
-| GET | /api/projects/:pid/export | 导出运行时项目文件夹为 zip（会话/记忆备份）|
+| GET | /api/projects/:pid/export | 导出运行时项目文件夹为 zip（会话/记忆/产出物/归属/任务/询问/编排图，附 `EXPORT-README.txt`；**不含用户工作目录**）。实现（S8）：零依赖 STORE 写入器；响应 `application/zip` + `attachment; filename="<pid>.zip"`；项目数据不存在 → 404；超 64M 字符 → `ERR_VALIDATION` |
 
 ### 模型配置（2026-09-15 新增，设计见 [design/model-config.md](../design/model-config.md)）
 

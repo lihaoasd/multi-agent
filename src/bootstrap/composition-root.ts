@@ -10,6 +10,9 @@ import { createArtifactService } from '../application/artifact/artifact-service'
 import { createOrchestrationService } from '../application/orchestration/orchestration-service'
 import { createTaskService } from '../application/task/task-service'
 import { createQuestionService } from '../application/question/question-service'
+import { createRecoveryService } from '../application/recovery/recovery-service'
+import { createRuntimeService } from '../application/runtime/runtime-service'
+import { createProjectExporter } from '../application/runtime/exporter'
 import { createToolExecutor } from '../application/tools/tool-executor'
 import { createDispatcher } from '../application/dispatcher/dispatcher'
 import { createModelCatalog } from '../application/model-config/catalog'
@@ -33,6 +36,7 @@ import { createTaskStore } from '../infra/file-store/task-store'
 import { createOrchestrationStore } from '../infra/file-store/orchestration-store'
 import { createQuestionStore } from '../infra/file-store/question-store'
 import { createWorkdirFs } from '../infra/fs/workdir-fs'
+import { createZipWriter } from '../infra/archive/zip'
 import { createMemoryStore } from '../infra/file-store/memory-store'
 import { createKeywordIndex } from '../infra/indexer/keyword-index'
 import { createModelConfigStore } from '../infra/file-store/model-config-store'
@@ -70,6 +74,7 @@ import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
 import type { ArtifactService, ArtifactStore } from '../ports/artifact'
 import type { OrchestrationService, OrchestrationStore } from '../ports/orchestration'
+import type { ProjectExporter, RecoveryService, RuntimeService } from '../ports/runtime'
 import type { QuestionService, QuestionStore } from '../ports/question'
 import type { TaskService, TaskStore } from '../ports/task'
 import type { WorkdirFs } from '../ports/workdir'
@@ -379,6 +384,9 @@ export interface AppDeps {
   readonly tasks: TaskService
   readonly questions: QuestionService
   readonly orchestration: OrchestrationService
+  readonly runtime: RuntimeService
+  readonly recovery: RecoveryService
+  readonly exporter: ProjectExporter
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -642,6 +650,37 @@ export function resolveDeps(
     await dispatcher.drain(input.projectId, input.instanceId)
   }
 
+  // S8：未完成回合恢复 + 运行控制 + 项目导出
+  const recovery = createRecoveryService({
+    sessions,
+    clock,
+    wake,
+    projectSessions: async (projectId) => {
+      const listed = await sessions.list(projectId)
+      return listed.ok
+        ? { ok: true as const, value: listed.value.map((item) => ({ sessionId: item.sessionId, instanceId: item.instanceId })) }
+        : listed
+    },
+  })
+
+  const runtime = createRuntimeService({
+    projects: container.resolve(TOKENS.ProjectStore),
+    sessions,
+    tasks,
+    recovery,
+    dispatcher,
+    stateStore: container.resolve(TOKENS.DispatcherStateStore),
+    clock,
+    logger: container.resolve(TOKENS.Logger),
+  })
+
+  const exporter = createProjectExporter({
+    fileStore: container.resolve(TOKENS.FileStore),
+    projects: container.resolve(TOKENS.ProjectStore),
+    zip: createZipWriter(),
+    dataDir: config.dataDir,
+  })
+
   return {
     config,
     clock,
@@ -675,6 +714,9 @@ export function resolveDeps(
     tasks,
     questions,
     orchestration,
+    runtime,
+    recovery,
+    exporter,
     toolRegistry,
     toolPackages,
     loopRegistry,

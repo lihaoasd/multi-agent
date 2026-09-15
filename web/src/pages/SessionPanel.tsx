@@ -5,6 +5,8 @@ import { approvalApi, type ApprovalView } from '../api/platform'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
 import { useRealtime } from '../hooks/useRealtime'
 import { RightColumn } from './RightColumn'
+import { RecoveryBanner } from './RecoveryBanner'
+import { runtimeApi } from '../api/runtime'
 
 interface SessionPanelProps {
   readonly projectId: string
@@ -218,6 +220,9 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
         message={realtime.connected ? '实时通道已连接（事件先落盘后推送）' : '实时通道未连接，正在重试…'}
         description="回复由真实 agent loop 生成（S4 起）：工作日志默认折叠，可用右上角过滤按 kind 查看；右栏三列表实时刷新。"
       />
+      {activeSessionId !== null && (
+        <RecoveryBanner projectId={projectId} sessionId={activeSessionId} onResolved={() => void loadEvents(activeSessionId)} />
+      )}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <Card size="small" title="会话（每个 Agent 一个）" style={{ width: 280, flex: '0 0 280px' }}>
           {sessions.length === 0 && <Empty description="暂无会话" />}
@@ -288,6 +293,18 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
                 <Button size="small" danger={activeStatus?.paused !== true}>
                   {activeStatus?.paused === true ? '恢复' : '暂停'}
                 </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="停止生成？"
+                description="停止当前回合的输出；队列中的消息保留，任务不受影响。"
+                onConfirm={() =>
+                  void runtimeApi
+                    .stop(projectId, activeSession?.instanceId ?? '', 'turn')
+                    .then(() => message.success('已请求停止当前回合'))
+                    .catch((cause: unknown) => message.error(describeError(cause)))
+                }
+              >
+                <Button size="small">停止生成</Button>
               </Popconfirm>
             </Space>
           }

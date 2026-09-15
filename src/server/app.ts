@@ -7,6 +7,7 @@ import type { ArtifactService } from '../ports/artifact'
 import type { TaskService } from '../ports/task'
 import type { QuestionService } from '../ports/question'
 import type { OrchestrationService } from '../ports/orchestration'
+import type { ProjectExporter, RecoveryService, RuntimeService } from '../ports/runtime'
 import type { PromptPreviewService } from '../application/agent-loop/preview'
 import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
@@ -31,6 +32,7 @@ import { registerApprovalRoutes } from './http-routes/approvals'
 import { registerMemoryRoutes } from './http-routes/memory'
 import { registerArtifactRoutes } from './http-routes/work'
 import { registerOrchestrationRoutes } from './http-routes/orchestration'
+import { registerRuntimeRoutes } from './http-routes/runtime'
 import { registerToolRoutes } from './http-routes/tools'
 import { registerWsGateway } from './ws/gateway'
 import { registerStaticRoutes } from './static'
@@ -52,6 +54,9 @@ export interface ServerServices {
   readonly tasks: TaskService
   readonly questions: QuestionService
   readonly orchestration: OrchestrationService
+  readonly runtime: RuntimeService
+  readonly recovery: RecoveryService
+  readonly exporter: ProjectExporter
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
   readonly loopRegistry: LoopRegistry
@@ -128,6 +133,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     questions: options.services.questions,
   })
   registerOrchestrationRoutes(app, { orchestration: options.services.orchestration })
+  registerRuntimeRoutes(app, {
+    runtime: options.services.runtime,
+    recovery: options.services.recovery,
+    exporter: options.services.exporter,
+  })
   registerToolRoutes(app, {
     tools: options.services.toolRegistry,
     packages: options.services.toolPackages,

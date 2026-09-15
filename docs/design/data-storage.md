@@ -264,6 +264,8 @@ agent_haness/                    # 平台仓库
 | search-index 损坏 | 删除后重建（提供 `npm run reindex` 或启动时自检）。 |
 | runtime.state.json 丢失 | 从 session meta/log 重建 agent 状态（视为 cache，非真相源）。 |
 | 半截写 | 原子写保证；异常退出后启动自检未完成临时文件。 |
+| 未完成回合（S8 实现口径） | 判定=缺 `turn_end`；恢复标记写成 `state` 事件 `{unfinishedTurn, recovery: report\|continue\|ignore\|complete}`（append-only、跨重启保留），**不自动续跑**；启动自检只记日志并等待用户三选。 |
+| 项目导出（S8） | `GET /api/projects/:pid/export` 把运行时项目文件夹打包为**零依赖 STORE zip**（附 `EXPORT-README.txt`），只读、不改动任何数据；不含用户工作目录。 |
 | 换机重设 workdir（M14 定稿） | 重设后旧 manifest 的 relPath 语义变为相对**新** workdir；下一次提交/回退由提交服务对该批 relPath 重新做存在性与冲突校验（提示用户确认文件映射），不自动改文件。 |
 | 平台模型配置损坏/缺失（2026-09-15） | `data/model-config.json` 解析失败 → 备份为 `.bak` 并以空配置启动（无可用模型，UI 引导重新配置）；缺失且 `.env` 有 `MODELS__PROVIDERS` → 一次性导入，详见 model-config.md §11。 |
 | 配置变更留痕 | `data/config-audit.jsonl` 与 `data/roles/<roleId>.history/` 只增不改；审计不含密钥明文与提示词全文（model-config.md §10）。 |

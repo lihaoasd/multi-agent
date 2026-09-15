@@ -29,6 +29,8 @@ import { SessionPanel } from './SessionPanel'
 import { MemoryPanel } from './MemoryPanel'
 import { WorkPanel } from './WorkPanel'
 import { TopologyPanel } from './TopologyPanel'
+import { WorkingBar } from './WorkingBar'
+import { runtimeApi } from '../api/runtime'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
 const LOOP_STRATEGIES = [
@@ -340,9 +342,21 @@ export function ProjectModule() {
             <Descriptions.Item label="成员">{`${current.enabledCount} 启用 / ${current.memberCount} 总计`}</Descriptions.Item>
           </Descriptions>
           <Typography.Text type="secondary">
-            会话已接入（S3：单工调度 + WS 实时）；拓扑画布与任务/询问/审批列表在后续阶段接入（S6/S7）。
+            会话已接入（S3：单工调度 + WS 实时）；拓扑画布、右栏三列表与运行控制已接入（S7/S8）。
           </Typography.Text>
+          <Space style={{ marginTop: 8 }}>
+            <Button
+              size="small"
+              onClick={() => {
+                window.location.href = runtimeApi.exportUrl(current.id)
+              }}
+            >
+              导出项目数据（zip）
+            </Button>
+            <Typography.Text type="secondary">只导出运行时项目文件夹（会话/记忆/产出物/任务），不含工作目录。</Typography.Text>
+          </Space>
         </Card>
+        <WorkingBar projectId={current.id} />
         <Tabs
           activeKey={activeTab}
           onChange={setActiveTab}

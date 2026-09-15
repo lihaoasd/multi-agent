@@ -58,6 +58,8 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 > | 可中断点 | 每步开始检查中断（暂停 → abort 回合）；`plan` 事件写 `status='interrupted'` 后正常收尾 |
 >
 > 仍未做：`plan` 事件的**跨重启消费**（恢复时读取计划续做）属 S8 的未完成回合恢复；本轮只保证事件与进度落盘。
+>
+> **S8 实现口径（2026-09-15）**：未完成回合 = 事件流中**缺 `turn_end`** 的 `turn_start`（按事件顺序用栈配对，回合号复用也能认出来），`GET /api/projects/:pid/recovery` 给出 `loopStep/lastPlan{steps,status}/startedAt`；`POST .../sessions/:sid/recovery {turn,action}` 支持 `report`（汇报中断点）/`continue`（读最近 `plan` 继续）/`complete`（补全被截断回复）/`ignore`（静默忽略），前四者中前三者注入系统消息唤醒一轮、全部落 `state` 标记，**平台不自动续跑**（D16-③）；`stop(scope=turn)`=停当前回合输出且游标不推进（队列保留），`stop(scope=task)`=终止当前任务（未结算改动先结算为 code artifact）。
 
 loop = 一次"Agent 处理一条新输入"的执行编排。**目标形态**为策略注册表（strategy name → runner），用户只做选择与参数配置（不写代码，MVP）。
 
