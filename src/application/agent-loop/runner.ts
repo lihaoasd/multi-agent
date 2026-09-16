@@ -66,7 +66,10 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
     notify: (chunk: ModelChunk) => void,
   ): Promise<Result<ModelTurnResult>> => {
     if (modelId === null) {
-      return err('ERR_MODEL', '该角色还没有可用模型：请在「模型」模块添加供应商与模型条目')
+      return err(
+        'ERR_MODEL',
+        '该角色还没有可用模型：请在「模型」模块添加供应商与模型条目，并在 Agent 模块或项目内为它选择模型',
+      )
     }
 
     let lastError: { code: string; message: string } | null = null

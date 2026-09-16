@@ -65,7 +65,7 @@ function modelInputOf(record: Record<string, unknown>, id: string): ModelInput {
 /** 模型配置路由（contract.md §2「模型配置」） */
 export function registerModelConfigRoutes(app: FastifyInstance, context: ModelConfigRouteContext): void {
   const { service, broadcaster } = context
-  const notify = (kind: 'provider' | 'model' | 'routing', id: string): void => {
+  const notify = (kind: 'provider' | 'model', id: string): void => {
     broadcaster.broadcast({ type: 'model-config.updated', payload: { kind, id } })
   }
 
@@ -194,29 +194,7 @@ export function registerModelConfigRoutes(app: FastifyInstance, context: ModelCo
     },
   )
 
-  app.get('/api/model-routing', async (_request, reply) => {
-    const overview = await service.overview()
-    return replyFromResult(reply, overview.ok ? { ok: true as const, value: overview.value.routing } : overview)
-  })
-
-  app.put('/api/model-routing', async (request, reply) => {
-    const body = asRecord(request.body)
-    const overridesRaw = body['stepOverrides']
-    const stepOverrides =
-      typeof overridesRaw === 'object' && overridesRaw !== null
-        ? Object.fromEntries(
-            Object.entries(overridesRaw as Record<string, unknown>).filter(
-              (entry): entry is [string, string] => typeof entry[1] === 'string',
-            ),
-          )
-        : {}
-    const updated = await service.updateRouting({
-      defaultModelId: readString(body, 'defaultModelId') ?? null,
-      stepOverrides,
-    })
-    if (updated.ok) notify('routing', 'routing')
-    return replyFromResult(reply, updated)
-  })
+  // S14：「默认路由」（`GET/PUT /api/model-routing`）已随该功能删除；模型选择由 Agent 模板/实例决定
 
   app.get('/api/model-config/overview', async (_request, reply) => {
     const overview = await service.overview()

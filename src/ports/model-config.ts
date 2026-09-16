@@ -49,18 +49,11 @@ export interface ModelEntry {
   readonly updatedAt: string
 }
 
-export interface ModelRouting {
-  /** 平台默认模型条目 id；未配置则 null（解析失败报 ERR_MODEL，不静默换模型） */
-  readonly defaultModelId: ModelId | null
-  readonly stepOverrides?: Readonly<Record<string, ModelId>>
-}
-
 export interface ModelConfigSnapshot {
   readonly schemaVersion: 1
   readonly revision: number
   readonly providers: readonly ModelProviderConfig[]
   readonly models: readonly ModelEntry[]
-  readonly routing: ModelRouting
 }
 
 export const EMPTY_MODEL_CONFIG: ModelConfigSnapshot = {
@@ -68,7 +61,6 @@ export const EMPTY_MODEL_CONFIG: ModelConfigSnapshot = {
   revision: 0,
   providers: [],
   models: [],
-  routing: { defaultModelId: null },
 }
 
 // ── 审计（model-config.md §10）───────────────────────────────────────
@@ -93,6 +85,8 @@ export interface ConfigAuditEntry {
 export type ConfigLoadNotice =
   | { readonly kind: 'legacy-v0-backup'; readonly backupPath: string }
   | { readonly kind: 'invalid-file-backup'; readonly backupPath: string }
+  /** S14：已删除的「默认路由」（`routing`）字段在加载时被丢弃，待启动流程回写并审计 */
+  | { readonly kind: 'routing-removed' }
 
 export interface ModelConfigLoadResult {
   readonly snapshot: ModelConfigSnapshot

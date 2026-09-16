@@ -11,7 +11,7 @@ import { configureTestModel } from '../../helpers-model'
  * - 用户模板可删除（需 `confirm=true`，被项目实例引用 → `ERR_CONFLICT` + referrers）
  * - 内置模板只能停用（覆盖落 `data/agent-templates-state.json`，重启不复活）
  * - 批量设置默认模型（内置走数据目录覆盖、用户模板写自身 yaml）
- * - `GET /api/model-config/overview` 的"未配置模型 Agent"计数与一键设全局默认
+ * - `GET /api/model-config/overview` 的"未配置模型 Agent"计数（S14 起无平台默认，只能靠模板默认/实例覆盖消除）
  */
 
 interface TemplateBody {
@@ -26,7 +26,6 @@ interface TemplateBody {
 }
 
 interface OverviewBody {
-  routing: { defaultModelId: string | null }
   unconfiguredAgents: { total: number; items: Array<{ projectId: string; instanceId: string }> }
 }
 
@@ -37,11 +36,10 @@ describe('API · S11 模板删除/停用与一键配置模型（规则 32）', (
   beforeAll(async () => {
     context = await createTestServer()
     workdir = mkdtempSync(join(tmpdir(), 'ah-s11-'))
-    // 登记一个真实 kind 的模型（不设平台默认，便于验证"未配置"路径）
+    // 登记一个真实 kind 的模型（S14 起不再有平台默认，模型的写入由模板/实例完成）
     await configureTestModel(context.deps, {
       providerId: 's11-provider',
       modelId: 's11-model',
-      asPlatformDefault: false,
     })
   })
 
@@ -185,7 +183,7 @@ describe('API · S11 模板删除/停用与一键配置模型（规则 32）', (
     ).toBe(400)
   })
 
-  it('未配置模型计数与一键设全局默认：计数随平台默认模型归零', async () => {
+  it('未配置模型计数：只能通过"模板默认（影响新建实例）/实例覆盖"消除（S14 起无平台默认）', async () => {
     const created = await inject({
       method: 'POST',
       url: '/api/projects',
@@ -194,37 +192,38 @@ describe('API · S11 模板删除/停用与一键配置模型（规则 32）', (
     const projectId = created.json<{ id: string }>().id
 
     const before = (await inject({ method: 'GET', url: '/api/model-config/overview' })).json<OverviewBody>()
-    expect(before.routing.defaultModelId).toBeNull()
+    expect(before).not.toHaveProperty('routing')
     expect(before.unconfiguredAgents.total).toBe(8)
     expect(before.unconfiguredAgents.items.every((item) => item.projectId === projectId)).toBe(true)
 
-    // 一键设为平台全局默认（模型模块的那个动作）→ 未配置的实例靠回退链立即可用
+    // 改模板默认模型**不会**改变既有实例（快照语义）：计数仍为 8
+    await inject({
+      method: 'POST',
+      url: '/api/agent-templates/bulk-model',
+      payload: { roleIds: ['dev'], defaultModel: 's11-model' },
+    })
     expect(
-      (
-        await inject({
-          method: 'PUT',
-          url: '/api/model-routing',
-          payload: { defaultModelId: 's11-model' },
-        })
-      ).statusCode,
-    ).toBe(200)
+      (await inject({ method: 'GET', url: '/api/model-config/overview' })).json<OverviewBody>().unconfiguredAgents.total,
+    ).toBe(8)
+
+    // 既有实例只能靠**实例覆盖**配置 → 计数逐个下降
+    const patched = await inject({
+      method: 'PATCH',
+      url: `/api/projects/${projectId}/team/dev_1`,
+      payload: { model: 's11-model' },
+    })
+    expect(patched.statusCode).toBe(200)
 
     const after = (await inject({ method: 'GET', url: '/api/model-config/overview' })).json<OverviewBody>()
-    expect(after.unconfiguredAgents.total).toBe(0)
+    expect(after.unconfiguredAgents.total).toBe(7)
+    expect(after.unconfiguredAgents.items.some((item) => item.instanceId === 'dev_1')).toBe(false)
 
-    // 未配置 → 生效模型非空（回退到平台默认）
     const dev = (await inject({ method: 'GET', url: `/api/projects/${projectId}/team/dev_1` })).json<{
       effective: { model: string | null }
       effectiveModelAvailable: boolean
     }>()
     expect(dev.effective.model).toBe('s11-model')
     expect(dev.effectiveModelAvailable).toBe(true)
-
-    // 复位：清空平台默认 → 计数回到 8
-    await inject({ method: 'PUT', url: '/api/model-routing', payload: { defaultModelId: null } })
-    expect(
-      (await inject({ method: 'GET', url: '/api/model-config/overview' })).json<OverviewBody>().unconfiguredAgents.total,
-    ).toBe(8)
 
     await inject({ method: 'DELETE', url: `/api/projects/${projectId}` })
   })

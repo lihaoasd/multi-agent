@@ -19,10 +19,8 @@ import type { ConfigProvider } from '../../ports/config'
 import {
   toModelView,
   toProviderView,
-  toRoutingView,
   type ModelView,
   type ProviderView,
-  type RoutingView,
 } from './dto'
 import type { ModelReferenceQuery } from './references'
 import {
@@ -30,7 +28,6 @@ import {
   providerReferrers,
   validateModel,
   validateProvider,
-  validateRouting,
   type ModelInput,
   type ModelReference,
   type ProviderInput,
@@ -63,7 +60,6 @@ export interface ModelConfigOverview {
   readonly revision: number
   readonly providers: readonly ProviderView[]
   readonly models: readonly ModelView[]
-  readonly routing: RoutingView
   readonly notices: readonly ConfigLoadNotice[]
 }
 
@@ -80,7 +76,7 @@ export interface ModelConfigService {
     providerId: string,
     models: readonly ModelInput[],
   ): Promise<Result<{ created: readonly string[]; skipped: readonly string[] }>>
-  updateRouting(routing: RoutingView): Promise<Result<RoutingView>>
+  /** S14：`updateRouting` 已随「默认路由」功能删除 */
   testProvider(id: string, opts: { mode: 'models' | 'chat'; modelId?: string }): Promise<Result<ProviderTestResult>>
   discoverModels(id: string): Promise<Result<readonly string[]>>
   importLegacy(source: 'env' | 'v0'): Promise<Result<{ imported: number; skipped: readonly string[] }>>
@@ -189,7 +185,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
       models: snapshot.models.map((entry) =>
         toModelView(entry, providerName.get(entry.providerId) ?? entry.providerId, referrerMap.get(entry.id) ?? []),
       ),
-      routing: toRoutingView(snapshot.routing),
       notices,
     }
   }
@@ -383,19 +378,12 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
       if (referrers.length > 0 && !confirm) {
         return err('ERR_CONFLICT', '该模型被模板或实例引用，无法删除', { referrers })
       }
-      const saved = await commit((snapshot) => {
-        const isDefault = snapshot.routing.defaultModelId === id
-        const overrides = snapshot.routing.stepOverrides ?? {}
-        const nextOverrides = Object.fromEntries(Object.entries(overrides).filter(([, modelId]) => modelId !== id))
-        return ok({
+      const saved = await commit((snapshot) =>
+        ok({
           ...snapshot,
           models: snapshot.models.filter((entry) => entry.id !== id),
-          routing: {
-            defaultModelId: isDefault ? null : snapshot.routing.defaultModelId,
-            ...(Object.keys(nextOverrides).length === 0 ? {} : { stepOverrides: nextOverrides }),
-          },
-        })
-      })
+        }),
+      )
       if (!saved.ok) return saved
       await audit('delete', { kind: 'model', id }, { referrers: referrers.length, forced: referrers.length > 0 })
       return ok({ deleted: id })
@@ -444,20 +432,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
       if (!saved.ok) return saved
       await audit('create', { kind: 'model', id: providerId }, { batch: created.map((entry) => entry.id) })
       return ok({ created: created.map((entry) => entry.id), skipped })
-    },
-
-    async updateRouting(routing: RoutingView): Promise<Result<RoutingView>> {
-      const current = await loadSnapshot()
-      if (!current.ok) return current
-      const validated = validateRouting(
-        { defaultModelId: routing.defaultModelId, ...(Object.keys(routing.stepOverrides).length === 0 ? {} : { stepOverrides: routing.stepOverrides }) },
-        current.value,
-      )
-      if (!validated.ok) return validated
-      const saved = await commit((snapshot) => ok({ ...snapshot, routing: validated.value }))
-      if (!saved.ok) return saved
-      await audit('update', { kind: 'routing', id: 'routing' }, { fields: ['defaultModelId', 'stepOverrides'] })
-      return ok(toRoutingView(validated.value))
     },
 
     async testProvider(
@@ -522,7 +496,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
       const models: ModelEntry[] = []
       const takenProviders = new Set(current.value.providers.map((provider) => provider.id))
       const takenModels = new Set(current.value.models.map((entry) => entry.id))
-      let defaultModelId: string | null = null
 
       if (source === 'env') {
         const raw = options.readLegacyEnvProviders()
@@ -566,7 +539,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
               createdAt: nowIso(),
               updatedAt: nowIso(),
             })
-            defaultModelId ??= modelId
           }
         }
       } else {
@@ -607,9 +579,7 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
             createdAt: nowIso(),
             updatedAt: nowIso(),
           })
-          defaultModelId ??= modelId
         }
-        defaultModelId = asString(record?.['defaultModel']) || defaultModelId
       }
 
       if (providers.length === 0 && models.length === 0) {
@@ -621,10 +591,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
           ...snapshot,
           providers: [...snapshot.providers, ...providers],
           models: [...snapshot.models, ...models],
-          routing:
-            snapshot.routing.defaultModelId === null && defaultModelId !== null
-              ? { ...snapshot.routing, defaultModelId }
-              : snapshot.routing,
         }),
       )
       if (!saved.ok) return saved
@@ -637,34 +603,32 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
     },
 
     async ensureInitialized(): Promise<Result<{ imported: number }>> {
-      const current = await loadSnapshot()
-      if (!current.ok) return current
+      const loaded = await catalog.current()
+      if (!loaded.ok) return loaded
+      const current = loaded.value.snapshot
 
-      // ① 迁移：剔除**已不再注册的协议 kind**（含其模型条目）并清理指向它们的路由（model-config.md §11）
+      // ⓪ 迁移：删除已废弃的「默认路由」（`routing`）字段 —— 存储层丢弃并在原文件里抹掉 + 审计（S14）
+      if (loaded.value.notices.some((notice) => notice.kind === 'routing-removed')) {
+        const saved = await commit((snapshot) => ok({ ...snapshot }))
+        if (!saved.ok) return saved
+        await audit('migrate', { kind: 'routing', id: 'removed' }, { removed: ['routing'] })
+      }
+
+      // ① 迁移：剔除**已不再注册的协议 kind**（含其模型条目）（model-config.md §11）
       //    场景：历史数据里有已删除的 kind（如 mock）。用注册表判定，未来删任何 kind 都自动生效。
       const knownKinds = new Set(options.kinds.list())
-      const staleProviders = current.value.providers.filter((provider) => !knownKinds.has(provider.kind))
+      const staleProviders = current.providers.filter((provider) => !knownKinds.has(provider.kind))
       if (staleProviders.length > 0) {
         const staleProviderIds = new Set(staleProviders.map((provider) => provider.id))
-        const droppedModels = current.value.models.filter((entry) => staleProviderIds.has(entry.providerId))
+        const droppedModels = current.models.filter((entry) => staleProviderIds.has(entry.providerId))
         const droppedModelIds = new Set(droppedModels.map((entry) => entry.id))
-        const saved = await commit((snapshot) => {
-          const overrides = Object.fromEntries(
-            Object.entries(snapshot.routing.stepOverrides ?? {}).filter(([, modelId]) => !droppedModelIds.has(modelId)),
-          )
-          return ok({
+        const saved = await commit((snapshot) =>
+          ok({
             ...snapshot,
             providers: snapshot.providers.filter((provider) => !staleProviderIds.has(provider.id)),
             models: snapshot.models.filter((entry) => !droppedModelIds.has(entry.id)),
-            routing: {
-              defaultModelId:
-                snapshot.routing.defaultModelId !== null && droppedModelIds.has(snapshot.routing.defaultModelId)
-                  ? null
-                  : snapshot.routing.defaultModelId,
-              ...(Object.keys(overrides).length === 0 ? {} : { stepOverrides: overrides }),
-            },
-          })
-        })
+          }),
+        )
         if (!saved.ok) return saved
         await audit('migrate', { kind: 'provider', id: 'unsupported-kind' }, {
           removedProviders: staleProviders.map((provider) => provider.id),
@@ -684,23 +648,6 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
         const legacy = await service.importLegacy('env')
         if (!legacy.ok) return legacy
         imported = legacy.value.imported
-      }
-
-      // ③ `MODELS__DEFAULT` 生效：命中**已启用**的模型条目 → 设为平台默认
-      //    口径：初始化阶段以 `MODELS__DEFAULT` 为准（覆盖导入时的"第一条即默认"临时值）；
-      //    命中不到则保留导入结果或保持为空，**绝不静默换模型**（D20-⑥）。
-      const configuredDefault = platform.models.defaultModelId.trim()
-      if (configuredDefault.length > 0) {
-        const snapshot = await loadSnapshot()
-        if (!snapshot.ok) return snapshot
-        const matched = snapshot.value.models.find((entry) => entry.id === configuredDefault && entry.enabled)
-        if (matched !== undefined && snapshot.value.routing.defaultModelId !== matched.id) {
-          const saved = await commit((value) =>
-            ok({ ...value, routing: { ...value.routing, defaultModelId: matched.id } }),
-          )
-          if (!saved.ok) return saved
-          await audit('migrate', { kind: 'routing', id: 'platform-default' }, { defaultModelId: matched.id })
-        }
       }
 
       return ok({ imported })

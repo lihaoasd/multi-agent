@@ -34,11 +34,6 @@ export interface ModelView {
   readonly referrers: readonly string[]
 }
 
-export interface RoutingView {
-  readonly defaultModelId: string | null
-  readonly stepOverrides: Readonly<Record<string, string>>
-}
-
 export interface ModelPresetView {
   readonly presetId: string
   readonly name: string
@@ -91,7 +86,6 @@ export interface ModelConfigOverview {
   readonly revision: number
   readonly providers: readonly ProviderView[]
   readonly models: readonly ModelView[]
-  readonly routing: RoutingView
   readonly notices: readonly { readonly kind: string; readonly backupPath?: string }[]
   readonly unconfiguredAgents: { readonly total: number; readonly items: readonly UnconfiguredAgentRef[] }
 }
@@ -123,9 +117,7 @@ export const modelConfigApi = {
     apiRequest('PATCH', `/api/models/${encodeURIComponent(id)}`, patch),
   deleteModel: (id: string, confirm = false): Promise<{ deleted: string }> =>
     apiRequest('DELETE', `/api/models/${encodeURIComponent(id)}${confirm ? '?confirm=true' : ''}`),
-  getRouting: (): Promise<RoutingView> => apiRequest('GET', '/api/model-routing'),
-  putRouting: (routing: RoutingView): Promise<RoutingView> => apiRequest('PUT', '/api/model-routing', routing),
-  /** 运行期总览：含"未配置模型的 Agent"（S11：一键设全局默认的依据） */
+  /** 运行期总览：含"未配置模型的 Agent"（S11；S14 起不再含 routing） */
   overview: (): Promise<ModelConfigOverview> => apiRequest('GET', '/api/model-config/overview'),
   importLegacy: (source: 'env' | 'v0'): Promise<{ imported: number; skipped: string[] }> =>
     apiRequest('POST', `/api/model-config/import?source=${source}`),

@@ -8,7 +8,6 @@ import {
   type ModelConfigStore,
   type ModelEntry,
   type ModelProviderConfig,
-  type ModelRouting,
   type ModelConfigSnapshot,
 } from '../../ports/model-config'
 import { err, ok, type Result } from '../../shared/result'
@@ -118,22 +117,6 @@ function parseEntry(raw: unknown): ModelEntry | null {
   }
 }
 
-function parseRouting(raw: unknown): ModelRouting {
-  if (typeof raw !== 'object' || raw === null) return { defaultModelId: null }
-  const record = raw as Record<string, unknown>
-  const defaultModelId = typeof record['defaultModelId'] === 'string' ? record['defaultModelId'] : null
-  const overridesRaw = record['stepOverrides']
-  const stepOverrides =
-    typeof overridesRaw === 'object' && overridesRaw !== null
-      ? Object.fromEntries(
-          Object.entries(overridesRaw as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string',
-          ),
-        )
-      : undefined
-  return { defaultModelId, ...(stepOverrides === undefined ? {} : { stepOverrides }) }
-}
-
 /** 严格解析：结构不合法（而非个别条目缺失）时视为坏文件 */
 export function parseModelConfigSnapshot(raw: unknown): Result<ModelConfigSnapshot> {
   if (typeof raw !== 'object' || raw === null) {
@@ -157,8 +140,12 @@ export function parseModelConfigSnapshot(raw: unknown): Result<ModelConfigSnapsh
     revision: Math.max(0, Math.floor(revision)),
     providers,
     models,
-    routing: parseRouting(record['routing']),
   })
+}
+
+/** S14：检测已删除的「默认路由」（`routing`）残留 —— 加载时丢弃并在启动流程里回写 + 审计 */
+export function hasLegacyRouting(raw: unknown): boolean {
+  return typeof raw === 'object' && raw !== null && (raw as Record<string, unknown>)['routing'] !== undefined
 }
 
 /** 遗留 v0 形状识别：`{ entries: [...], defaultModel }` 且无 schemaVersion */
@@ -221,7 +208,8 @@ export function createModelConfigStore(options: ModelConfigStoreOptions): ModelC
       const notice: ConfigLoadNotice = { kind: 'invalid-file-backup', backupPath }
       return ok({ snapshot: EMPTY_MODEL_CONFIG, notices: [notice] })
     }
-    return ok({ snapshot: snapshot.value, notices: [] })
+    const notices: ConfigLoadNotice[] = hasLegacyRouting(parsed) ? [{ kind: 'routing-removed' }] : []
+    return ok({ snapshot: snapshot.value, notices })
   }
 
   return {

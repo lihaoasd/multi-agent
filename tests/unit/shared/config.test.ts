@@ -42,7 +42,6 @@ describe('shared/config · buildAppConfig', () => {
       DATA_DIR: 'runtime',
       ROLE_DIRS: '["roles","builtin/roles"]',
       MODELS__CONFIG_FILE: 'data/models.json',
-      MODELS__DEFAULT: 'deepseek-chat',
       MODELS__IMPORT_FROM_ENV: 'false',
       MODELS__REQUEST_TIMEOUT_MS: '15000',
       MODELS__MAX_PROMPT_CHARS: '12000',
@@ -55,7 +54,6 @@ describe('shared/config · buildAppConfig', () => {
     expect(config.roleDirs).toEqual(['roles', 'builtin/roles'])
     expect(config.models).toEqual({
       configFile: 'data/models.json',
-      defaultModelId: 'deepseek-chat',
       importFromEnv: false,
       requestTimeoutMs: 15000,
       maxPromptChars: 12000,

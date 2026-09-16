@@ -32,9 +32,9 @@ function instance(overrides: Partial<RoleInstance> = {}): RoleInstance {
   }
 }
 
-describe('application/team/effective-config（D20-⑦ 解析链）', () => {
+describe('application/team/effective-config（D20-⑦ 解析链；S14 起两级）', () => {
   it('无覆盖时用模板快照', () => {
-    const effective = resolveEffectiveAgentConfig(instance(), { defaultModelId: 'platform-model' })
+    const effective = resolveEffectiveAgentConfig(instance())
     expect(effective.systemPrompt).toBe('模板提示词')
     expect(effective.model).toBe('snapshot-model')
     expect(effective.loop.strategy).toBe('plan-execute')
@@ -48,21 +48,17 @@ describe('application/team/effective-config（D20-⑦ 解析链）', () => {
         model: 'override-model',
         loop: { strategy: 'direct', params: {} },
       }),
-      { defaultModelId: 'platform-model' },
     )
     expect(effective.systemPrompt).toBe('实例提示词')
     expect(effective.model).toBe('override-model')
     expect(effective.loop).toEqual({ strategy: 'direct', params: {} })
   })
 
-  it('快照没配模型时退回平台默认；平台默认也没有则为 null（不静默挑模型）', () => {
+  it('两级都没有模型则为 null（S14：不再有平台默认这一级，不静默挑模型）', () => {
     const noSnapshotModel = instance({
       snapshot: { ...instance().snapshot, defaultModel: null },
     })
-    expect(resolveEffectiveAgentConfig(noSnapshotModel, { defaultModelId: 'platform-model' }).model).toBe(
-      'platform-model',
-    )
-    expect(resolveEffectiveAgentConfig(noSnapshotModel, { defaultModelId: null }).model).toBeNull()
+    expect(resolveEffectiveAgentConfig(noSnapshotModel).model).toBeNull()
   })
 
   it('describeInstanceOverrides 只列出被显式覆盖的字段', () => {

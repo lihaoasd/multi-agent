@@ -45,15 +45,16 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 27. **模型配置校验与引用保护（D20/FR-34）**：非法 `id`/`kind`/`baseUrl`/凭证被拒（`ERR_VALIDATION`）；`env` 模式变量不存在时保存即失败；删除被引用的供应商/模型返回 `ERR_CONFLICT` 且 `detail.referrers` 点名；停用被引用模型需确认，之后该 Agent 回合报 `ERR_MODEL`。
 28. **凭证不外泄（D20-④）**：供应商列表/详情响应、`config-audit.jsonl`、平台日志、`kind=error` 事件与 `ERR_MODEL` 的 `detail` 中**均不出现明文密钥**（只掩码 `hasValue`/`masked`）；供应商原始错误正文截断且脱敏。
 29. **Agent 配置提交与生效（D20-⑦/FR-35）**：模板保存只影响此后新建实例（既有实例快照不变）；实例覆盖下一回合生效、运行中回合到可中断点；提示词超长、loop 参数越界、`stepModelOverride` 指向未启用模型均被拒；每次保存各写一条历史快照与 `config-audit` 记录（审计不含提示词全文）。
-30. **模型调用不静默换模型（D20-⑥）**：解析失败（模型被删/停用/供应商禁用/凭证缺失）时回合报 `ERR_MODEL` 并落 `error` 事件，**不得**回退到 `defaultModelId` 或其它模型。
+30. **模型调用不静默换模型（D20-⑥）**：解析失败（模型被删/停用/供应商禁用/凭证缺失）时回合报 `ERR_MODEL` 并落 `error` 事件，**不得**回退到其它模型；S14 起生效链只有两级（`实例覆盖 → 模板快照`），两级全空同样报 `ERR_MODEL` 且不做任何隐式兜底。
 31. **协议适配器归一化（D20-②）**：四种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`）的流式增量统一归一为 `ModelChunk`（`text-delta`/`reasoning-delta`/`tool-call`/`usage`），含错误映射为 `ERR_MODEL`；替身剧本（脚本化网关）可驱动完整 E2E。
-32. **模板删除/停用与一键配置模型（D22/FR-35）**：内置模板删除 → `ERR_FORBIDDEN`（只能停用）、用户模板删除需 `confirm=true` 且被项目实例引用 → `ERR_CONFLICT` + `detail.referrers`（点名项目/实例）；内置模板的停用与默认模型写 `data/agent-templates-state.json` 覆盖且**跨重启保持**（仓库 yaml 不被改写）、内置的提示词/loop 仍只读；`POST /api/agent-templates/bulk-model` 批量写默认模型（内置走覆盖、用户写 yaml）返回 `{updated, skipped}`，非法/停用模型或空选择 → `ERR_VALIDATION`；`GET /api/model-config/overview` 的 `unconfiguredAgents` 计数随平台默认模型设置归零，且实例 `effective.model`/`effectiveModelAvailable` 走完整回退链（不得只按"实例覆盖 ?? 模板快照"判断）。
+32. **模板删除/停用与一键配置模型（D22/FR-35）**：内置模板删除 → `ERR_FORBIDDEN`（只能停用）、用户模板删除需 `confirm=true` 且被项目实例引用 → `ERR_CONFLICT` + `detail.referrers`（点名项目/实例）；内置模板的停用与默认模型写 `data/agent-templates-state.json` 覆盖且**跨重启保持**（仓库 yaml 不被改写）、内置的提示词/loop 仍只读；`POST /api/agent-templates/bulk-model` 批量写默认模型（内置走覆盖、用户写 yaml）返回 `{updated, skipped}`，非法/停用模型或空选择 → `ERR_VALIDATION`；`GET /api/model-config/overview` 的 `unconfiguredAgents` 口径 = 启用实例且两级生效链（`实例覆盖 → 模板快照`）为空（**S14 起不含平台默认**，改模板默认只影响此后新建实例，既有实例需实例覆盖才会减少计数）。
+33. **「默认路由」已删除（S14/D24）**：`GET/PUT /api/model-routing` 返回 404；`overview` 响应不含 `routing` 字段；`/api/config` 的 `models` 不含 `defaultModelId`；遗留 `data/model-config.json` 里的 `routing` 键在启动时被抹掉并写审计（`action=migrate`、`diff.removed=["routing"]`）。
 
 ## 3. 测试数据与隔离
 
 - 每个测试用例使用独立临时项目目录（os.tmpdir 下创建，测后清理），绝不触碰真实 workdir。
 - 模型替身位于 `tests/`：`helpers-in-memory-adapter.ts`（适配器归一化基准）、`helpers-scripted-gateway.ts`（脚本化网关，让委派/领取/提问/审批真的经过 agent loop）。
-  - 脚本化网关（S9 落地）按"未消费的剧本步骤"返回文本与 `tool-call`（带条件的步骤优先于无条件兜底），`resolveDeps({ gateway })` 支持注入替身；`helpers-model.ts` 的 `configureTestModel` 为用例显式登记供应商/模型/平台默认（测试不再依赖任何默认值）。
+  - 脚本化网关（S9 落地）按"未消费的剧本步骤"返回文本与 `tool-call`（带条件的步骤优先于无条件兜底），`resolveDeps({ gateway })` 支持注入替身；`helpers-model.ts` 的 `configureTestModel` 为用例显式登记供应商与模型条目（S14 起不再有平台默认），`applyModelToAllTemplates` 在建项目前把模型写进模板默认（实例快照才带模型）。
 - 覆盖 flaky 点：流式中断、审批超时、文件并发写（单进程串行验证）。
 
 ## 4. 执行与门禁
@@ -75,6 +76,7 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 | 7 中文检索 | `tests/unit/shared/text.test.ts`、`tests/unit/infra/keyword-index.test.ts`、`tests/integration/server/memory-api.test.ts` |
 | 8/27/28/29/30/31 模型与 Agent 配置 | `tests/integration/server/{model-config-api,model-config-import,agent-templates-api}.test.ts`、`tests/unit/infra/model-adapters.test.ts`、验收脚本 2/8 |
 | 32 模板删除/停用与一键配置模型 | `tests/integration/server/s11-template-delete-bulk.test.ts`、`tests/integration/server/agent-templates-api.test.ts`（内置停用跨重启） |
+| 33 「默认路由」已删除 | `tests/integration/server/model-config-api.test.ts`（404 + overview 无 routing）、`tests/integration/server/model-config-s10-bootstrap.test.ts`（legacy routing 清理 + 审计）、`tests/unit/infra/model-config-store.test.ts` |
 | 12/15/17/24 任务聚合·激活·终止·汇报 | `tests/unit/application/task-question-service.test.ts`、`tests/integration/server/work-api.test.ts`、验收脚本 1/6/7 |
 | 14/19/20 恢复·停止·细条 | `tests/unit/application/runtime-recovery.test.ts`、`tests/integration/server/runtime-api.test.ts`、验收脚本 3/7 |
 | 16/18 doc 审批预览与降噪 | `tests/integration/server/approvals-api.test.ts`（`previewRef`）；托盘批量与信任开关 UI 留 P1 |
@@ -89,3 +91,5 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 | 2026-09-15（S9） | prd §9 脚本 1~8（`tests/acceptance/prd-section9.test.ts`） | 8/8 通过；全量 `npm run test` 44 files / 302 tests 全绿；发现并修复 2 个真实缺陷（见 `docs/changes/2026-09-15-s9-acceptance-closure.md`） |
 | 2026-09-16（S10） | prd §9 脚本 1~8 按新口径（移除 mock / Agent 默认不配置模型，prd D21） | 8/8 通过（脚本 2 重写为"未配置模型 → `ERR_MODEL` + 配置引导"）；全量 `npm run test` **45 files / 306 tests 全绿**；`coverage` 触达门禁 140/140；活体验证真实 `data/model-config.json` 迁移（审计 `removedProviders:["mock"]`）且未配置模型启动回合报 `ERR_MODEL`；发现并修复 2 个问题（`MODELS__DEFAULT` 未生效、测试未合成 env 配置），见 `docs/changes/2026-09-16-s10-remove-mock.md` |
 | 2026-09-16（S11） | 模板删除/停用与一键配置模型（prd D22，规则 32） | `npm run test` **46 files / 311 tests 全绿**（新增 `tests/integration/server/s11-template-delete-bulk.test.ts` 5 例 + 重写内置停用用例）；`coverage` 触达门禁 141/141；发现并修复 1 个真实缺陷（`team-service` 的 `effectiveModelLabel/effectiveModelAvailable` 未走完整回退链，导致靠全局默认生效的实例被误标"不可用"），见 `docs/changes/2026-09-16-s11-template-delete-bulk-model.md` |
+| 2026-09-16（S12/S13） | 工具模块瘦身（S12）；`ask_user` 独立为 `interaction` 包（S13/D23） | `npm run test` **47 files / 314 tests 全绿**；构建产物冒烟（不再含 `agent loop 策略`、含 `工具包详情`）；活体确认 8 个工具包且 `interaction` 已注册 |
+| 2026-09-16（S14） | 删除「默认路由」功能（prd D24，规则 33） | `npm run test` **47 files / 314 tests 全绿**（`model-config-api` 加 404/无 routing 断言、`model-config-s10-bootstrap` 改为覆盖 S10 旧 kind + S14 routing 两类迁移、`model-config-store` 增 legacy routing notice 用例、`effective-config` 改两级、S11 计数用例改"模板默认/实例覆盖"路径）；活体验证真实 `data/model-config.json` 的 `routing` 键被抹掉且审计 `removed:["routing"]`，见 `docs/changes/2026-09-16-s14-remove-model-routing.md` |

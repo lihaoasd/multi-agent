@@ -25,7 +25,7 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
 
   const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
 
-  it('出厂状态：不含任何供应商/模型，平台默认模型为空（S10：Agent 默认不配置模型）', async () => {
+  it('出厂状态：不含任何供应商/模型（S10：Agent 默认不配置模型）', async () => {
     const providers = await inject({ method: 'GET', url: '/api/model-providers' })
     expect(providers.statusCode).toBe(200)
     expect(providers.json<ProviderBody[]>()).toEqual([])
@@ -33,8 +33,10 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     const models = await inject({ method: 'GET', url: '/api/models' })
     expect(models.json<Array<{ id: string }>>()).toEqual([])
 
-    const routing = await inject({ method: 'GET', url: '/api/model-routing' })
-    expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
+    // S14：不再有「默认路由」；overview 也不再返回 routing 字段
+    const overview = await inject({ method: 'GET', url: '/api/model-config/overview' })
+    expect(overview.statusCode).toBe(200)
+    expect(overview.json<Record<string, unknown>>()).not.toHaveProperty('routing')
   })
 
   it('预置目录包含 9 家供应商（不含任何假模型），且不含任何密钥', async () => {
@@ -157,20 +159,17 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     })
     expect(duplicated.statusCode).toBe(409)
 
-    const badRouting = await inject({
-      method: 'PUT',
-      url: '/api/model-routing',
-      payload: { defaultModelId: '不存在' },
-    })
-    expect(badRouting.statusCode).toBe(400)
-
-    const okRouting = await inject({
-      method: 'PUT',
-      url: '/api/model-routing',
-      payload: { defaultModelId: 'ollama-a', stepOverrides: { critique: 'ollama-a' } },
-    })
-    expect(okRouting.statusCode).toBe(200)
-    expect(okRouting.json<{ stepOverrides: Record<string, string> }>().stepOverrides).toEqual({ critique: 'ollama-a' })
+    // S14：「默认路由」已删除，接口不再存在
+    expect((await inject({ method: 'GET', url: '/api/model-routing' })).statusCode).toBe(404)
+    expect(
+      (
+        await inject({
+          method: 'PUT',
+          url: '/api/model-routing',
+          payload: { defaultModelId: 'ollama-a', stepOverrides: {} },
+        })
+      ).statusCode,
+    ).toBe(404)
   })
 
   it('删除保护：有模型条目的供应商不可删（ERR_CONFLICT + referrers）', async () => {
@@ -190,10 +189,8 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     const enabled = await inject({ method: 'PATCH', url: '/api/models/ollama-a', payload: { enabled: true } })
     expect(enabled.json<{ enabled: boolean }>().enabled).toBe(true)
 
-    // 删除平台默认模型 → 路由默认随之置空（不静默换模型），条目本身可删
+    // 未被引用 → 可直接删除（S14 起不再有"平台默认模型"需要一并清理）
     expect((await inject({ method: 'DELETE', url: '/api/models/ollama-a' })).statusCode).toBe(200)
-    const routing = await inject({ method: 'GET', url: '/api/model-routing' })
-    expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
 
     // 新建一个空供应商（无模型条目），验证可删除
     await inject({

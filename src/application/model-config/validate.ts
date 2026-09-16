@@ -4,10 +4,8 @@ import type {
   ModelConfigSnapshot,
   ModelEntry,
   ModelProviderConfig,
-  ModelRouting,
   SecretResolver,
 } from '../../ports/model-config'
-import { LOOP_STEP_NAMES } from '../../shared/loop'
 import { err, ok, type Result } from '../../shared/result'
 
 /** 供应商 / 模型条目 id 规则（model-config.md §8 #1） */
@@ -208,26 +206,6 @@ export function validateModel(input: ModelInput, ctx: ModelValidationContext): R
     createdAt: ctx.existing?.createdAt ?? new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
   })
-}
-
-/** 路由校验（§8 #11~#12） */
-export function validateRouting(routing: ModelRouting, snapshot: ModelConfigSnapshot): Result<ModelRouting> {
-  const enabledModelIds = new Set(snapshot.models.filter((entry) => entry.enabled).map((entry) => entry.id))
-  if (routing.defaultModelId !== null && !enabledModelIds.has(routing.defaultModelId)) {
-    return err('ERR_VALIDATION', `默认模型必须是已启用的模型条目：${routing.defaultModelId}`, {
-      defaultModelId: routing.defaultModelId,
-    })
-  }
-  const overrides = routing.stepOverrides ?? {}
-  for (const [step, modelId] of Object.entries(overrides)) {
-    if (!(LOOP_STEP_NAMES as readonly string[]).includes(step)) {
-      return err('ERR_VALIDATION', `未知 loop 步骤名：${step}`, { available: LOOP_STEP_NAMES })
-    }
-    if (!enabledModelIds.has(modelId)) {
-      return err('ERR_VALIDATION', `步骤 ${step} 指定的模型未启用：${modelId}`, { step, modelId })
-    }
-  }
-  return ok({ defaultModelId: routing.defaultModelId, ...(Object.keys(overrides).length === 0 ? {} : { stepOverrides: overrides }) })
 }
 
 export interface ModelReference {

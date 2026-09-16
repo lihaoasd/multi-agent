@@ -5,7 +5,7 @@
 export const LOOP_STRATEGY_NAMES = ['direct', 'reflective', 'plan-execute'] as const
 export type BuiltinLoopStrategy = (typeof LOOP_STRATEGY_NAMES)[number]
 
-/** loop 步骤名（用于 stepModelOverride / routing.stepOverrides） */
+/** loop 步骤名（用于 `loop.params.stepModelOverride`；S14 起 `routing.stepOverrides` 已删除） */
 export const LOOP_STEP_NAMES = ['plan', 'act', 'critique'] as const
 export type LoopStepName = (typeof LOOP_STEP_NAMES)[number]
 

@@ -1,12 +1,13 @@
 # 模型配置与 Agent 配置设计 · Agent Haness
 
-> 类别：design · 状态：草稿(待评审) · 决策依据：D20、prd FR-10/FR-34/FR-35、US-22/US-23
-> 关联：[agent-runtime.md](agent-runtime.md)（§5 模型路由、loop 执行）、[agent-templates.md](agent-templates.md)（模板与实例配置）、[abstraction.md](abstraction.md)（§4.2 模型端口、§5.5 动态配置）、[data-storage.md](data-storage.md)（落盘布局）、[ui.md](ui.md)（模型模块与 Agent 模块）、[contract.md](../api/contract.md)
-> 本文件是**模型供应商、模型条目、全局路由与 Agent 配置提交**的设计真源；`agent-runtime.md` §5 只保留路由解析链，不重复本文件细节。
+> 类别：design · 状态：草稿(待评审) · 决策依据：D20、D24（删除「默认路由」）、prd FR-10/FR-34/FR-35、US-22/US-23
+> 关联：[agent-runtime.md](agent-runtime.md)（§5 模型选择与解析链、loop 执行）、[agent-templates.md](agent-templates.md)（模板与实例配置）、[abstraction.md](abstraction.md)（§4.2 模型端口、§5.5 动态配置）、[data-storage.md](data-storage.md)（落盘布局）、[ui.md](ui.md)（模型模块与 Agent 模块）、[contract.md](../api/contract.md)
+> 本文件是**模型供应商、模型条目与 Agent 配置提交**的设计真源；`agent-runtime.md` §5 只保留模型解析链，不重复本文件细节。
+> 2026-09-16 修订（S14/D24）：**删除「默认路由」功能**——`ModelRouting`（`defaultModelId` + `stepOverrides`）与 `GET|PUT /api/model-routing` 整体移除，连带删除配置项 `MODELS__DEFAULT`/`config.models.defaultModelId`；生效链收敛为 `实例覆盖 → 模板快照`（两级）。
 
 ## 1. 定位与边界
 
-- **模型配置模块**回答"这台机器能调用哪些模型"：用户添加**供应商**（一次连接：协议 + 地址 + 凭证），在其下维护**模型条目**，并设定**全局默认路由**。
+- **模型配置模块**回答"这台机器能调用哪些模型"：用户添加**供应商**（一次连接：协议 + 地址 + 凭证），在其下维护**模型条目**（S14 起**不再有平台级默认模型/默认路由**，模型选择由 Agent 模板默认与实例覆盖决定，见 §2）。
 - **Agent 配置**回答"某个角色用哪个模型、哪套 loop、哪段提示词"：系统模板提供默认值，项目实例可覆盖（两层，见 §2）。
 - 本模块**只配置、不执行**：调用与流式归一化仍归 `ModelGateway`（agent-runtime §5 / abstraction §4.2）。
 - 权限边界：本机单用户、无账号体系（prd §2），因此**没有**"谁能改模型配置"的授权链；**唯一的硬约束是密钥不得出现在任何读路径**（§5）。
@@ -14,7 +15,7 @@
 ## 2. 配置分层与解析链
 
 ```
-平台级  data/model-config.json          供应商 + 模型条目 + 全局默认路由（UI 可改，即时生效）
+平台级  data/model-config.json          供应商 + 模型条目（UI 可改，即时生效；S14 起不再有平台默认路由）
   ▲
 模板级  data/roles/<roleId>.yaml        systemPrompt / defaultLoop / defaultModel / packages / tools / …
   ▲                                    （首页 Agent 模块可编辑；内置模板的提示词/loop 只读，**仅默认模型可改**，S11）
@@ -24,10 +25,12 @@
 **有效配置解析链**（`EffectiveAgentConfigResolver`，abstraction §5.5）：
 
 ```
-实例覆盖 → 模板快照 → loop 步骤默认（routing.stepOverrides） → 平台 routing.defaultModelId
+实例覆盖 → 模板快照
 ```
 
-- 任一层解析到的模型 id 必须是**已启用的模型条目**；解析失败**不回退到其它模型**，直接返回 `ERR_MODEL` 并回注错误事件（避免"悄悄换模型"，D20-⑥）。
+> **2026-09-16（S14/D24）**：原第三级 `loop 步骤默认（routing.stepOverrides）` 与第四级 `平台 routing.defaultModelId` 已随「默认路由」功能**整体删除**，解析链收敛为**两级**；两级都没有模型时为 `null`，回合报 `ERR_MODEL`「该角色还没有可用模型：请在「模型」模块添加供应商与模型条目，并在 Agent 模块或项目内为它选择模型」。附注：原 `routing.stepOverrides`（plan/act/critique）**从未被运行期消费**，回合实际使用的是 loop 参数 `loop.params.stepModelOverride`（保留不变，§4）。
+
+- 两级中的任一层解析到的模型 id 必须是**已启用的模型条目**；解析失败**不回退到其它模型**，直接返回 `ERR_MODEL` 并回注错误事件（避免"悄悄换模型"，D20-⑥）。
 - 解析结果按 `(projectId, instanceId, configVersion)` 缓存；写入任一层配置后 `invalidate`（§9）。
 - 提示词同理只有一处覆盖语义：实例 `prompt` 非空则整段替换模板 `systemPrompt`（**不是**拼接；平台注入段由 `ContextBuilder` 在运行期追加，见 agent-runtime §4）。
 
@@ -142,14 +145,14 @@
 | 8 | 删除供应商：其下**存在模型条目**即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
 | 9 | 删除模型：被模板/实例引用即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
 | 10 | 停用模型：允许，但引用它的 Agent 下一回合解析失败 | UI 二次确认列引用；运行期 `ERR_MODEL` |
-| 11 | `routing.defaultModelId` 必须指向已启用模型 | `ERR_VALIDATION` |
-| 12 | `stepOverrides` 的 key 必须是已注册 loop 步骤名、value 指向已启用模型 | `ERR_VALIDATION` |
-| 13 | Agent 提示词：非空、长度 ≤ 上限（默认 20000 字符，平台可配） | `ERR_VALIDATION` |
-| 14 | Agent loop：`strategy` 已注册；`maxIterations` 1..20、`toolBudget` 0..200、`stepModelOverride` 指向已启用模型 | `ERR_VALIDATION` |
-| 15 | 内置模板不可原地修改：`systemPrompt`/`defaultLoop` 只读（须"基于内置复制新建"）；`defaultModel` 与停用/启用**例外**（写 `data/agent-templates-state.json` 覆盖，S11） | `ERR_FORBIDDEN`（提示词/loop） |
-| 16 | 模板删除：仅用户模板可删（内置 → `ERR_FORBIDDEN`）；缺少 `confirm=true` | `ERR_VALIDATION` |
-| 17 | 模板删除：被任何项目实例（`roleTemplateId`）引用即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
-| 18 | 批量设置默认模型：`roleIds` 非字符串数组 / 空数组 / 去重后超过 200 项 → 拒绝；`defaultModel` 必须是**已启用模型条目 id** 或 `null` | `ERR_VALIDATION` |
+| 11 | Agent 提示词：非空、长度 ≤ 上限（默认 20000 字符，平台可配） | `ERR_VALIDATION` |
+| 12 | Agent loop：`strategy` 已注册；`maxIterations` 1..20、`toolBudget` 0..200、`stepModelOverride` 指向已启用模型 | `ERR_VALIDATION` |
+| 13 | 内置模板不可原地修改：`systemPrompt`/`defaultLoop` 只读（须"基于内置复制新建"）；`defaultModel` 与停用/启用**例外**（写 `data/agent-templates-state.json` 覆盖，S11） | `ERR_FORBIDDEN`（提示词/loop） |
+| 14 | 模板删除：仅用户模板可删（内置 → `ERR_FORBIDDEN`）；缺少 `confirm=true` | `ERR_VALIDATION` |
+| 15 | 模板删除：被任何项目实例（`roleTemplateId`）引用即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
+| 16 | 批量设置默认模型：`roleIds` 非字符串数组 / 空数组 / 去重后超过 200 项 → 拒绝；`defaultModel` 必须是**已启用模型条目 id** 或 `null` | `ERR_VALIDATION` |
+
+> **已删除（S14/D24）**：原 #11「`routing.defaultModelId` 必须指向已启用模型」与原 #12「`stepOverrides` 的 key/value 校验」随「默认路由」功能整体删除；表中其余各条已重排（原 #13~#18 → 现 #11~#16）。删除模型条目时也不再需要清理 `defaultModelId`/`stepOverrides`（二者已不存在）。
 
 - 错误码沿用 `contract.md` §4 既有集合（`ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`），**不新增错误码**；引用者与供应商原始错误放 `detail`。
 - 供应商返回的 HTTP 错误映射为 `ERR_MODEL`，`detail` 含 `{ providerId, modelId, status, code?, message(截断+脱敏) }`。
@@ -160,10 +163,9 @@
 | --- | --- | --- | --- |
 | 新增/编辑/停用供应商 | 其下模型的调用 | 下一次模型调用 | 否 |
 | 新增/编辑模型条目 | 引用它的 Agent | 下一次模型调用 | 否 |
-| 改全局默认路由 | 未显式指定模型的角色 | 下一回合解析 | 否 |
 | 编辑系统模板（提示词/loop/模型，含内置仅默认模型） | **仅未来新建实例**（快照） | 保存即写模板文件 / 内置写 `agent-templates-state.json` 覆盖 | 否 |
 | 停用/启用模板（含内置） | 此后新建/组队的可选清单；既有实例靠快照不受影响 | 保存即写模板文件 / 状态覆盖 | 否 |
-| 删除用户模板 | 此后新建实例的可选清单；既有实例靠快照 | 立即；被项目实例引用时被拒（§8 #17） | 否 |
+| 删除用户模板 | 此后新建实例的可选清单；既有实例靠快照 | 立即；被项目实例引用时被拒（§8 #15） | 否 |
 | 批量设置默认模型（`bulk-model`） | 相关模板的**此后新建实例** | 保存即写（内置写状态覆盖、用户写 yaml） | 否 |
 | 实例覆盖（提示词/loop/模型） | 该实例 | 下一回合开始（缓存失效）；运行中回合到可中断点 | 否 |
 | 删除被引用的供应商/模型 | — | 被拒（§8 #8/#9） | — |
@@ -172,18 +174,21 @@
 - 机制上只有两步：**原子写 `data/model-config.json` → `ModelCatalog.invalidate()`**；容器、注册表、进程均不变（abstraction §5.5 三约束）。
 - 写入与缓存失效之间不存在"半生效"：缓存按文件版本号（`revision`）判定，读到新 `revision` 才重建解析结果。
 
-### 9.1 未配置模型统计与"一键设全局默认"（2026-09-16，S11/D22-④）
+### 9.1 未配置模型统计（S11）与消除路径（S14：模板默认 / 实例覆盖）
 
-- `GET /api/model-config/overview` 增字段 `unconfiguredAgents: {total, items:[{projectId, projectName, instanceId, displayName}]}`；口径 = **项目实例中 `enabled=true` 且生效模型为空**（停用实例不参与统计）。
-- 生效链与 dispatcher 一致：`实例覆盖 → 模板快照 → 平台默认 routing.defaultModelId`；三级都没有模型时为 `null`，该实例启动回合报 `ERR_MODEL`（§2，不静默挑模型）。
-- 用途：模型模块"默认路由"卡片在 `total > 0` 时显示 Alert「当前有 n 个 Agent 未配置模型」，并对模型条目提供 **[设为全局默认]**（已是默认则置灰）——把 `routing.defaultModelId` 指向该模型即可让这些 Agent **立即**有生效模型（回退链兜底），无需逐个改模板/实例；设为默认后计数随 `model-config.updated` / 重新拉取 overview 刷新。
-- 反向入口：Agent 模块的「全选未配置 + 一键配置模型」直接给被勾选的模板写 `defaultModel`（`POST /api/agent-templates/bulk-model`，写路径与校验见 agent-templates.md §4、contract.md §2「角色库 / 团队」）。
+- `GET /api/model-config/overview` 字段 `unconfiguredAgents: {total, items:[{projectId, projectName, instanceId, displayName}]}`；口径 = **项目实例中 `enabled=true` 且生效模型为空**（停用实例不参与统计）。
+- 生效链与 dispatcher 一致（两级，S14）：`实例覆盖 → 模板快照`；两级都没有模型时为 `null`，该实例启动回合报 `ERR_MODEL`（§2，不静默挑模型）。
+- 用途：模型模块在 `total > 0` 时显示 Alert「当前有 n 个 Agent 未配置模型」并列出未配置示例（项目/实例显示名，超过 3 个折叠），**仅作提示**——S14 起**不再有「默认路由」卡片，也没有「设为全局默认」/「一键设全局默认」入口**（`routing.defaultModelId` 已整体删除）。
+- 消除路径（均可在界面完成）：
+  1. **Agent 模块**：勾选模板 + [一键配置模型] 写模板 `defaultModel`（`POST /api/agent-templates/bulk-model`），**只影响此后新建的实例**（既有实例靠快照，不回填）；
+  2. **项目内实例覆盖**：`PATCH /api/projects/:pid/team/:iid` 的 `model` 字段，**影响既有实例**（下一回合生效）。
+- 计数随 `model-config.updated` / `agent-config.updated` 或重新拉取 overview 刷新。
 
 ## 10. 审计与留痕
 
 | 记录 | 位置 | 内容 |
 | --- | --- | --- |
-| 平台配置审计 | `data/config-audit.jsonl`（append-only） | `{ id, ts, actor:"user", scope:"platform", target:{kind:"provider\|model\|routing", id}, action:"create\|update\|delete\|test\|import", diff:{changedFields[], before?, after?}, credentialTouched }` |
+| 平台配置审计 | `data/config-audit.jsonl`（append-only） | `{ id, ts, actor:"user"\|"system", scope:"platform", target:{kind:"provider\|model", id}, action:"create\|update\|delete\|test\|import\|migrate", diff:{changedFields[], before?, after?}, credentialTouched }`；S14 迁移留痕一条 `{target:{kind:"routing", id:"removed"}, action:"migrate", diff:{removed:["routing"]}}`（`routing` 已不是配置项，只出现在该次迁移记录里） |
 | 模板版本快照 | `data/roles/<roleId>.history/<ts>.yaml` | 每次保存只增一份完整快照（可列出/查看；**回滚 UI 后续**，§14） |
 | 模板/实例审计 | `data/config-audit.jsonl`，`scope:"template"\|"instance"` | 同表；实例项含 `projectId`/`instanceId`，`diff` 只记字段名与摘要 |
 | 会话内投影 | 会话 log（`kind=state` 或 `error`） | 实例配置变更广播 WS `agent-config.updated`；引用失效导致 `ERR_MODEL` 时落 `kind=error` 事件 |
@@ -198,19 +203,18 @@
 | 键 | 作用 |
 | --- | --- |
 | `MODELS__CONFIG_FILE` | 运行时模型配置文件路径（默认 `data/model-config.json`） |
-| `MODELS__DEFAULT` | 初始化阶段生效：命中已启用的模型条目时设为平台默认模型；留空或命中不到则不预设 |
 | `MODELS__IMPORT_FROM_ENV` | 是否允许从遗留 `MODELS__PROVIDERS` 一次性导入（默认 `true`） |
 | `MODELS__REQUEST_TIMEOUT_MS` | 单次请求超时上限（供应商条目只能收紧，不能突破） |
-| `MODELS__MAX_PROMPT_CHARS` | 提示词长度上限（默认 20000，§8 #13） |
+| `MODELS__MAX_PROMPT_CHARS` | 提示词长度上限（默认 20000，§8 #11） |
 
 迁移与兼容：
 
-1. **`.env` 的 `MODELS__PROVIDERS`**（现状形状 `{id, kind, baseUrl, apiKeyEnv, model}`）：配置文件不存在时一次性导入 → 每个条目生成 1 个供应商 + 1 个同名模型条目（`apiKeyEnv` → `credential:{mode:"env"}`）；导入时暂以第一条为默认，`MODELS__DEFAULT` 在初始化第 ③ 步按新口径生效（见下 #6）。导入后 `.env` 该键仅作历史留存，UI **不再读写**，审计记 `action:"import"`。
+1. **`.env` 的 `MODELS__PROVIDERS`**（现状形状 `{id, kind, baseUrl, apiKeyEnv, model}`）：配置文件不存在时一次性导入 → 每个条目生成 1 个供应商 + 1 个同名模型条目（`apiKeyEnv` → `credential:{mode:"env"}`）；**不预设任何平台默认模型**（S14 起 `MODELS__DEFAULT` 已删除，导入后仍需在 Agent 模块或项目内为角色选择模型）。导入后 `.env` 该键仅作历史留存，UI **不再读写**，审计记 `action:"import"`。
 2. **旧值兼容**：Agent/模板/实例的 `model` 字段若命中**供应商 id**（而非模型条目 id），且该供应商**只有一个启用模型**，则解析到该模型并在审计写一条告警（提示"该字段已按模型条目口径解析，建议改为显式模型 id"）；若该供应商有多个启用模型，则解析失败 `ERR_MODEL`，要求用户显式指定。**不静默改写配置文件**。
 3. **遗留 `data/model-config.json` 旧形状**（`{entries[], defaultModel}`，无 `schemaVersion`）：视为 v0 → 启动自检**不自动导入**，备份为 `model-config.v0.bak.json` 并在 UI 提示一次；用户点"导入"走 `POST /api/model-config/import?source=v0`。
 4. **遗留 `data/agent-models.json`**（旧 `roleId → 条目 id` 映射，已被本轮设计取代）：不再读取；提示用户其映射应写入角色模板 `defaultModel`（不自动改文件）。
 5. `schemaVersion` 当前为 `1`；未来不兼容变更递增版本并要求显式迁移（与 `data-storage.md` §9 一致）。
-6. **首次初始化（2026-09-16 实现口径）**：启动时按序执行 —— ① **迁移**：剔除 `kind` 已不在注册表中的供应商及其模型条目，清理 `routing.defaultModelId` 与 `stepOverrides` 中指向它们的值，并写 `config-audit.jsonl`（`action:"migrate"`，`diff` 含 `removedProviders`/`removedModels`）；② **空配置且 `MODELS__IMPORT_FROM_ENV=true`** → 从合并环境映射的 `MODELS__PROVIDERS` 一次性导入；③ **`MODELS__DEFAULT` 真正生效**：命中**已启用**的模型条目时设为 `routing.defaultModelId`（初始化阶段以它为准，覆盖导入时"第一条即默认"的临时值；命中不到则保持不设，**不静默换模型**）；④ **不再自动创建任何供应商/模型**（原"内置兜底供应商 + 模型"已删除）。出厂状态即为空配置：需先配置（离线可用本地 Ollama，但需本机已启动 Ollama 服务）才能跑通回合；未配置模型的 Agent 启动回合报 `ERR_MODEL`（§2 解析链）。
+6. **首次初始化（2026-09-16 实现口径，S14 修订）**：启动时按序执行 —— ① **抹掉已废弃的 `routing` 键**：加载时丢弃该键（存储层产出 notice `routing-removed`），`ensureInitialized` 见到 notice 即回写配置文件（把该键真正从磁盘抹掉）并写 `config-audit.jsonl`（`action:"migrate"`、`target:{kind:"routing",id:"removed"}`、`diff:{removed:["routing"]}`）；② **剔除已不在注册表的 kind**：删除 `kind` 不在适配器注册表中的供应商及其模型条目，写一条 `action:"migrate"` 审计（`diff` 含 `removedProviders`/`removedModels`）；③ **空配置且 `MODELS__IMPORT_FROM_ENV=true`** → 从合并环境映射的 `MODELS__PROVIDERS` 一次性导入；④ **不自动创建任何供应商/模型**（原"内置兜底供应商 + 模型"已删除，`MODELS__DEFAULT` 亦已删除）。出厂状态即为空配置：需先配置（离线可用本地 Ollama，但需本机已启动 Ollama 服务）才能跑通回合；未配置模型的 Agent 启动回合报 `ERR_MODEL`（§2 解析链）。
 7. **`.env` 文件的读取口径**：`.env` 内容**不会**写回 `process.env`，因此 env 模式凭证与遗留导入统一读"**`.env` 文件 + 进程环境变量**"合并后的映射（后者优先）；`process.env` 优先于 `.env`。
 
 ## 12. 端口与代码落点（对齐 abstraction.md）
@@ -222,7 +226,7 @@
 | `ProviderKindRegistry` | `kind → 适配器` 注册与解析（由 `ProviderRegistry` 更名） | infra/model |
 | `ModelCatalog` | `modelId → {provider, credential, model 名, params, kind}` 解析 + `revision` 缓存 + `invalidate()` | application/model-config |
 | `ModelGateway` | 按 `ModelId` 路由到适配器，统一 `ModelChunk`，外挂脱敏装饰 | infra/model |
-| `ModelConfigService` | 供应商/模型/路由的增删改查 + 校验 + 测试/发现 + 迁移导入 | application/model-config |
+| `ModelConfigService` | 供应商/模型条目的增删改查 + 校验 + 测试/发现 + 迁移导入（`updateRouting`/`RoutingView` 已随「默认路由」功能删除，S14） | application/model-config |
 | `AgentConfigService` | 模板 CRUD（复制新建/编辑/停用/**删除用户模板**/**批量设置默认模型**）与实例覆盖写入 + 校验 + 快照 + 审计 | application/team |
 | `TemplateReferenceQuery` | 模板 → 项目实例引用查询（删除保护 `findTemplateReferrers`）与**未配置模型 Agent** 查询（`findUnconfiguredAgents`，S11） | application/team |
 | 预置目录 | 9 家的 kind/baseUrl/凭证提示/建议模型 | src/shared/model-presets.yaml（只读） |
@@ -233,8 +237,8 @@
 
 | 面 | 内容 |
 | --- | --- |
-| REST | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET\|PUT /api/model-routing`、`GET /api/model-config/overview`（含 `unconfiguredAgents`，S11）、`POST /api/model-config/import`；Agent 侧 `POST /api/agent-templates`、`PATCH\|DELETE /api/agent-templates/:roleId`、`POST /api/agent-templates/:roleId/{disable,enable}`、`POST /api/agent-templates/bulk-model`、`GET\|PATCH /api/projects/:pid/team/:iid` |
-| WS | 新增下行 `model-config.updated`（供应商/模型/路由变更）、`agent-config.updated`（模板或实例配置变更） |
+| REST | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET /api/model-config/overview`（含 `unconfiguredAgents`，S11）、`POST /api/model-config/import`；Agent 侧 `POST /api/agent-templates`、`PATCH\|DELETE /api/agent-templates/:roleId`、`POST /api/agent-templates/:roleId/{disable,enable}`、`POST /api/agent-templates/bulk-model`、`GET\|PATCH /api/projects/:pid/team/:iid` |
+| WS | 下行 `model-config.updated`（供应商/模型变更）、`agent-config.updated`（模板或实例配置变更） |
 | 错误码 | 沿用既有集合，不新增（§8） |
 
 > 完整请求/响应字段、状态码与 WS payload 见 [contract.md](../api/contract.md) §2.5/§2.6/§3。

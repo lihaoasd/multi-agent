@@ -19,7 +19,7 @@ agent_haness/                    # 平台仓库
 ├── .env                         # 平台配置（2026-09-13 起；此前为 config.yaml）：host/port/数据根/角色库/审批策略默认值/模型配置引导键（**模型本体在 data/model-config.json**，2026-09-15）
 │                                #   命名约定：`__` 分层、数组用 JSON；模板见入库的 .env.example
 ├── data/                        # 运行时数据根（不入库；DATA_DIR 可改）
-│   ├── model-config.json        # 【平台模型配置】供应商 + 模型条目 + 全局默认路由（2026-09-15；schema 见 model-config.md §3~§4）
+│   ├── model-config.json        # 【平台模型配置】供应商 + 模型条目（2026-09-15；schema 见 model-config.md §3~§4；S14 起不再有平台默认路由）
 │   ├── model-config.v0.bak.json # 旧形状自动备份（检测到无 schemaVersion 的遗留文件时生成）
 │   ├── model-config.invalid.bak.json # 坏 JSON 自动备份（解析失败时生成）
 │   ├── config-audit.jsonl       # 配置变更审计：平台/模板/实例（append-only，2026-09-15；路径随 DATA_DIR，即 `<DATA_DIR>/config-audit.jsonl`）
@@ -49,6 +49,7 @@ agent_haness/                    # 平台仓库
 ```
 
 > 会话日志/记忆 **永不在工作目录内**（prd 明确要求）；工作目录只被「受控编辑（workdir_edit）/产出物登记/受控命令」触碰；目录内容**全员可读**，写入按文件归属校验（workspaces-artifacts §2）。
+> **平台模型配置文件（S14/D24）**：`data/model-config.json` 只存 `{schemaVersion, revision, providers[], models[]}`；原 `routing`（平台默认模型 + 步骤默认）字段已随「默认路由」功能删除，遗留键在启动时被抹掉并写 `config-audit.jsonl`（`action=migrate`、`diff.removed=["routing"]`），详见 model-config.md §11。
 
 ## 3. project.json（schema 示例）
 
@@ -88,7 +89,7 @@ agent_haness/                    # 平台仓库
 }
 ```
 
-> **有效配置解析（D20-⑦）**：`实例覆盖 → 模板快照 → 平台 routing.defaultModelId`；提示词为**整段替换**（不是拼接）；三级都没有模型时为 `null`，运行期报 `ERR_MODEL`（不静默挑模型）。详见 agent-templates.md §4 与 model-config.md §2。
+> **有效配置解析（D20-⑦；S14 收敛为两级）**：`实例覆盖 → 模板快照`；提示词为**整段替换**（不是拼接）；两级都没有模型时为 `null`，运行期报 `ERR_MODEL`（不静默挑模型）。原第三/四级（`routing.stepOverrides`、平台 `routing.defaultModelId`）已随「默认路由」功能删除（S14/D24）。详见 agent-templates.md §4 与 model-config.md §2。
 > **列表投影**：`data/projects/index.json` 是 `list()` 的派生缓存（每次重建，可丢可重建）；`project.json` 才是唯一真源（§7 双写主从口径）。
 
 ## 4. 会话文件

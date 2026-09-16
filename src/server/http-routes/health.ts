@@ -29,10 +29,9 @@ export function registerHealthRoutes(app: FastifyInstance, context: HealthRouteC
     server: { host: context.config.server.host, port: context.config.server.port },
     models: {
       configFile: context.config.models.configFile,
-      defaultModelId: context.config.models.defaultModelId.trim().length === 0 ? null : context.config.models.defaultModelId,
+      importFromEnv: context.config.models.importFromEnv,
       maxPromptChars: context.config.models.maxPromptChars,
       requestTimeoutMs: context.config.models.requestTimeoutMs,
-      importFromEnv: context.config.models.importFromEnv,
     },
     approval: context.config.approval,
     sandbox: context.config.sandbox,

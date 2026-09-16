@@ -10,7 +10,7 @@
 顶部/左侧全局导航
 ├── 项目        ← 首页默认：项目列表 + 创建项目
 ├── Agent       ← 系统模板库（含场景标签；用户模板可编辑提示词/loop/模型，内置仅默认模型可改、可停用）
-├── 模型        ← 模型供应商 + 模型条目 + 默认路由（D20）
+├── 模型        ← 模型供应商 + 模型条目（D20；S14 删除「默认路由」）
 └── 工具        ← 工具包列表
 项目页（进入某项目后）
 ├── 拓扑        ← 2 栏：左画布 + 右三列表
@@ -49,8 +49,8 @@
 | --- | --- |
 | 供应商列表 | 卡片/表格：名称、**kind 徽标**、`baseUrl`、密钥状态（`已配置 sk-***c3b2` / `未配置` / `环境变量 XXX`）、模型数、启用开关、[测试连接]、[编辑]、[删除] |
 | 新建/编辑供应商 | 抽屉：① 选预置模板（9 家 + "自定义"）→ 预填 kind/baseUrl 与建议模型；② 填凭证（**明文文件** 或 **环境变量名**，后者校验变量存在）；③ [测试连接]（`models` 或 `chat` 模式）；④ 可选"同时创建建议模型条目"；⑤ 保存前显示明文存储提示 |
-| 模型条目 | 表格：`id`、真实模型名、所属供应商、能力徽标（chat/stream/tools/reasoning）、上下文窗口、**被引用数**、启用开关、[编辑]/[删除]、**[设为全局默认]**（S11；已是全局默认则置灰并显示"已是全局默认"）；工具栏 [从供应商拉取模型] → 多选批量登记（`/api/models/bulk`） |
-| 默认路由 | 全局默认模型 + loop 步骤默认（`act`/`plan`/`critique`）下拉；改动即时生效提示；**未配置模型计数（S11）**：当"未配置模型的 Agent 数 > 0"时，卡片内显示 Alert「当前有 n 个 Agent 未配置模型」，文案说明"这些 Agent 启动回合会报 `ERR_MODEL`；把某个模型设为「全局默认」即可让它们立即生效（回退链：实例覆盖 → 模板默认 → 全局默认），无需逐个配置"，并列出未配置示例（项目/实例显示名，超过 3 个折叠） |
+| 模型条目 | 表格：`id`、真实模型名、所属供应商、能力徽标（chat/stream/tools/reasoning）、上下文窗口、**被引用数**、启用开关、[编辑]/[删除]（S14：**取消「设为全局默认」行操作**）；工具栏 [从供应商拉取模型] → 多选批量登记（`/api/models/bulk`） |
+| 未配置模型提示（S11 计数 + S14 消除路径） | **提示卡片**（不再叫「默认路由」）：当"未配置模型的 Agent 数 > 0"时显示 Alert「当前有 n 个 Agent 未配置模型」，列出未配置示例（项目/实例显示名，超过 3 个折叠）；文案指向两处可操作入口 —— ①「Agent」模块勾选模板 → [一键配置模型]（只影响此后新建实例）；② 项目内对该实例做模型覆盖（影响既有实例）。**已无「设为全局默认」/「一键设全局默认」入口**（S14 随 `routing.defaultModelId` 整体删除） |
 | 安全提示 | 常驻说明：密钥仅存本机 `data/model-config.json`（不入库）或环境变量；页面与接口只显示掩码 |
 
 - 失败与边界文案：删除被引用的供应商/模型 → 弹出引用清单（模板/实例）并禁用删除按钮；停用被引用模型 → 二次确认 + "运行期将报 ERR_MODEL"；连通性失败 → 展示 `status`/错误摘要（**已脱敏**）与常见排查建议（地址/密钥/网络）。
@@ -132,13 +132,13 @@
 | 界面动作 | 接口 |
 | --- | --- |
 | 首页四模块列表 | `GET /api/projects`、`GET /api/agent-templates`、`GET /api/tool-packages`、`GET /api/model-presets` |
-| 模型模块（供应商/模型/路由/测试/总览） | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET\|PUT /api/model-routing`、`GET /api/model-config/overview` |
+| 模型模块（供应商/模型/测试/总览） | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET /api/model-config/overview` |
 | Agent 模块（模板编辑/删除/批量与实例覆盖） | `POST\|PATCH\|DELETE /api/agent-templates[/:roleId]`、`POST /api/agent-templates/:roleId/{disable,enable}`、`POST /api/agent-templates/bulk-model`、`GET\|PATCH /api/projects/:pid/team/:iid` |
 | 画布读取/保存 | `GET|PUT /api/projects/:pid/orchestration` |
 | 暂停/恢复/停止 | `POST /api/projects/:pid/agents/:iid/{pause,resume,stop}` |
 | 会话流与日志 | `GET /api/projects/:pid/sessions/:sid`、`GET .../log?fromSeq=&kind=` |
 | 右栏三列表 | `GET .../tasks`、`GET .../questions`、`GET .../approvals?status=pending` |
-| 实时更新 | WS：`agent.state`、`task.updated`、`question.*`、`approval.requested`、`orchestration.updated`、`message.chunk`、`event.appended`、`agent-config.updated`（模板/实例配置提交）、`model-config.updated`（供应商/模型/路由，含"设为全局默认"后刷新未配置计数） |
+| 实时更新 | WS：`agent.state`、`task.updated`、`question.*`、`approval.requested`、`orchestration.updated`、`message.chunk`、`event.appended`、`agent-config.updated`（模板/实例配置提交，含实例覆盖模型后刷新未配置计数）、`model-config.updated`（供应商/模型变更；S14 起不含路由） |
 
 ## 8. P1 及以后（不在 MVP）
 

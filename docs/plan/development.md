@@ -39,8 +39,9 @@
 | **S11** | Agent 模板库删除/停用 + 一键配置模型（需求变更，见 prd D22） | 用户模板可删（引用保护 409+点名）、内置模板可停用（数据目录覆盖，重启不丢）、`bulk-model` 批量设默认模型、`overview.unconfiguredAgents` 计数与一键设全局默认、前端多选/删除/配置交互 | S10 | 32 | **已完成（2026-09-16）**：[方案](2026-09-16-s11-template-delete-bulk-model.md) · [记录](../changes/2026-09-16-s11-template-delete-bulk-model.md) |
 | **S12** | 工具模块瘦身（UI 简化，用户口径） | 只保留工具包表格、包内工具改为「详情」弹窗查看、移除已注册工具表格与 agent loop 策略列表；后端接口不变 | S11 | — | **已完成（2026-09-16）**：[方案](2026-09-16-s12-tools-module-simplify.md) · [记录](../changes/2026-09-16-s12-tools-module-simplify.md) |
 | **S13** | `ask_user` 独立为 `interaction`（交互）工具包（需求变更，见 prd D23） | 基础包 7 → 8；工具注册 `package` 与包声明双向一致；8 个角色模板同步挂载；既有项目无需迁移 | S12 | — | **已完成（2026-09-16）**：[方案](2026-09-16-s13-ask-user-interaction-package.md) · [记录](../changes/2026-09-16-s13-ask-user-interaction-package.md) |
+| **S14** | 删除「默认路由」功能（需求变更，见 prd D24；含平台默认模型） | 移除 `routing` 全链路（端口/存储/校验/服务/`/api/model-routing`/前端卡片/`MODELS__DEFAULT`）；生效链收敛两级；遗留 `routing` 键启动清理 + 审计 | S13 | 33 | **已完成（2026-09-16）**：[方案](2026-09-16-s14-remove-model-routing.md) · [记录](../changes/2026-09-16-s14-remove-model-routing.md) |
 
-> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10~S13 为 S9 之后的需求变更/UI 简化收口。
+> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10~S14 为 S9 之后的需求变更/UI 简化收口。
 
 ## 4. S0 · 工程脚手架与依赖门禁
 
@@ -94,6 +95,7 @@
 | **S11 模板库删除/停用与一键配置模型** | 用户模板可删（`confirm` 二次确认 + 被项目实例引用 → `409` + referrers 点名）、内置模板只能停用且停用/默认模型写 `data/agent-templates-state.json` 覆盖（仓库 yaml 只读、重启不丢）、`POST /api/agent-templates/bulk-model` 批量写默认模型、`overview.unconfiguredAgents` 计数 + 模型模块一键设全局默认、Agent 模块多选/删除/配置交互。**结果（2026-09-16）**：全量 **46 files / 311 tests 全绿**（新增 `s11-template-delete-bulk.test.ts` 5 例）；`coverage` 触达门禁 **141/141**；`typecheck`/`eslint`/依赖棘轮 0 违规、`vite build` 通过；修复 1 个真实缺陷（`team-service` 未走完整回退链，靠全局默认生效的实例被误标"模型不可用"） |
 | **S12 工具模块瘦身** | 「工具」模块只保留工具包表格，包内工具改为「详情」弹窗查看（工具名/状态已注册｜未实现/说明/风险/需审批/幂等），移除**已注册工具表格**与 **agent loop 策略列表**；后端 `/api/tool-packages`、`/api/tools`、`/api/loops` 契约不变。**结果（2026-09-16）**：`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物不再含 `agent loop 策略` 文案、含 `工具包详情`；全量测试与门禁保持全绿（本轮无后端改动） |
 | **S13 `ask_user` 独立为交互包** | `ask_user` 从 `task` 包移出，独立为 `interaction`（交互）基础包（基础包 7 → 8，仍全员必选）；工具注册 `package` 与包声明双向一致（新增 `tool-packages-api.test.ts`）；8 个角色模板同步挂载；包不参与运行期授权 → 既有项目无需迁移。**结果（2026-09-16）**：全量 **47 files / 314 tests 全绿**；`typecheck`/`eslint`/依赖棘轮 0 违规、`coverage` 与 `vite build` 通过；活体确认 `/api/tool-packages` 8 个包且 `interaction` 已注册 |
+| **S14 删除「默认路由」功能** | 移除 `ModelRouting`（`defaultModelId`+`stepOverrides`）全链路：端口/存储/校验/DTO/服务/`GET,PUT /api/model-routing`/前端「默认路由」卡片与「设为全局默认」；`overview` 去掉 `routing`；`/api/config` 去掉 `models.defaultModelId`；`.env` 的 `MODELS__DEFAULT` 删除；生效链收敛为 `实例覆盖 → 模板快照 → ERR_MODEL`；遗留 `routing` 键启动抹掉 + 审计。**结果（2026-09-16）**：全量 **47 files / 314 tests 全绿**（新增/改写 S14 相关用例与规则 33）；`typecheck`/`eslint`/依赖棘轮 0 违规、`coverage` 触达 141/141、`vite build` 通过；活体确认真实 `data/model-config.json` 的 `routing` 键被清除且审计 `removed:["routing"]` |
 
 ## 7. 每阶段完成定义（DoD，缺一不算完成）
 

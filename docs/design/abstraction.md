@@ -147,7 +147,7 @@ domain/fsm/question.ts  pending → answered
 | `OwnershipPolicy` | 文件归属判定（无主/自己/他人 → allow/deny） | domain/rules/ownership |
 | `DelegationPolicy` | 编排边委派判定（出边才可派，汇报沿反向） | domain/rules/orchestration |
 | `VisibilityPolicy` | 记忆/会话检索可见性（D18-②） | domain/rules/visibility |
-| `EffectiveAgentConfigResolver` | 模板 → 实例 → 项目 → 平台默认 的**有效配置**解析（带失效缓存） | application/team |
+| `EffectiveAgentConfigResolver` | `实例覆盖 → 模板快照` 的**有效配置**解析（两级，带失效缓存；S14/D24 起无平台默认层） | application/team |
 
 ### 4.5 平台类
 
@@ -258,14 +258,11 @@ export interface ModelEntry {
   defaultParams?: { temperature?: number; maxTokens?: number }
   enabled: boolean
 }
-export interface ModelRouting {
-  defaultModelId: ModelId
-  stepOverrides?: Partial<Record<LoopStepName, ModelId>>
-}
 export interface ModelConfigSnapshot {
   schemaVersion: 1; revision: number
-  providers: ModelProviderConfig[]; models: ModelEntry[]; routing: ModelRouting
+  providers: ModelProviderConfig[]; models: ModelEntry[]
 }
+// S14/D24：「默认路由」（原 `ModelRouting`：`defaultModelId` + `stepOverrides`）已整体删除；快照只存 providers/models
 export interface ModelConfigStore {
   load(): Promise<Result<ModelConfigSnapshot>>
   /** 原子写 + revision 乐观并发（expectedRevision 不符 → ERR_CONFLICT） */
@@ -441,7 +438,7 @@ export async function buildContainer(env: Env): Promise<Container> {
 三条硬约束：
 
 1. **容器只注入稳定能力**：端口、注册表、解析器、锁、时钟。**永远不把**"某实例允许的工具列表""某实例的 loop 策略对象"注入构造函数。
-2. **实例配置每回合解析**：`EffectiveAgentConfigResolver.resolve(projectId, instanceId)` 按 `实例覆盖 → 模板快照 → 平台默认` 合成 `EffectiveAgentConfig`（真源：`src/application/team/effective-config.ts`；S11 的"未配置 Agent 统计"用同一函数），作为 `TurnContext.config` 传给用例；解析结果按 `(projectId, instanceId, configVersion)` 缓存。
+2. **实例配置每回合解析**：`EffectiveAgentConfigResolver.resolve(projectId, instanceId)` 按 `实例覆盖 → 模板快照`（**两级**；S14/D24 起平台默认层已删除）合成 `EffectiveAgentConfig`（真源：`src/application/team/effective-config.ts`；S11 的"未配置 Agent 统计"用同一函数），作为 `TurnContext.config` 传给用例；解析结果按 `(projectId, instanceId, configVersion)` 缓存。
 3. **按 id 运行期查表**：工具通过 `ToolRegistry.get(name)`、loop 通过 `LoopRegistry.get(strategy)` 在**回合开始时**解析；因此新增/替换实现只需 `register`。
 
 时序（用户改配置 → 生效）：
@@ -454,7 +451,7 @@ export async function buildContainer(env: Env): Promise<Container> {
   → 运行中的回合：到可中断点后生效（不打断当前工具调用）
   → 容器 / 注册表 / 进程：均不变（无需重启）
 
-用户改平台模型配置（供应商 / 模型条目 / 默认路由，D20-⑤）
+用户改平台模型配置（供应商 / 模型条目，D20-⑤；S14/D24 起无「默认路由」）
   → 原子写 data/model-config.json + revision+1（审计）
   → ModelCatalog.invalidate()
   → 下一次模型调用即用新配置（进行中的流式请求不中断）
@@ -470,7 +467,6 @@ export async function buildContainer(env: Env): Promise<Container> {
 | 新增 loop 策略 | `LoopRegistry.register` | 否 | 否 |
 | **新增/编辑供应商或模型条目**（D20） | 原子写 `model-config.json` → `ModelCatalog.invalidate()`（`revision` 变化） | 否 | 否 |
 | **新增一种协议 kind** | 实现 `ProviderKindAdapter` + `ProviderKindRegistry.register`（组合根一行的注册） | 否 | 否 |
-| 改全局默认路由 | 下回合 `EffectiveAgentConfigResolver` 重新解析 | 否 | 否 |
 | 单个 Agent 暂停/恢复 | dispatcher 运行期态（不入容器） | 否 | 否 |
 | 换存储后端/换锁实现 | 换端口实现 | **是**（启动期） | 是 |
 | 改平台 `.env` 配置（含 `MODELS__CONFIG_FILE`/超时上限） | 启动期读取 | 是 | 是 |

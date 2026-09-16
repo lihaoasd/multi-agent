@@ -1,11 +1,5 @@
 import type { ModelCapability, ModelId, ProviderId, ProviderKind } from '../../ports/model'
-import type {
-  Credential,
-  ModelEntry,
-  ModelProviderConfig,
-  ModelRouting,
-  SecretResolver,
-} from '../../ports/model-config'
+import type { Credential, ModelEntry, ModelProviderConfig, SecretResolver } from '../../ports/model-config'
 
 /** 凭证的**可外发**视图：只含掩码与"是否已配置"，永不含明文（model-config.md §5） */
 export interface CredentialView {
@@ -108,13 +102,4 @@ export function toModelView(
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
   }
-}
-
-export interface RoutingView {
-  readonly defaultModelId: ModelId | null
-  readonly stepOverrides: Readonly<Record<string, ModelId>>
-}
-
-export function toRoutingView(routing: ModelRouting): RoutingView {
-  return { defaultModelId: routing.defaultModelId, stepOverrides: routing.stepOverrides ?? {} }
 }

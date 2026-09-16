@@ -430,7 +430,6 @@ export function resolveDeps(
   const projectStore = container.resolve<ProjectStore>(TOKENS.ProjectStore)
   const templateReferences: TemplateReferenceQuery = createProjectTemplateReferenceQuery({
     projects: projectStore,
-    catalog,
   })
 
   const modelConfig = createModelConfigService({

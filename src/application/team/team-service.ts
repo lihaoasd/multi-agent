@@ -90,16 +90,11 @@ export function createTeamService(options: TeamServiceOptions): TeamService {
     }
   }
 
-  const platformDefaultModel = async (): Promise<string | null> => {
-    const loaded = await catalog.current()
-    return loaded.ok ? loaded.value.snapshot.routing.defaultModelId : null
-  }
-
   const toView = async (instance: RoleInstance): Promise<InstanceView> => {
     const templates = await roleTemplates.list()
     const template = templates.ok ? templates.value.find((item) => item.roleId === instance.roleTemplateId) : undefined
-    // 生效模型必须走完整回退链（实例 → 模板快照 → 平台默认），否则"靠全局默认生效"的实例会被误标为未配置/不可用
-    const effective = resolveEffectiveAgentConfig(instance, { defaultModelId: await platformDefaultModel() })
+    // 生效模型 = 实例覆盖 ?? 模板快照（S14 起不再有平台默认这一级）
+    const effective = resolveEffectiveAgentConfig(instance)
     const loaded = await catalog.current()
     const model = loaded.ok
       ? loaded.value.snapshot.models.find((entry) => entry.id === effective.model)
@@ -337,7 +332,7 @@ export function createTeamService(options: TeamServiceOptions): TeamService {
       if (instance === undefined) {
         return err('ERR_NOT_FOUND', `实例不存在：${instanceId}`, { projectId, instanceId })
       }
-      return ok(resolveEffectiveAgentConfig(instance, { defaultModelId: await platformDefaultModel() }))
+      return ok(resolveEffectiveAgentConfig(instance))
     },
   }
 }

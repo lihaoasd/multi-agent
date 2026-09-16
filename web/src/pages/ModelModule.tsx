@@ -15,7 +15,7 @@ import {
   Typography,
   message,
 } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { describeError, referrerLabels } from '../api/client'
 import {
   modelConfigApi,
@@ -23,7 +23,6 @@ import {
   type ModelView,
   type ProviderKind,
   type ProviderView,
-  type RoutingView,
   type UnconfiguredAgentRef,
 } from '../api/modelConfig'
 
@@ -50,8 +49,7 @@ export function ModelModule() {
   const [presets, setPresets] = useState<ModelPresetView[]>([])
   const [providers, setProviders] = useState<ProviderView[]>([])
   const [models, setModels] = useState<ModelView[]>([])
-  const [routing, setRouting] = useState<RoutingView>({ defaultModelId: null, stepOverrides: {} })
-  /** 未配置模型的 Agent（S11：一键设全局默认的依据） */
+  /** 未配置模型的 Agent（S11 起展示计数；S14 起只能靠模板默认/实例覆盖消除） */
   const [unconfiguredAgents, setUnconfiguredAgents] = useState<readonly UnconfiguredAgentRef[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -66,17 +64,15 @@ export function ModelModule() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [presetList, providerList, modelList, routingValue, overview] = await Promise.all([
+      const [presetList, providerList, modelList, overview] = await Promise.all([
         modelConfigApi.listPresets(),
         modelConfigApi.listProviders(),
         modelConfigApi.listModels(),
-        modelConfigApi.getRouting(),
         modelConfigApi.overview(),
       ])
       setPresets(presetList)
       setProviders(providerList)
       setModels(modelList)
-      setRouting(routingValue)
       setUnconfiguredAgents(overview.unconfiguredAgents.items)
       setError(null)
     } catch (cause) {
@@ -89,14 +85,6 @@ export function ModelModule() {
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  const enabledModelOptions = useMemo(
-    () =>
-      models
-        .filter((model) => model.enabled)
-        .map((model) => ({ value: model.id, label: `${model.displayName}（${model.providerName}）` })),
-    [models],
-  )
 
   const openCreateProvider = (preset?: ModelPresetView): void => {
     setEditingProvider(null)
@@ -261,18 +249,6 @@ export function ModelModule() {
     }
   }
 
-  const saveRouting = async (next: RoutingView): Promise<void> => {
-    try {
-      const saved = await modelConfigApi.putRouting(next)
-      setRouting(saved)
-      message.success('默认路由已保存（即时生效）')
-      // 全局默认一变，"未配置模型"的 Agent 数随之变化（S11）
-      await refresh()
-    } catch (cause) {
-      message.error(describeError(cause))
-    }
-  }
-
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       {error !== null && <Alert type="error" showIcon message="模型配置加载失败" description={error} />}
@@ -407,70 +383,30 @@ export function ModelModule() {
             },
             {
               title: '操作',
-              width: 210,
+              width: 90,
               render: (_value, record) => (
-                <Space size={4}>
-                  <Button
-                    size="small"
-                    disabled={!record.enabled || routing.defaultModelId === record.id}
-                    onClick={() => void saveRouting({ ...routing, defaultModelId: record.id })}
-                  >
-                    {routing.defaultModelId === record.id ? '已是全局默认' : '设为全局默认'}
-                  </Button>
-                  <Button size="small" danger onClick={() => void removeModel(record)}>
-                    删除
-                  </Button>
-                </Space>
+                <Button size="small" danger onClick={() => void removeModel(record)}>
+                  删除
+                </Button>
               ),
             },
           ]}
         />
       </Card>
 
-      <Card title="默认路由">
-        {unconfiguredAgents.length > 0 && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={`当前有 ${unconfiguredAgents.length} 个 Agent 未配置模型`}
-            description={`这些 Agent 启动回合会报 ERR_MODEL。把某个模型设为「全局默认」即可让它们立即生效（回退链：实例覆盖 → 模板默认 → 全局默认），无需逐个配置。未配置示例：${unconfiguredAgents
-              .slice(0, 3)
-              .map((item) => `${item.projectName}/${item.displayName}`)
-              .join('、')}${unconfiguredAgents.length > 3 ? ' …' : ''}`}
-          />
-        )}
-        <Space size="large" wrap>
-          <Space>
-            <Typography.Text>全局默认模型</Typography.Text>
-            <Select
-              style={{ width: 260 }}
-              placeholder="未设置"
-              value={routing.defaultModelId ?? undefined}
-              options={enabledModelOptions}
-              onChange={(value: string) => void saveRouting({ ...routing, defaultModelId: value })}
-            />
-          </Space>
-          {(['plan', 'act', 'critique'] as const).map((step) => (
-            <Space key={step}>
-              <Typography.Text>{`${step} 步骤`}</Typography.Text>
-              <Select
-                style={{ width: 220 }}
-                allowClear
-                placeholder="跟随默认"
-                value={routing.stepOverrides[step]}
-                options={enabledModelOptions}
-                onChange={(value?: string) => {
-                  const next = { ...routing.stepOverrides }
-                  if (value === undefined) delete next[step]
-                  else next[step] = value
-                  void saveRouting({ ...routing, stepOverrides: next })
-                }}
-              />
-            </Space>
-          ))}
-        </Space>
-      </Card>
+      {/* S14：原「默认路由」卡片（全局默认模型 + plan/act/critique 步骤覆盖）已随该功能删除；
+          未配置模型只能通过「Agent 模块批量配模板默认模型」或「项目内实例覆盖」解决 */}
+      {unconfiguredAgents.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`当前有 ${unconfiguredAgents.length} 个 Agent 未配置模型`}
+          description={`这些 Agent 启动回合会报 ERR_MODEL。请到「Agent」模块勾选模板并一键配置默认模型（影响此后新建实例），或在项目内为既有实例选择模型（生效链只有两级：实例覆盖 → 模板快照）。未配置示例：${unconfiguredAgents
+            .slice(0, 3)
+            .map((item) => `${item.projectName}/${item.displayName}`)
+            .join('、')}${unconfiguredAgents.length > 3 ? ' …' : ''}`}
+        />
+      )}
 
       <Modal
         open={drawerOpen}

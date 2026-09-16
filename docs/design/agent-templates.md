@@ -8,7 +8,7 @@
 ```
 角色模板 Role Template（系统库，可增删，带场景标签）   ← 抽象层：本文件定义
    └─ 项目实例 Role Instance / Agent（团队组队）        ← 组队层：agent-runtime §1
-        └─ 运行时执行：loop + 模型路由 + 工具包          ← 执行层：agent-runtime §3~§6
+        └─ 运行时执行：loop + 模型选择 + 工具包            ← 执行层：agent-runtime §3~§6
 ```
 
 本文件负责**模板层与其展示/配置边界**；运行时行为不在本文件重复。
@@ -114,7 +114,7 @@
 
 | 事项 | 归属 |
 | --- | --- |
-| Agent 状态机（idle/working/waiting）、单工、loop 执行、上下文组装、模型路由 | [agent-runtime.md](agent-runtime.md) |
+| Agent 状态机（idle/working/waiting）、单工、loop 执行、上下文组装、模型选择 | [agent-runtime.md](agent-runtime.md) |
 | 项目内团队组队、实例停止/启用、实例删除 | [agent-runtime.md](agent-runtime.md) §1/§2、prd FR-02 |
 | 项目内 Agent 之间的委派关系与画布 | [orchestration.md](orchestration.md) |
 | 工具与工具包 | [tools.md](tools.md)、[tool-packages.md](tool-packages.md) |

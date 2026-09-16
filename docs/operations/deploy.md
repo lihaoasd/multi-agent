@@ -10,7 +10,7 @@
   - OpenAI 兼容 API（DeepSeek / OpenAI / 通义百炼 / Kimi / 智谱 GLM / 火山方舟 / 自定义）：需 API Key；
   - Anthropic Claude / Google Gemini：原生协议，需 API Key；
   - Ollama 本地模型：Ollama 已启动并已 pull 模型；
-  - **出厂状态不含任何供应商与模型**：需先在 UI"模型"模块添加供应商与模型条目（离线可用本地 Ollama，但需本机已启动 Ollama 服务）；未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导。
+  - **出厂状态不含任何供应商与模型**：需先在 UI"模型"模块添加供应商与模型条目（离线可用本地 Ollama，但需本机已启动 Ollama 服务），再在「Agent」模块或项目内为角色选择模型；未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导。**「默认路由」/平台默认模型已随 S14/D24（2026-09-16）整体删除**，模型解析链只有两级（实例覆盖 → 模板快照）。
 
 ## 2. 安装与运行
 
@@ -40,7 +40,7 @@ npm run reindex    # 检索索引重建（S5 接入前为空操作，命令可�
 cp .env.example .env    # 可选：填 DEEPSEEK_API_KEY（走 env 凭证模式时）
 ```
 
-**模型供应商 / 模型条目 / 默认路由不在 `.env` 里配**（2026-09-15 起，D20-⑤）：由 UI"模型"模块写入 `data/model-config.json`，**改完即时生效、无需重启**（见 [model-config.md](../design/model-config.md)）。`.env` 只保留引导与边界默认键。
+**模型供应商 / 模型条目不在 `.env` 里配**（2026-09-15 起，D20-⑤；原「默认路由」已随 S14/D24 于 2026-09-16 删除）：由 UI"模型"模块写入 `data/model-config.json`，**改完即时生效、无需重启**（见 [model-config.md](../design/model-config.md)）。`.env` 只保留引导与边界默认键。
 
 命名约定：**`__`（双下划线）表示层级，数组/对象用 JSON**；未设置的键回退内置默认值。
 `.env` 改动需 **重启服务** 生效。常用键：
@@ -52,7 +52,6 @@ DATA_DIR=data                                  # 运行时数据根（默认仓�
 ROLE_DIRS=["src/shared/roles","data/roles"]    # 内置角色模板 + 用户自定义角色
 
 MODELS__CONFIG_FILE=data/model-config.json     # 运行时模型配置文件（UI 维护；不存在时按下方策略初始化）
-MODELS__DEFAULT=deepseek-chat                  # 初始化阶段生效：命中已启用的模型条目时设为平台默认模型；留空或命中不到则不预设（Agent 未配置模型时启动回合会明确报错引导）
 MODELS__IMPORT_FROM_ENV=true                   # 是否允许从遗留 MODELS__PROVIDERS 一次性导入（此后不再读写）
 MODELS__REQUEST_TIMEOUT_MS=60000               # 单次模型请求超时上限
 MODELS__MAX_PROMPT_CHARS=20000                 # Agent 提示词长度上限
@@ -74,7 +73,7 @@ CONTEXT__TOOL__RESULT_MAX_CHARS=12000
 ```
 
 - 完整键列表与注释见仓库根的 **`.env.example`**（入库，可作为模板）。
-- 角色/实例的模型解析链（实例 → 模板 → loop 步骤默认 → 平台默认）见 agent-runtime.md §5 与 model-config.md §2。
+- 角色/实例的模型解析链只有**两级**（实例覆盖 → 模板快照；两级皆空 → `ERR_MODEL`，选型入口在「Agent」模块的批量配置或项目内实例覆盖），见 agent-runtime.md §5 与 model-config.md §2。原第三/四级（loop 步骤默认、平台默认）已随「默认路由」功能于 S14/D24 删除。
 - **密钥存放**：`env` 模式放 `.env`（已被 `.gitignore` 排除）或真实环境变量；`file` 模式明文存 `data/model-config.json`（`data/` 不入库）。两者都不要写进代码或提交；UI 与接口只显示掩码。
 - 部署时若不便使用 `.env` 文件，可直接用进程环境变量（同名即可）；`process.env` 优先于 `.env`。
 - 遗留 `MODELS__PROVIDERS`（旧形状）仅在 `data/model-config.json` 不存在且 `MODELS__IMPORT_FROM_ENV=true` 时被一次性导入，之后不再读取（model-config.md §11）。
@@ -84,7 +83,7 @@ CONTEXT__TOOL__RESULT_MAX_CHARS=12000
 | 数据 | 位置 | 备份方式 |
 | --- | --- | --- |
 | 平台基础设施配置 | `.env`（模板 `.env.example`） | `.env` 不入库（可能含密钥）；改动项请同步到 `.env.example` |
-| **平台模型配置**（供应商/模型条目/默认路由） | `data/model-config.json` | 不入库（`file` 模式含密钥明文）；拷贝该文件即可迁移 |
+| **平台模型配置**（供应商/模型条目） | `data/model-config.json` | 不入库（`file` 模式含密钥明文）；拷贝该文件即可迁移。只存 `{schemaVersion, revision, providers[], models[]}`（S14 起无 `routing`） |
 | **配置变更审计** | `data/config-audit.jsonl` | 拷贝（只增日志；不含密钥明文与提示词全文） |
 | 运行时项目（会话/记忆/manifest/任务/询问/审批/编排图） | `data/projects/<projectId>/` | **拷贝该文件夹**；UI 提供导出 zip |
 | 用户自定义角色 | `data/roles/`（含 `<roleId>.history/` 快照） | 拷贝 |
@@ -98,4 +97,4 @@ CONTEXT__TOOL__RESULT_MAX_CHARS=12000
 - 日志：平台运行日志 `logs/`（不入库）；会话审计在会话 log（导出/检索）。
 - 索引重建：`npm run reindex`（损坏/升级后）。
 - 升级：拉新代码 → npm install → 重启；schemaVersion 迁移策略见 data-storage.md（向前兼容读取，必要时一次性迁移脚本）。
-- 常见问题：模型连接失败（在 UI"模型"模块用 **[测试连接]** 定位 baseUrl/Key/Ollama 是否正常）；端口占用（改 `.env` 的 `SERVER__PORT`）；目录无法写入（权限/边界提示）；删除供应商被拒（被模型条目或 Agent 引用，见引用清单）。
+- 常见问题：模型连接失败（在 UI"模型"模块用 **[测试连接]** 定位 baseUrl/Key/Ollama 是否正常）；**未配置模型**（Agent 启动回合报 `ERR_MODEL`）→ 在「Agent」模块勾选模板用 **[一键配置模型]**（影响此后新建实例），或在项目内对该实例做**模型覆盖**（影响既有实例）——S14 起不再有「设为全局默认」；端口占用（改 `.env` 的 `SERVER__PORT`）；目录无法写入（权限/边界提示）；删除供应商被拒（被模型条目或 Agent 引用，见引用清单）。

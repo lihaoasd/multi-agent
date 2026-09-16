@@ -172,7 +172,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | --- | --- |
 | 角色模板 | 系统角色库：模板文件（提示词/默认模型/默认 loop/工具集/权限）可增删。 |
 | agent loop | `agent-loop` strategy 注册表：实现统一接口(strategyName, buildSteps)，配置即用。 |
-| 模型 Provider | `infra/model/providers/` 五实现 + `ProviderKindRegistry` 注册表；供应商/模型条目/默认路由由 UI 写入 `data/model-config.json`（`ModelConfigStore`），改完即时生效、不重启（[model-config.md](model-config.md)）。 |
+| 模型 Provider | `infra/model/providers/` 四实现 + `ProviderKindRegistry` 注册表；供应商/模型条目由 UI 写入 `data/model-config.json`（`ModelConfigStore`），改完即时生效、不重启（[model-config.md](model-config.md)）；**S14 起无"默认路由/全局默认模型"**，模型由 Agent 模板默认或实例覆盖指定。 |
 | 工具 | tools 注册表（名称/schema/实现/白名单级别/是否高危）。 |
 | 产出物类型 | 类型注册表（文档/代码/配置/测试/部署…）：默认路径、校验、diff 器。 |
 | 审批策略 | 规则函数：按命令/动作/类型/范围返回 needApproval 布尔。 |
@@ -180,7 +180,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 
 ## 10. 端口与接口约定（详见 api/contract.md）
 
-- REST：`/api/projects`、`/api/projects/:id/team|sessions|artifacts|tasks|questions|approvals|search|orchestration`、`/api/projects/:pid/agents/:iid/{pause,resume,stop}`、`/api/agent-templates`（含写路径）、`/api/tool-packages`、`/api/fs/browse`(目录选择)、`/api/config`、**`/api/model-presets|model-providers|models|model-routing|model-config/import`（D20 模型配置）**
+- REST：`/api/projects`、`/api/projects/:id/team|sessions|artifacts|tasks|questions|approvals|search|orchestration`、`/api/projects/:pid/agents/:iid/{pause,resume,stop}`、`/api/agent-templates`（含写路径）、`/api/tool-packages`、`/api/fs/browse`(目录选择)、`/api/config`、**`/api/model-presets|model-providers|models|model-config/import|model-config/overview`（D20 模型配置；`/api/model-routing` 已于 S14/D24 删除）**
 - WS：`/ws` 事件推送（见 contract.md）；文本协议 JSON。
 - 全部错误返回统一 `{ code, message }`。
 
@@ -190,7 +190,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | --- | --- |
 | 首页 · 项目模块（列表 + 创建向导：选工作目录 + 勾选角色） | project/team + fs/browse |
 | 首页 · Agent 模块（模板库：loop/提示词/工具/模型/场景；**提示词/loop/模型可提交**，工具只读） | team(模板) + model-config(模型条目) + tool-package |
-| 首页 · 模型模块（供应商/模型条目/默认路由/连通性测试） | model-config + ws |
+| 首页 · 模型模块（供应商/模型条目/连通性测试/未配置 Agent 计数） | model-config + ws |
 | 首页 · 工具模块（8 个基础包展示，只读；包内工具在详情弹窗查看） | tool-package |
 | 项目页 · 拓扑导航（**2 栏**：左画布 + 右三列表） | orchestration + agent.state + ws |
 | 项目页 · 对话导航（**3 栏**：左会话切换 + 中会话流含工作日志 + 右三列表） | session + ws |

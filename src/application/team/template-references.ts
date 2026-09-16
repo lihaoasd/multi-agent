@@ -1,5 +1,4 @@
 import type { ModelId } from '../../ports/model'
-import type { ModelCatalog } from '../../ports/model-config'
 import type { ProjectStore, RoleInstance } from '../../ports/project'
 import { resolveEffectiveAgentConfig } from './effective-config'
 
@@ -7,8 +6,8 @@ import { resolveEffectiveAgentConfig } from './effective-config'
  * 模板与 Agent 的引用查询（S11）：
  * - `findTemplateReferrers`：删除模板前的引用保护（被项目实例引用 → 拒绝删除并点名）；
  * - `findUnconfiguredAgents`：**未配置模型**的 Agent（项目实例中启用且生效模型为空，D22-④），
- *   供"模型"模块展示计数并一键设平台默认模型。
- * 口径与 dispatcher 一致：生效链 = `实例覆盖 → 模板快照 → 平台默认(routing.defaultModelId)`。
+ *   供"模型"模块展示计数。
+ * 口径与 dispatcher 一致（S14 起为两级）：生效链 = `实例覆盖 → 模板快照`。
  */
 
 export interface AgentReference {
@@ -25,7 +24,6 @@ export interface TemplateReferenceQuery {
 
 export interface ProjectTemplateReferenceOptions {
   readonly projects: ProjectStore
-  readonly catalog: ModelCatalog
 }
 
 interface AgentScanEntry {
@@ -38,8 +36,6 @@ export function createProjectTemplateReferenceQuery(
   options: ProjectTemplateReferenceOptions,
 ): TemplateReferenceQuery {
   const scan = async (): Promise<readonly AgentScanEntry[]> => {
-    const loaded = await options.catalog.current()
-    const defaultModelId = loaded.ok ? loaded.value.snapshot.routing.defaultModelId : null
     const listed = await options.projects.list()
     if (!listed.ok) return []
     const entries: AgentScanEntry[] = []
@@ -47,7 +43,7 @@ export function createProjectTemplateReferenceQuery(
       const project = await options.projects.get(summary.id)
       if (!project.ok) continue
       for (const instance of project.value.team) {
-        const effective = resolveEffectiveAgentConfig(instance, { defaultModelId })
+        const effective = resolveEffectiveAgentConfig(instance)
         entries.push({
           ref: {
             projectId: project.value.id,

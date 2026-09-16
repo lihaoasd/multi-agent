@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createTestServer, type TestContext } from '../helpers-server'
-import { configureTestModel } from '../helpers-model'
+import { applyModelToAllTemplates, configureTestModel } from '../helpers-model'
 import { createScriptedGateway } from '../helpers-scripted-gateway'
 import type { ArtifactRecord } from '../../src/ports/artifact'
 import type { MemoryEntry } from '../../src/ports/memory'
@@ -69,8 +69,10 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
       { text: '已完成登录模块初稿并记录进度。' },
     ])
     context = await createTestServer({ gateway })
-    // S10：出厂无任何供应商/模型，验收显式登记一个平台默认模型（网关为替身，不联网）
+    // S10/S14：出厂无任何供应商/模型，也没有"平台默认模型"这一级 —— 验收显式登记模型，
+    // 并在**建项目之前**把它写到全部内置模板的默认模型上（实例快照才会带上模型）。
     await configureTestModel(context.deps, { providerId: 'accept-provider', modelId: 'accept-model' })
+    await applyModelToAllTemplates(context.app, 'accept-model')
 
     const created = await context.app.inject({
       method: 'POST',
@@ -269,8 +271,10 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
       expect(providers.json<unknown[]>()).toEqual([])
       const models = await fresh.app.inject({ method: 'GET', url: '/api/models' })
       expect(models.json<unknown[]>()).toEqual([])
-      const routing = await fresh.app.inject({ method: 'GET', url: '/api/model-routing' })
-      expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
+      // S14：不再有「默认路由」接口（也没有任何平台级默认模型）
+      expect((await fresh.app.inject({ method: 'GET', url: '/api/model-routing' })).statusCode).toBe(404)
+      const overview = await fresh.app.inject({ method: 'GET', url: '/api/model-config/overview' })
+      expect(overview.json<Record<string, unknown>>()).not.toHaveProperty('routing')
 
       // 2.2 未注册任何 kind=mock 供应商（协议适配器已删除）
       const rejected = await fresh.app.inject({
@@ -359,6 +363,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     const danger = await createTestServer({ gateway, envMap: {}, root: `${context.root}-danger` })
     try {
       await configureTestModel(danger.deps, { providerId: 'danger-provider', modelId: 'danger-model' })
+      await applyModelToAllTemplates(danger.app, 'danger-model')
       const created = await danger.app.inject({
         method: 'POST',
         url: '/api/projects',
@@ -426,7 +431,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
     const plans = readdirSync(join(process.cwd(), 'docs', 'plan'))
     const changes = readdirSync(join(process.cwd(), 'docs', 'changes'))
-    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13']) {
+    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14']) {
       expect(plans.some((file) => file.includes(`-${stage}-`)), `plan ${stage}`).toBe(true)
       expect(changes.some((file) => file.includes(`-${stage}-`)), `changes ${stage}`).toBe(true)
     }
@@ -499,6 +504,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     const asking = await createTestServer({ gateway, root: `${context.root}-asking` })
     try {
       await configureTestModel(asking.deps, { providerId: 'asking-provider', modelId: 'asking-model' })
+      await applyModelToAllTemplates(asking.app, 'asking-model')
       const createdProject = await asking.app.inject({
         method: 'POST',
         url: '/api/projects',
@@ -565,7 +571,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     const tested = await inject({ method: 'POST', url: '/api/model-providers/ollama/test', payload: { mode: 'models' } })
     expect(tested.statusCode).toBe(200)
 
-    // 8.2 登记模型条目 + 设全局默认（无需重启即生效）
+    // 8.2 登记模型条目（S14：不再有"设全局默认"，模型由模板/实例引用）
     const model = await inject({
       method: 'POST',
       url: '/api/models',
@@ -573,8 +579,6 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     })
     expect(model.statusCode).toBeLessThan(300)
     const modelId = model.json<{ id: string }>().id
-    const routing = await inject({ method: 'PUT', url: '/api/model-routing', payload: { defaultModelId: modelId } })
-    expect(routing.statusCode).toBe(200)
 
     // 8.3 基于内置复制新建模板并改提示词 / loop / 模型
     const copied = await inject({

@@ -1,14 +1,14 @@
 # Agent 运行时设计 · Agent Haness
 
 > 类别：design · 状态：草稿(待评审) · 决策依据：D1/D4/D11/D12、prd FR-02/04/10/13/14
-> 关联：[architecture.md](architecture.md)、[data-storage.md](data-storage.md)、[sessions.md](sessions.md)、[memory.md](memory.md)、[model-config.md](model-config.md)（§5 模型路由的配置真源）
+> 关联：[architecture.md](architecture.md)、[data-storage.md](data-storage.md)、[sessions.md](sessions.md)、[memory.md](memory.md)、[model-config.md](model-config.md)（§5 模型选择与解析链的配置真源）
 
 ## 1. 三层角色抽象（可扩展的关键）
 
 ```
 角色模板 Role Template（系统库：内置只读，可复制新建/停用；用户模板可删）  ← 抽象层
    └─ 项目实例 Role Instance / Agent / Worker   ← 组队层（用户勾选角色生成）
-        └─ 运行时执行：loop 策略 + 模型路由 + 工具集   ← 执行层
+        └─ 运行时执行：loop 策略 + 模型调用 + 工具集   ← 执行层
 ```
 
 | 层 | 内容 | 用户能做什么 |
@@ -67,10 +67,10 @@ loop = 一次"Agent 处理一条新输入"的执行编排。**目标形态**为�
 | --- | --- | --- | --- |
 | `direct` | 单轮：组装上下文 → 一次模型调用 → 返回文本（可带受限工具：检索/记忆/读文件） | 闲聊、澄清、快速问答 | 提示级（实为无限轮工具循环） |
 | `reflective` | 生成 → 自查(critique) → 修订，可配 maxIter(=2)，每步可换模型 | 文案/方案起草、PRD 初稿 | 提示级（无 critique 调用） |
-| `plan-execute` | 显式计划(步骤清单)→ 逐步执行(每步可用工具：读写文件/检索/提交/命令)→ 验证/收尾 | 开发、测试、架构任务（重活） | 提示级（硬编码单步 plan 事件，无消费者） |
+| `plan-execute` | 显式计划(步骤清单)→ 逐步执行(每步可用工具：读写文件/检索/提交/命令)→ 验证/收尾 | 开发、测试、架构任务（重活） | 真实形态（S4：计划由模型产出并消费） |
 | （扩展位） | strategy 注册表开放 | 场景化新增 | 注册表不存在 |
 
-loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterations`、`stepModelOverride`、`toolBudget`、`interruptibleAfterStep: true`（可中断点）。
+loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮数上限）、`stepModelOverride`（步骤级模型覆盖，逐步骤覆盖生效模型）、`toolBudget`（工具调用上限）、`interruptibleAfterStep: true`（可中断点开关）。
 每次执行都会：
 1. dispatcher 从 waiting/idle 领活并置 working；
 2. 组装上下文（见 §4）；
@@ -117,16 +117,15 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
 
 **任务上下文**（D15 → D19-⑤）：受派 Agent 回合内由 dispatcher 注入其**当前激活任务**（标题/受派者/状态/关联会话），仅用于告知职责与**代码产物按任务聚合的归属锚点**（workspaces-artifacts §2.2）。**激活规则（D16-④ 修订为 D17-①）**：每 Agent 至多 1 个 `in_progress` 任务——已有 in_progress 时**新任务不可置为 in_progress**（UI 置位被拦并提示原因，新任务可先置 `todo` 排队；**无静默自动回退**）；槽位仅由「任务完成（用户确认 done）」或「用户显式**终止**」释放。**激活即唤醒（D18-③）**：任务置 `in_progress` 时 dispatcher 向受派者 user 会话注入一条唤醒消息「请开始执行任务 t_…」，作为确定性开工触发（不依赖用户另行发消息）。**终止语义（D17-①）**：终止入口带确认；存在未结算改动时**先结算为一条 code artifact 快照**（归属落袋、可回退）再置 `terminated`；若 Agent 正在执行该任务，终止到**当前可中断点**生效并回注 Agent「任务已被用户终止」、停止该任务后续计划步骤（未执行步骤作废，不回放）。仅 `in_progress` 任务被注入上下文并充当代码聚合锚点；`todo` 任务与会话内口头指派不入上下文（对应改动按回合兜底，workspaces-artifacts §2.2）；状态流转由受派者领取/汇报驱动（D19-⑤：`todo`→`claim`→`in_progress`→`done`/`blocked`/`terminated`），用户可随时干预。
 
-## 5. 模型路由（D4/D5；**2026-09-15 按 D20 修订口径**）
+## 5. 模型选择与解析链（D4/D5；**2026-09-15 按 D20 修订；2026-09-16 S14/D24 收敛为两级**）
 
 - **配置真源**：[model-config.md](model-config.md)。供应商（连接）与模型条目（具体模型）在那里定义；本节只讲"某个 Agent 的某一回合用哪个模型"。
-- 路由规则（解析链固定，任一层未命中即向下，**全部未命中则失败，不外推到"随便挑一个"**）：
+- 解析链固定为**两级**（任一层未命中即向下，**全部未命中则失败，不外推到"随便挑一个"**）：
   1. 实例 `model` 覆盖；
-  2. 模板 `defaultModel`（创建实例时写入快照，D16-⑤）；
-  3. loop 步骤默认 `routing.stepOverrides[step]`（如 critique 用更强模型）；
-  4. 平台默认 `routing.defaultModelId`。
+  2. 模板 `defaultModel`（创建实例时写入快照，D16-⑤）。
+- **2026-09-16（S14/D24）删除的平台层**：原第三级 `routing.stepOverrides[step]` 与原第四级平台默认 `routing.defaultModelId` 已随「默认路由」功能**整体删除**（`resolveEffectiveAgentConfig(instance)` 不再接收 fallback）。注意区分：`routing.stepOverrides` 是**已删除的平台路由字段**，与 **loop 参数 `loop.params.stepModelOverride`**（保留不变，按步骤级模型覆盖生效，见 §3 S4 实现口径）**不是一回事**。
 - **口径（D20-①，修订原 B8 "`model` 引用 provider id"）**：实例/模板的 `model` 字段值引用 **模型条目 id**（`data/model-config.json` 的 `models[].id`，如 `deepseek-chat`/`gpt-4o`/`ollama-qwen`），模型条目再指向供应商并携带真实模型名与默认参数；旧值（provider id）兼容解析见 model-config.md §11。
-- **失败语义（D20-⑥）**：目标模型不存在/未启用/凭证缺失/调用失败 → `ERR_MODEL`（`detail` 含 `providerId`/`modelId`/`status`，**已脱敏**），落 `kind=error` 事件并回注 Agent；**不自动改用其它模型**（避免"悄悄换模型"）。
+- **失败语义（D20-⑥）**：目标模型不存在/未启用/凭证缺失/调用失败，或两级都没有模型（生效模型为 `null`）→ `ERR_MODEL`（`detail` 含 `providerId`/`modelId`/`status`，**已脱敏**），落 `kind=error` 事件并回注 Agent；未配置时的提示语为"该角色还没有可用模型：请在「模型」模块添加供应商与模型条目，并在 Agent 模块或项目内为它选择模型"。**不自动改用其它模型**（避免"悄悄换模型"；S14 起也不再有平台默认兜底）。
 - **适配器与流式**：四种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`）的差异在 `infra/model/providers/` 内归一化为统一 `ModelChunk`；`ModelGateway` 统一返回增量，chunk 落 log（合并为 message 事件）并推送；中断/超时重试策略见架构 §7（默认退避 ≤3 次，超时上限取 `MODELS__REQUEST_TIMEOUT_MS`）。
 - **生效时机**：平台模型配置改动即时生效（下一次模型调用）；实例 `model` 改动在下一回合开始生效（运行中回合到可中断点），见 model-config.md §9。
 

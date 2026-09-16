@@ -42,7 +42,7 @@ describe('API · 模型配置：首次启动的遗留导入（model-config.md §
 
   const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
 
-  it('导入供应商与模型，默认路由指向导入的模型', async () => {
+  it('导入供应商与模型（S14：不再写平台默认模型）', async () => {
     const providers = (await inject({ method: 'GET', url: '/api/model-providers' })).json<ProviderBody[]>()
     const provider = providers.find((item) => item.id === 'legacy-p')
     expect(provider).toBeDefined()
@@ -50,9 +50,6 @@ describe('API · 模型配置：首次启动的遗留导入（model-config.md §
 
     const models = (await inject({ method: 'GET', url: '/api/models' })).json<ModelBody[]>()
     expect(models.map((item) => item.id)).toContain('legacy-model')
-
-    const routing = (await inject({ method: 'GET', url: '/api/model-routing' })).json<{ defaultModelId: string }>()
-    expect(routing.defaultModelId).toBe('legacy-model')
   })
 
   it('env 模式凭证从合并环境映射解析（hasValue=true），但明文永不出现在响应里', async () => {

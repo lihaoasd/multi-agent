@@ -14,8 +14,6 @@ export interface ServerConfig {
 export interface ModelsConfig {
   /** 运行时模型配置文件（UI 维护，UI 改动即时生效） */
   readonly configFile: string
-  /** 首次初始化时的默认模型条目 id */
-  readonly defaultModelId: string
   /** 是否允许从遗留 MODELS__PROVIDERS 一次性导入 */
   readonly importFromEnv: boolean
   /** 单次模型请求超时上限（毫秒） */
@@ -63,8 +61,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   server: { host: '127.0.0.1', port: 3000 },
   models: {
     configFile: 'data/model-config.json',
-    /** 空字符串 = 未指定：出厂不预设任何默认模型（供应商/模型条目由用户在 UI 配置） */
-    defaultModelId: '',
     importFromEnv: true,
     requestTimeoutMs: 60_000,
     maxPromptChars: 20_000,
@@ -160,7 +156,6 @@ export function buildAppConfig(env: EnvMap, defaults: AppConfig = DEFAULT_APP_CO
     },
     models: {
       configFile: readString(env, 'MODELS__CONFIG_FILE', defaults.models.configFile),
-      defaultModelId: readString(env, 'MODELS__DEFAULT', defaults.models.defaultModelId),
       importFromEnv: readBoolean(env, 'MODELS__IMPORT_FROM_ENV', defaults.models.importFromEnv),
       requestTimeoutMs: readInteger(env, 'MODELS__REQUEST_TIMEOUT_MS', defaults.models.requestTimeoutMs, 1_000, 600_000),
       maxPromptChars: readInteger(env, 'MODELS__MAX_PROMPT_CHARS', defaults.models.maxPromptChars, 100, 200_000),

@@ -26,9 +26,9 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
   beforeAll(async () => {
     context = await createTestServer()
     workdir = mkdtempSync(join(tmpdir(), 'ah-workdir-'))
-    // S10：出厂无任何供应商/模型（Agent 默认不配置模型）；本文件的模型引用用例显式登记一条，
-    // 但**不设平台默认**，以便同时覆盖"模板快照为空 → 生效模型为 null"的未配置路径。
-    await configureTestModel(context.deps, { providerId: 'proj-provider', modelId: 'proj-model', asPlatformDefault: false })
+    // S10：出厂无任何供应商/模型（Agent 默认不配置模型）；S14 起没有平台默认，
+    // 因此本文件的模型引用用例显式登记一条，并只通过"实例覆盖/模板快照"生效。
+    await configureTestModel(context.deps, { providerId: 'proj-provider', modelId: 'proj-model' })
   })
 
   afterAll(async () => {

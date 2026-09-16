@@ -2,8 +2,9 @@
 
 > 类别：api · 状态：草稿(待评审) · 决策依据：架构 §10、FR-12；**本文件为草案**，编码阶段以实际实现为准并回写。
 > 关联：[ui.md](../design/ui.md)、[data-storage.md](../design/data-storage.md)、[orchestration.md](../design/orchestration.md)、[tool-packages.md](../design/tool-packages.md)、[agent-templates.md](../design/agent-templates.md)、[model-config.md](../design/model-config.md)（模型配置与 Agent 配置提交，2026-09-15）
-> 2026-09-15 修订：新增"模型配置"端点组（§2）；删除 `GET/PUT /api/settings/models（config.yaml 落盘）`（与"`.env` 是配置来源"口径冲突的残留，模型路由改由 `/api/model-routing` 承担）；Agent 模板写路径开放提示词/loop/模型三项。
+> 2026-09-15 修订：新增"模型配置"端点组（§2）；删除 `GET/PUT /api/settings/models（config.yaml 落盘）`（与"`.env` 是配置来源"口径冲突的残留，模型路由改由 `/api/model-routing` 承担——该端点已于 2026-09-16 由 S14/D24 删除）；Agent 模板写路径开放提示词/loop/模型三项。
 > 2026-09-16 修订（S11/D22）：新增 `DELETE /api/agent-templates/:roleId` 与 `POST /api/agent-templates/bulk-model`；**内置模板开放停用/启用与默认模型**（经 `data/agent-templates-state.json` 覆盖，仓库 yaml 只读），提示词/loop 对内置仍 `ERR_FORBIDDEN`；`GET /api/model-config/overview` 增 `unconfiguredAgents`。
+> 2026-09-16 修订（S14/D24）：**删除「默认路由」功能（连机制一起删）**——移除 `GET/PUT /api/model-routing`（请求返回 404）；`GET /api/model-config/overview` 不再返回 `routing` 字段；`GET /api/config` 的 `models` 去掉 `defaultModelId`；生效链收敛为两级（`实例覆盖 → 模板快照`，全空报 `ERR_MODEL`）。
 
 ## 1. 约定
 
@@ -38,7 +39,7 @@
 | GET | /api/projects/:pid/agents/:iid/system-prompt | **完整系统提示词预览**（只读）：与运行期**同一 ContextBuilder** → `{ sessionType:"user", blocks:[{id,origin,title,text}], text }`；块顺序 `role-config`（实例提示词）→ `platform-role` → `global-memory` → `role-memory` → `session-window`（含最近滚动摘要）→ [`retrieval`（有检索片段时）] → `tools`（S5 起记忆块已接入；S6 再追加任务/产出索引段）；不落盘；实例不存在 → 404 |
 | POST | /api/projects/:pid/team | 增实例（选模板+覆盖配置）；**每模板至多 1 实例**（D14-3，重复 → `ERR_CONFLICT`）；创建时**快照模板默认值**（D16-⑤） |
 | PATCH | /api/projects/:pid/team/:iid | 改实例：`displayName` / `prompt` / `model` / `loop` / `enabled`；**传 `null` 表示清除覆盖回到快照**；仅覆盖变化时 `configVersion+1`；校验复用模板层同一套（提示词长度、loop 参数范围、模型须已启用） |
-| GET | /api/projects/:pid/team/:iid/effective-config | 有效配置解析结果（实例覆盖 → 模板快照 → 平台默认模型） |
+| GET | /api/projects/:pid/team/:iid/effective-config | 有效配置解析结果（两级：实例覆盖 → 模板快照；S14/D24 起无平台默认模型，两级皆空时 `model` 为 `null`） |
 | DELETE | /api/projects/:pid/team/:iid | **停用实例**（保留会话/记忆，可重新启用，D14-9）；重复停用 → `ERR_CONFLICT` |
 | POST | /api/projects/:pid/team/:iid/enable | 重新启用（无 body；服务端把空 body 视为 `{}`） |
 
@@ -88,7 +89,7 @@
 | POST | /api/projects/:pid/sessions/:sid/recovery | 三选 + 补全 `{turn, action:'report'\|'continue'\|'ignore'\|'complete'}` → `{resumed,text}`；`report/continue/complete` 落 `state` 标记并注入系统消息唤醒一轮，`ignore` 只落标记；重复处理 → `ERR_CONFLICT`；`turn` 不匹配 → `ERR_CONFLICT`；非法 action → `ERR_VALIDATION` |
 
 ### 系统
-| GET | /api/config | 运行期只读总览：存储根/`roleDirs`、`server`、`models`（配置文件/默认模型/提示词上限/超时/遗留导入开关）、`approval`、`sandbox`、`search`、`context` 上限与备份口径；**模型与供应商部分已迁出**（见「模型配置」组），**永不含密钥**（S9 落地） |
+| GET | /api/config | 运行期只读总览：存储根/`roleDirs`、`server`、`models`（配置文件/遗留导入开关/提示词上限/超时）、`approval`、`sandbox`、`search`、`context` 上限与备份口径；**模型与供应商部分已迁出**（见「模型配置」组），**永不含密钥**（S9 落地）；**S14/D24 起 `models` 不再含 `defaultModelId`** |
 | GET | /api/projects/:pid/export | 导出运行时项目文件夹为 zip（会话/记忆/产出物/归属/任务/询问/编排图，附 `EXPORT-README.txt`；**不含用户工作目录**）。实现（S8）：零依赖 STORE 写入器；响应 `application/zip` + `attachment; filename="<pid>.zip"`；项目数据不存在 → 404；超 64M 字符 → `ERR_VALIDATION` |
 
 ### 模型配置（2026-09-15 新增，设计见 [design/model-config.md](../design/model-config.md)）
@@ -106,13 +107,12 @@
 | POST | /api/models | 新建模型条目 `{id, providerId, model, displayName?, capabilities?, contextWindow?, maxOutputTokens?, defaultParams?}` |
 | POST | /api/models/bulk | 批量登记 `{providerId, models:[{model, displayName?}]}` → `{created:[…], skipped:[…]}`（同供应商同名跳过；id 由 `<providerId>-<模型名>` 归一化且唯一）|
 | PATCH | /api/models/:mid | 编辑（含 `enabled`）；停用**被模板/实例引用**的模型需 `confirm:true`，否则 `ERR_CONFLICT` + `detail.referrers` |
-| DELETE | /api/models/:mid | 删除；被引用时需 `?confirm=true`，否则 `ERR_CONFLICT` + `detail.referrers`；删默认模型会同时清空路由指向 |
-| GET/PUT | /api/model-routing | 全局默认模型与 loop 步骤默认：`{defaultModelId, stepOverrides:{act?, plan?, critique?}}` |
-| GET | /api/model-config/overview | 一次取回 `{revision, providers[], models[], routing, notices[], unconfiguredAgents}`（UI 首屏用）；`unconfiguredAgents = {total, items:[{projectId, projectName, instanceId, displayName}]}`，口径 = 项目实例中 **enabled 且生效模型为空**（生效链 `实例覆盖 → 模板快照 → 平台默认 routing.defaultModelId`，S11/D22）；`notices` 为 v0/坏文件备份提示 |
+| DELETE | /api/models/:mid | 删除；被引用时需 `?confirm=true`，否则 `ERR_CONFLICT` + `detail.referrers`（S14/D24 起不再有需要连带清理的默认模型/路由指向） |
+| GET | /api/model-config/overview | 一次取回 `{revision, providers[], models[], notices[], unconfiguredAgents}`（UI 首屏用；**S14/D24 起不再有 `routing` 字段**）；`unconfiguredAgents = {total, items:[{projectId, projectName, instanceId, displayName}]}`，口径 = 项目实例中 **enabled 且生效模型为空**（生效链两级 `实例覆盖 → 模板快照`，S11/D22、S14/D24）；`notices` 为 v0/坏文件备份与 `routing-removed`（遗留 `routing` 键已丢弃、待启动回写抹除）提示 |
 | POST | /api/model-config/import | 一次性导入遗留配置 `?source=env\|v0`（`.env` 的 `MODELS__PROVIDERS` / 旧 `data/model-config.json`）→ `{imported, skipped[]}` |
 
 > 校验与失败语义见 model-config.md §8：**不新增错误码**，沿用 `ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`；引用者列表放 `detail.referrers`。
-> 启动初始化（model-config.md §11）：① **迁移**——剔除 `kind` 已不在注册表中的供应商及其模型条目，清理 `routing.defaultModelId` 与 `stepOverrides` 中指向它们的值并写 `config-audit`；② 空配置且允许时一次性导入遗留 `MODELS__PROVIDERS`；③ `MODELS__DEFAULT` **初始化阶段生效**（命中已启用模型条目则设为平台默认；命中不到不预设，不静默换模型）；④ **不自动创建任何供应商/模型**（未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导）。
+> 启动初始化（model-config.md §11；**S14/D24 修订**）：① **抹掉已废弃的 `routing` 键**——加载时丢弃，启动流程回写配置文件并从磁盘抹除，写 `config-audit`（`action:"migrate"`、`target:{kind:"routing",id:"removed"}`、`diff:{removed:["routing"]}`）；② **迁移**——剔除 `kind` 已不在注册表中的供应商及其模型条目并写 `config-audit`；③ 空配置且允许时一次性导入遗留 `MODELS__PROVIDERS`；④ **不自动创建任何供应商/模型，也不再有 `MODELS__DEFAULT`**（未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导：在「模型」模块添加供应商与模型条目，并在 Agent 模块或项目内为它选择模型）。
 
 ### 首页库（工具包只读；Agent 模板：用户模板开放 提示词/loop/模型 三项提交，内置仅默认模型可改、可停用，S11）| 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -126,7 +126,7 @@
 
 > 2026-09-15 更新：Agent 模板的**提示词 / loop / 模型**已开放提交（FR-35，写路径见"角色库 / 团队"表）；**工具包制作（U8）仍只读**。
 > 2026-09-16 更新（S11/D22）：**内置模板的提示词/loop 仍只读**（`ERR_FORBIDDEN`），但**默认模型可改、可停用/启用**（写 `data/agent-templates-state.json` 覆盖，仓库 yaml 不被改写）；**模板删除仅对用户模板开放**（内置只能停用），删除需 `confirm=true` 且被项目实例引用时 409 + `detail.referrers`；新增 `DELETE /api/agent-templates/:roleId` 与 `POST /api/agent-templates/bulk-model`。
-> 项目内实例覆盖走 `PATCH /api/projects/:pid/team/:iid`（字段 `prompt`/`loop`/`model`，校验见 model-config.md §8 #13/#14）。
+> 项目内实例覆盖走 `PATCH /api/projects/:pid/team/:iid`（字段 `prompt`/`loop`/`model`，校验见 model-config.md §8 #11/#12）。
 
 ### 项目编排（拓扑图）
 
@@ -167,7 +167,7 @@
 { type:"agent.state", payload:{projectId, instanceId, state, sessionId} }
 { type:"team.updated", payload:{projectId, instanceId, action} }            // 实例增删停启/配置覆盖（D14-9）
 { type:"orchestration.updated", payload:{projectId, version} }        // 编排图保存（画布同步刷新）
-{ type:"model-config.updated", payload:{revision, changed:{kind:"provider"|"model"|"routing", id}} }  // 供应商/模型/路由变更（2026-09-15）
+{ type:"model-config.updated", payload:{revision, changed:{kind:"provider"|"model", id}} }  // 供应商/模型变更（2026-09-15；S14/D24 起不再有 routing 变更）
 { type:"agent-config.updated", payload:{scope:"template"|"instance", roleId?, projectId?, instanceId?, configVersion} }  // Agent 配置提交（2026-09-15）
 { type:"task.updated", payload:{taskId, action, state, assignee, creator, title} }  // 任务栏：发布/领取/状态变化（2026-09-12）
 { type:"event.appended", payload:{projectId, sessionId, seq, kind, ts}}            // 事件已落盘并追加（含回合边界）

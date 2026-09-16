@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { createFileStore } from '../../../src/infra/file-store/file-store'
 import {
   createModelConfigStore,
+  hasLegacyRouting,
   isLegacyV0,
   parseModelConfigSnapshot,
 } from '../../../src/infra/file-store/model-config-store'
@@ -45,7 +46,6 @@ function snapshotWithProviders(): ModelConfigSnapshot {
       },
     ],
     models: [],
-    routing: { defaultModelId: null },
   }
 }
 
@@ -154,14 +154,39 @@ describe('infra/model-config-store · 解析', () => {
         { name: '缺 id' },
       ],
       models: [{ id: 'm1', providerId: 'p1', model: 'qwen3:8b' }, { id: 'm2' }],
-      routing: { defaultModelId: 'm1', stepOverrides: { act: 'm1' } },
     })
     expect(parsed.ok).toBe(true)
     if (parsed.ok) {
       expect(parsed.value.revision).toBe(3)
       expect(parsed.value.providers).toHaveLength(1)
       expect(parsed.value.models).toHaveLength(1)
-      expect(parsed.value.routing.stepOverrides).toEqual({ act: 'm1' })
+    }
+  })
+
+  it('S14：已废弃的 routing 字段被丢弃，并给出 routing-removed notice', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ah-model-config-legacy-'))
+    const fileStore = createFileStore({ root })
+    await fileStore.writeTextAtomic(
+      PATH,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        revision: 2,
+        providers: [],
+        models: [],
+        routing: { defaultModelId: 'm1', stepOverrides: { act: 'm1' } },
+      })}\n`,
+    )
+    const store = createModelConfigStore({ fileStore, path: PATH, auditPath: 'data/config-audit.jsonl' })
+
+    expect(parseModelConfigSnapshot({ schemaVersion: 1, routing: {} }).ok).toBe(true)
+    expect(hasLegacyRouting({ schemaVersion: 1, routing: {} })).toBe(true)
+    expect(hasLegacyRouting({ schemaVersion: 1 })).toBe(false)
+
+    const loaded = await store.load()
+    expect(loaded.ok).toBe(true)
+    if (loaded.ok) {
+      expect(loaded.value.notices).toEqual([{ kind: 'routing-removed' }])
+      expect(loaded.value.snapshot).toEqual({ schemaVersion: 1, revision: 2, providers: [], models: [] })
     }
   })
 
