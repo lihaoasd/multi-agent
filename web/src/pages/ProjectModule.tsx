@@ -3,7 +3,6 @@ import {
   Button,
   Card,
   Checkbox,
-  Descriptions,
   Drawer,
   Empty,
   Form,
@@ -17,6 +16,7 @@ import {
   Tabs,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -29,7 +29,6 @@ import { SessionPanel } from './SessionPanel'
 import { MemoryPanel } from './MemoryPanel'
 import { WorkPanel } from './WorkPanel'
 import { TopologyPanel } from './TopologyPanel'
-import { WorkingBar } from './WorkingBar'
 import { runtimeApi } from '../api/runtime'
 import { projectApi, type BrowseResult, type InstanceView, type ProjectSummary, type WorkdirInspection } from '../api/projects'
 
@@ -165,6 +164,8 @@ export function ProjectModule() {
   const [wizardForm] = Form.useForm<WizardValues>()
   const [current, setCurrent] = useState<ProjectSummary | null>(null)
   const [activeTab, setActiveTab] = useState('topology')
+  /** 拓扑页点节点带来的会话聚焦请求（S17）：`at` 作为幂等令牌，重复点同一节点也能再次聚焦 */
+  const [sessionFocus, setSessionFocus] = useState<{ instanceId: string; at: number } | null>(null)
   const [instances, setInstances] = useState<InstanceView[]>([])
   const [instanceForm] = Form.useForm<InstanceFormValues>()
   const [editing, setEditing] = useState<InstanceView | null>(null)
@@ -328,23 +329,15 @@ export function ProjectModule() {
   if (current !== null) {
     return (
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Space>
-          <Button onClick={() => setCurrent(null)}>← 返回项目列表</Button>
-          <Typography.Title level={5} style={{ margin: 0 }}>
-            {current.name}
-          </Typography.Title>
-          <Tag>{current.workdirKind === 'empty' ? '空目录' : '已有内容'}</Tag>
-        </Space>
-        <Card size="small" title="项目信息">
-          <Descriptions column={1} size="small">
-            <Descriptions.Item label="工作目录">{current.workdir}</Descriptions.Item>
-            <Descriptions.Item label="描述">{current.description || '—'}</Descriptions.Item>
-            <Descriptions.Item label="成员">{`${current.enabledCount} 启用 / ${current.memberCount} 总计`}</Descriptions.Item>
-          </Descriptions>
-          <Typography.Text type="secondary">
-            会话已接入（S3：单工调度 + WS 实时）；拓扑画布、右栏三列表与运行控制已接入（S7/S8）。
-          </Typography.Text>
-          <Space style={{ marginTop: 8 }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Space>
+            <Button onClick={() => setCurrent(null)}>← 返回项目列表</Button>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              {current.name}
+            </Typography.Title>
+            <Tag>{current.workdirKind === 'empty' ? '空目录' : '已有内容'}</Tag>
+          </Space>
+          <Tooltip title="只导出运行时项目文件夹（会话/记忆/产出物/任务），不含工作目录。">
             <Button
               size="small"
               onClick={() => {
@@ -353,10 +346,8 @@ export function ProjectModule() {
             >
               导出项目数据（zip）
             </Button>
-            <Typography.Text type="secondary">只导出运行时项目文件夹（会话/记忆/产出物/任务），不含工作目录。</Typography.Text>
-          </Space>
-        </Card>
-        <WorkingBar projectId={current.id} />
+          </Tooltip>
+        </Space>
         <Tabs
           activeKey={activeTab}
           onChange={setActiveTab}
@@ -364,7 +355,15 @@ export function ProjectModule() {
             {
               key: 'topology',
               label: '拓扑',
-              children: <TopologyPanel projectId={current.id} onOpenSession={() => setActiveTab('session')} />,
+              children: (
+                <TopologyPanel
+                  projectId={current.id}
+                  onOpenSession={(instanceId) => {
+                    setSessionFocus({ instanceId, at: Date.now() })
+                    setActiveTab('session')
+                  }}
+                />
+              ),
             },
             {
               key: 'team',
@@ -443,7 +442,7 @@ export function ProjectModule() {
             {
               key: 'session',
               label: '会话',
-              children: <SessionPanel projectId={current.id} />,
+              children: <SessionPanel projectId={current.id} focus={sessionFocus} />,
             },
             {
               key: 'memory',

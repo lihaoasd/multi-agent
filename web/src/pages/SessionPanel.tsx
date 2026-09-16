@@ -1,5 +1,5 @@
-import { Alert, Badge, Button, Card, Collapse, Empty, Input, Popconfirm, Select, Space, Tag, Typography, message } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
@@ -10,6 +10,45 @@ import { runtimeApi } from '../api/runtime'
 
 interface SessionPanelProps {
   readonly projectId: string
+  /** 拓扑页点节点带来的聚焦请求（S17）：进入会话页时自动选中该 Agent 的会话；`at` 用于区分重复点击 */
+  readonly focus?: { readonly instanceId: string; readonly at: number } | null
+}
+
+/** 会话列表里的 Agent 状态文字与颜色（S19；`paused` 叠加显示为「已暂停」） */
+const AGENT_STATE_LABEL: Record<string, string> = { idle: '空闲', working: '工作中', waiting: '等待中' }
+const AGENT_STATE_COLOR: Record<string, string> = { idle: 'default', working: 'blue', waiting: 'orange' }
+
+function agentState(status: AgentStatus | undefined): { readonly text: string; readonly color: string } {
+  if (status?.paused === true) return { text: '已暂停', color: 'purple' }
+  const state = status?.state ?? 'idle'
+  return { text: AGENT_STATE_LABEL[state] ?? state, color: AGENT_STATE_COLOR[state] ?? 'default' }
+}
+
+/** 左右两栏的收起状态（S20）：单机单用户，落 localStorage 记忆；读写异常只影响记忆，不影响功能 */
+const COLLAPSE_KEY = 'agent-haness.session-panel-collapsed'
+
+interface CollapsedState {
+  readonly left: boolean
+  readonly right: boolean
+}
+
+function readCollapsed(): CollapsedState {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSE_KEY)
+    if (raw === null) return { left: false, right: false }
+    const parsed = JSON.parse(raw) as Partial<CollapsedState>
+    return { left: parsed.left === true, right: parsed.right === true }
+  } catch {
+    return { left: false, right: false }
+  }
+}
+
+function writeCollapsed(value: CollapsedState): void {
+  try {
+    window.localStorage.setItem(COLLAPSE_KEY, JSON.stringify(value))
+  } catch {
+    // 隐私模式/配额异常：忽略，只影响跨页记忆
+  }
 }
 
 function eventText(event: StoredEvent): string {
@@ -37,7 +76,7 @@ function isChatEvent(event: StoredEvent): boolean {
  * 会话面板（S3：会话 / 单工 / 队列 / WS 实时）。
  * 完整三栏工作台（工作日志折叠、右栏三列表）在 S7 交付；这里先把"能对话、能看见事件与状态"跑通。
  */
-export function SessionPanel({ projectId }: SessionPanelProps) {
+export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [events, setEvents] = useState<StoredEvent[]>([])
@@ -48,6 +87,18 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   /** 事件 kind 过滤（ui.md §4：仅看对话 / 显示全部事件 / 指定 kind） */
   const [kindFilter, setKindFilter] = useState<'message' | 'all' | string>('message')
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
+  /** 已应用过的聚焦令牌（S17）：只在匹配到目标会话时记录，避免会话列表刷新时覆盖用户的手动选择 */
+  const appliedFocusRef = useRef<number | null>(null)
+  /** 左右两栏收起状态（S20）：收起后把宽度让给聊天区 */
+  const [collapsed, setCollapsed] = useState<CollapsedState>(readCollapsed)
+
+  const toggleCollapsed = (side: 'left' | 'right'): void => {
+    setCollapsed((previous) => {
+      const next: CollapsedState = { ...previous, [side]: !previous[side] }
+      writeCollapsed(next)
+      return next
+    })
+  }
 
   const refreshApprovals = useCallback(async () => {
     try {
@@ -107,6 +158,16 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   useEffect(() => {
     if (activeSessionId !== null) void loadEvents(activeSessionId)
   }, [activeSessionId, loadEvents])
+
+  // 拓扑页点节点带来的聚焦（S17）：按 instanceId 选中对应会话；未加载到该会话时等下一次列表更新再试
+  useEffect(() => {
+    if (focus === null) return
+    if (appliedFocusRef.current === focus.at) return
+    const target = sessions.find((session) => session.instanceId === focus.instanceId)
+    if (target === undefined) return
+    appliedFocusRef.current = focus.at
+    setActiveSessionId(target.sessionId)
+  }, [focus, sessions])
 
   // WS：只订阅当前项目的帧；收到本会话事件就增量拉取（简单可靠，避免前端去重逻辑）
   const realtime = useRealtime(
@@ -214,48 +275,68 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       {error !== null && <Alert type="error" showIcon message={error} />}
-      <Alert
-        type={realtime.connected ? 'success' : 'warning'}
-        showIcon
-        message={realtime.connected ? '实时通道已连接（事件先落盘后推送）' : '实时通道未连接，正在重试…'}
-        description="回复由真实 agent loop 生成（S4 起）：工作日志默认折叠，可用右上角过滤按 kind 查看；右栏三列表实时刷新。"
-      />
+      {/* 连接正常不提示（S16 用户口径）：只保留"坏消息"——断开/重连中才出现，避免常驻占版面 */}
+      {!realtime.connected && <Alert type="warning" showIcon message="实时通道未连接，正在重试…" />}
       {activeSessionId !== null && (
         <RecoveryBanner projectId={projectId} sessionId={activeSessionId} onResolved={() => void loadEvents(activeSessionId)} />
       )}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-        <Card size="small" title="会话（每个 Agent 一个）" style={{ width: 280, flex: '0 0 280px' }}>
-          {sessions.length === 0 && <Empty description="暂无会话" />}
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            {sessions.map((session) => {
-              const status = statuses.find((item) => item.sessionId === session.sessionId)
-              const active = session.sessionId === activeSessionId
-              return (
-                <Button
-                  key={session.sessionId}
-                  type={active ? 'primary' : 'text'}
-                  block
-                  style={{ textAlign: 'left', height: 'auto', padding: '6px 8px' }}
-                  onClick={() => setActiveSessionId(session.sessionId)}
-                >
-                  <Space size={6} wrap>
-                    <Badge
-                      status={status?.state === 'working' ? 'processing' : status?.paused ? 'warning' : 'default'}
-                      text={session.displayName}
-                    />
-                    {session.state === 'archived' && <Tag>已归档</Tag>}
-                    {(status?.queued ?? 0) > 0 && <Tag color="orange">排队 {status?.queued}</Tag>}
-                  </Space>
-                  <div>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {session.lastMessagePreview ?? '（暂无消息）'}
-                    </Typography.Text>
-                  </div>
+        {collapsed.left ? (
+          <Tooltip title="展开会话列表" placement="right">
+            <Button
+              size="small"
+              type="text"
+              onClick={() => toggleCollapsed('left')}
+              style={{ flex: '0 0 auto', height: 'auto', padding: '8px 6px', writingMode: 'vertical-rl' }}
+            >
+              会话列表 ›
+            </Button>
+          </Tooltip>
+        ) : (
+          <Card
+            size="small"
+            title="会话（每个 Agent 一个）"
+            style={{ width: 280, flex: '0 0 280px' }}
+            extra={
+              <Tooltip title="收起会话列表（把宽度让给聊天区）">
+                <Button size="small" type="text" onClick={() => toggleCollapsed('left')}>
+                  ‹ 收起
                 </Button>
-              )
-            })}
-          </Space>
-        </Card>
+              </Tooltip>
+            }
+          >
+            {sessions.length === 0 && <Empty description="暂无会话" />}
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {sessions.map((session) => {
+                const status = statuses.find((item) => item.sessionId === session.sessionId)
+                const active = session.sessionId === activeSessionId
+                const state = agentState(status)
+                return (
+                  <Button
+                    key={session.sessionId}
+                    type={active ? 'default' : 'text'}
+                    block
+                    style={{
+                      textAlign: 'left',
+                      height: 'auto',
+                      padding: '6px 8px',
+                      background: active ? '#e6f4ff' : undefined,
+                      borderColor: active ? '#91caff' : undefined,
+                    }}
+                    onClick={() => setActiveSessionId(session.sessionId)}
+                  >
+                    {/* S19：只显示 Agent 名称与状态（不再显示最后一条消息/任务文本与排队数） */}
+                    <Space size={6} wrap>
+                      <Typography.Text strong>{session.displayName}</Typography.Text>
+                      <Tag color={state.color}>{state.text}</Tag>
+                      {session.state === 'archived' && <Tag>已归档</Tag>}
+                    </Space>
+                  </Button>
+                )
+              })}
+            </Space>
+          </Card>
+        )}
 
         <Card
           size="small"
@@ -309,7 +390,8 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
             </Space>
           }
         >
-          <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 8 }}>
+          {/* 消息区高度自适应视口（S20）：原来写死 420px，1080p 屏上白白浪费约 500px */}
+          <div style={{ maxHeight: 'calc(100vh - 350px)', minHeight: 300, overflowY: 'auto', paddingRight: 8 }}>
             {visibleEvents.length === 0 && <Empty description="还没有消息：在下面输入框说点什么" />}
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               {stream.map((item) => {
@@ -415,9 +497,29 @@ export function SessionPanel({ projectId }: SessionPanelProps) {
           )}
         </Card>
 
-        <div style={{ width: 340, flex: '0 0 340px' }}>
-          <RightColumn projectId={projectId} />
-        </div>
+        {collapsed.right ? (
+          <Tooltip title="展开右栏（任务 / 询问 / 审批）" placement="left">
+            <Button
+              size="small"
+              type="text"
+              onClick={() => toggleCollapsed('right')}
+              style={{ flex: '0 0 auto', height: 'auto', padding: '8px 6px', writingMode: 'vertical-rl' }}
+            >
+              ‹ 任务·询问·审批
+            </Button>
+          </Tooltip>
+        ) : (
+          <div style={{ width: 340, flex: '0 0 340px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+              <Tooltip title="收起右栏（把宽度让给聊天区）">
+                <Button size="small" type="text" onClick={() => toggleCollapsed('right')}>
+                  收起 ›
+                </Button>
+              </Tooltip>
+            </div>
+            <RightColumn projectId={projectId} />
+          </div>
+        )}
       </div>
     </Space>
   )

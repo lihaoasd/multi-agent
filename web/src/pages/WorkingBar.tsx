@@ -5,8 +5,9 @@ import { runtimeApi, type RuntimeSnapshot } from '../api/runtime'
 import { useRealtime } from '../hooks/useRealtime'
 
 /**
- * 顶部「n 个 Agent 正在工作」细条（D17-⑥ / ui.md）：显示占用中的 Agent、当前任务与最近 plan 状态；
+ * 运行细条（S15 起挂在「拓扑」页的编排图顶部，不再横跨项目页两个导航）：显示占用中的 Agent、当前任务与最近 plan 状态；
  * 提供「停止生成」（停当前回合输出、队列保留）与「停止任务」（终止当前任务并结算快照）。
+ * **空闲不渲染**：没有 Agent 在工作时整条不出现（无内容可停）。更细的终止入口在右栏任务列表（改状态为 `terminated`）。
  */
 export function WorkingBar({ projectId }: { readonly projectId: string }) {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null)
@@ -53,16 +54,15 @@ export function WorkingBar({ projectId }: { readonly projectId: string }) {
 
   const working = snapshot?.working ?? []
 
+  // 空闲不渲染（S15 用户口径）：没有 Agent 在工作就没有可停的东西，不做空态占位。
+  if (working.length === 0) return null
+
   return (
-    <Card size="small" styles={{ body: { padding: '8px 12px' } }}>
+    <Card size="small" style={{ marginBottom: 12 }} styles={{ body: { padding: '8px 12px' } }}>
       <Space size={12} wrap>
         <Badge
-          status={working.length > 0 ? 'processing' : 'default'}
-          text={
-            <Typography.Text strong>
-              {working.length === 0 ? '当前没有 Agent 在工作' : `${working.length} 个 Agent 正在工作`}
-            </Typography.Text>
-          }
+          status="processing"
+          text={<Typography.Text strong>{`${working.length} 个 Agent 正在工作`}</Typography.Text>}
         />
         {working.map((agent) => (
           <Space key={agent.instanceId} size={6} wrap>

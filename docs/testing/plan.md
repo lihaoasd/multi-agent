@@ -35,7 +35,7 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 17. 任务不抢占与终止（D17-①）：已有 in_progress 时新任务置位被拦（可先置 todo）；终止确认：存在未结算改动先结算为 code artifact 快照再置 `terminated`（可回退）；执行中终止到可中断点生效并回注 Agent（脚本化网关剧本验证后续步骤不再执行）。
 18. doc 审批降噪与信任（D17-④）：托盘批量同意/拒绝生效；信任开关默认仅 doc/test（config/deploy 仍逐条审批）；撤销后恢复逐条。
 19. 未完成回合恢复（D17-⑤）：缺 turn_end 的会话重开/重连后标「未完成」点并展示横幅三选（汇报中断点/继续执行/忽略），三选行为与 plan 事件一致；文本半截消息补全按钮并存。
-20. 可停止与进行中细条（D17-⑥）：流式「停止生成」停当前回合输出且队列保留；顶部「n 个 Agent 正在工作」列表项与 plan 事件一致（脚本化网关长任务剧本）。
+20. 可停止与进行中细条（D17-⑥；**位置与空态由 D25-③ 修订**）：流式「停止生成」停当前回合输出且队列保留；**「拓扑」页编排图顶部**的「n 个 Agent 正在工作」列表项与 plan 事件一致（脚本化网关长任务剧本）；**无 Agent 在工作时细条不渲染**（原"当前没有 Agent 在工作"空态取消）。
 21. 共享与归属（FR-06）：工作目录内文件**全员可读**（任一角色都能 fs_read 他人产出物）；非 owner 写入返回 `ERR_FORBIDDEN` 并点名 owner；无归属文件首写即认领；用户本人不受归属校验。
 22. 编排图保存与校验（D19-④）：自环/重复边/跨项目节点被拒（`ERR_ORCHESTRATION_INVALID`）；`version` 不匹配返回 `ERR_CONFLICT`；保存成功广播 `orchestration.updated`。
 23. 委派边约束（D19-④）：Agent 沿出边派单成功（入 `todo` + 通知受派者）；越边目标返回 `ERR_ORCHESTRATION_EDGE` **且不建任务**；用户手动派单不受边约束。
@@ -78,9 +78,9 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 | 32 模板删除/停用与一键配置模型 | `tests/integration/server/s11-template-delete-bulk.test.ts`、`tests/integration/server/agent-templates-api.test.ts`（内置停用跨重启） |
 | 33 「默认路由」已删除 | `tests/integration/server/model-config-api.test.ts`（404 + overview 无 routing）、`tests/integration/server/model-config-s10-bootstrap.test.ts`（legacy routing 清理 + 审计）、`tests/unit/infra/model-config-store.test.ts` |
 | 12/15/17/24 任务聚合·激活·终止·汇报 | `tests/unit/application/task-question-service.test.ts`、`tests/integration/server/work-api.test.ts`、验收脚本 1/6/7 |
-| 14/19/20 恢复·停止·细条 | `tests/unit/application/runtime-recovery.test.ts`、`tests/integration/server/runtime-api.test.ts`、验收脚本 3/7 |
+| 14/19/20 恢复·停止·细条 | `tests/unit/application/runtime-recovery.test.ts`、`tests/integration/server/runtime-api.test.ts`、验收脚本 3/7（细条数据源不变；S15 起前端挂载点在「拓扑」页编排图顶部且空闲不渲染） |
 | 16/18 doc 审批预览与降噪 | `tests/integration/server/approvals-api.test.ts`（`previewRef`）；托盘批量与信任开关 UI 留 P1 |
-| 22/23 编排图与委派边 | `tests/unit/application/orchestration-service.test.ts`、`tests/integration/server/orchestration-api.test.ts`、验收脚本 6 |
+| 22/23 编排图与委派边 | `tests/unit/application/orchestration-service.test.ts`、`tests/integration/server/orchestration-api.test.ts`、验收脚本 6（S17 起画布分浏览/编辑模式，保存契约与校验不变，用例无需改动） |
 | 25 询问阻塞与答复 | `tests/unit/application/task-question-service.test.ts`、`tests/integration/server/{work-api,runtime-api}.test.ts`、验收脚本 7 |
 | prd §9 脚本 1~8 | `tests/acceptance/prd-section9.test.ts`（8 个用例与 §9 条目一一对应） |
 
@@ -93,3 +93,9 @@ Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人
 | 2026-09-16（S11） | 模板删除/停用与一键配置模型（prd D22，规则 32） | `npm run test` **46 files / 311 tests 全绿**（新增 `tests/integration/server/s11-template-delete-bulk.test.ts` 5 例 + 重写内置停用用例）；`coverage` 触达门禁 141/141；发现并修复 1 个真实缺陷（`team-service` 的 `effectiveModelLabel/effectiveModelAvailable` 未走完整回退链，导致靠全局默认生效的实例被误标"不可用"），见 `docs/changes/2026-09-16-s11-template-delete-bulk-model.md` |
 | 2026-09-16（S12/S13） | 工具模块瘦身（S12）；`ask_user` 独立为 `interaction` 包（S13/D23） | `npm run test` **47 files / 314 tests 全绿**；构建产物冒烟（不再含 `agent loop 策略`、含 `工具包详情`）；活体确认 8 个工具包且 `interaction` 已注册 |
 | 2026-09-16（S14） | 删除「默认路由」功能（prd D24，规则 33） | `npm run test` **47 files / 314 tests 全绿**（`model-config-api` 加 404/无 routing 断言、`model-config-s10-bootstrap` 改为覆盖 S10 旧 kind + S14 routing 两类迁移、`model-config-store` 增 legacy routing notice 用例、`effective-config` 改两级、S11 计数用例改"模板默认/实例覆盖"路径）；活体验证真实 `data/model-config.json` 的 `routing` 键被抹掉且审计 `removed:["routing"]`，见 `docs/changes/2026-09-16-s14-remove-model-routing.md` |
+| 2026-09-16（S15） | 项目详情页瘦身（prd D25，规则 20 位置/空态修订） | `npm run test` **47 files / 314 tests 全绿**（本轮无后端改动，防回归；首次全量运行出现 1 例未记名失败，随后连续 3 次全量重跑全绿，判断为既有偶发）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物冒烟：不再含 `当前没有 Agent 在工作`、`项目信息`，仍含 `导出项目数据` 与 `个 Agent 正在工作`；见 `docs/changes/2026-09-16-s15-project-detail-slim.md` |
+| 2026-09-16（S16） | 会话页瘦身（去掉「实时通道已连接」成功态提示，仅断开警告；无规则改动） | `npm run test` **47 files / 314 tests 全绿**（本轮无后端改动，防回归）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物冒烟：不再含 `实时通道已连接`、`事件先落盘后推送`、`S4 起`，仍含 `实时通道未连接`；见 `docs/changes/2026-09-16-s16-session-page-slim.md` |
+| 2026-09-16（S17） | 编排图交互修复 + 浏览/编辑双模式（prd D26；规则 22 契约不变） | `npm run test` 全绿（规则 22/23 与验收脚本 6 未受影响）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物冒烟：含 `编辑模式`/`退出编辑`/`连线模式：点起点`/`移出图`/`放弃并退出`，不含旧的 `连到这里`；**指针/点击类交互无浏览器自动化可用，须由用户刷新后点验（R1~R5）**，根因与修复口径见 `docs/changes/2026-09-16-s17-orchestration-edit-mode.md` |
+| 2026-09-16（S18） | 删除边可用性修复（14px 点击热区 + 「删除选中边」按钮；规则 22 契约不变） | `npm run test` 全绿（规则 22/23 与验收脚本 6 未受影响）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物冒烟：含 `删除选中边`；**点击类交互须由用户刷新后确认**（离线 5~7px 处可选中、按钮可删、点空白取消选中），见 `docs/changes/2026-09-16-s18-edge-delete-affordance.md` |
+| 2026-09-16（S19） | 会话页 Agent 列表只保留名称与状态（UI 简化；无规则改动） | `npm run test` **47 files / 314 tests 全绿**（本轮无后端改动，防回归）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；构建产物冒烟：含 `工作中`/`等待中`/`已暂停`，不再含 `（暂无消息）`；见 `docs/changes/2026-09-16-s19-session-list-name-status.md` |
+| 2026-09-16（S20） | 会话页聊天区放大（消息区高度自适应 + 左右栏可收起；无规则改动） | `npm run test` **47 files / 314 tests 全绿**（本轮无后端改动，防回归）；`typecheck`（src+web）/`eslint`/`npm run build` 通过；产物含 `calc(100vh - 350px)` 与 `agent-haness.session-panel-collapsed`；**布局效果须由用户刷新后确认**（聊天区变高、收起两栏变宽、状态记忆），见 `docs/changes/2026-09-16-s20-session-chat-roomier.md` |

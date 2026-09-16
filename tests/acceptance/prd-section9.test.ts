@@ -431,7 +431,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
     const plans = readdirSync(join(process.cwd(), 'docs', 'plan'))
     const changes = readdirSync(join(process.cwd(), 'docs', 'changes'))
-    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14']) {
+    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20']) {
       expect(plans.some((file) => file.includes(`-${stage}-`)), `plan ${stage}`).toBe(true)
       expect(changes.some((file) => file.includes(`-${stage}-`)), `changes ${stage}`).toBe(true)
     }

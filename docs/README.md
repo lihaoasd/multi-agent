@@ -12,7 +12,7 @@
 | `docs/api/` | 接口约定（REST + WS + 错误码） | [contract.md](api/contract.md) |
 | `docs/testing/` | 测试计划（分层、规则清单、门禁） | [plan.md](testing/plan.md) |
 | `docs/operations/` | 部署与运维（本机部署、配置、备份迁移） | [deploy.md](operations/deploy.md) |
-| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S14` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
+| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S20` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
 | `docs/changes/` | 修改记录（每次改动追加，与 diff 一一对应） | `YYYY-MM-DD-<topic>.md` |
 
 **阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md` → **`plan/development.md`（编码阶段执行顺序）**。
@@ -53,7 +53,7 @@
 | 归属与署名（file-owners） | 工作目录文件的 owner 与 `ownerName`（署名）；非 owner 写入 → `ERR_FORBIDDEN`，无主文件首写即认领 |
 | 滚动摘要（L2） | 会话 log 的 `summary` 事件：`ofSeq/toSeq` 连续无重叠，替代更早的原文窗口（可重放派生视图） |
 | 长期条目（L3） | `memories/global.jsonl` 与 `memories/<instanceId>.jsonl` 的跨会话知识条目（active/superseded） |
-| 运行细条 | 顶部「n 个 Agent 正在工作」：占用者 + 当前任务 + 最近 `plan` 状态 + 队列，可停止生成/停止任务 |
+| 运行细条 | **「拓扑」页编排图顶部**的「n 个 Agent 正在工作」：占用者 + 当前任务 + 最近 `plan` 状态 + 队列，可停止生成/停止任务；**无 Agent 在工作时整条不渲染**（S15/D25-③） |
 | 触达门禁 | `npm run coverage`：测试 → 传递 import 图可达性检查（替代行覆盖率工具链） |
 
 ## 3. 编号索引
@@ -66,8 +66,9 @@
 
 ### 3.2 决策编号（`prd` §7）
 
-- `D1`~`D20` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
+- `D1`~`D25` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
 - 空缺（如 `D2`、`D14-⑤/⑥/⑩`、`D16-①`、`D17-②/③`、`D18-①`）表示该决策已随会议功能移除被删除。
+- 2026-09-16 增补 `D21`（移除 mock / Agent 默认不配置模型）、`D22`（模板删除/停用与一键配置模型）、`D23`（`ask_user` 独立为 `interaction` 包）、`D24`（删除「默认路由」）、`D25`（项目详情页瘦身与运行细条归位）。
 - `A1~A6`、`B1/B4/B5/B6/B8/B12`、`H2/H3/H4`、`M1~M14`、`R1~R6` 是历史评审/里程碑/重构轮次的编号，出处（原 `docs/changes/*`）已随重启提交删除；正文仅在需要追溯时引用，新增文档**不要**再引入这些编号。
 
 ### 3.3 未决清单（`prd` §10）
@@ -77,7 +78,7 @@
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
 
-### 3.4 阶段编号（`S0`~`S14`，`plan/development.md` §6）
+### 3.4 阶段编号（`S0`~`S20`，`plan/development.md` §6）
 
 | 阶段 | 主题 | 方案 / 记录 |
 | --- | --- | --- |
@@ -96,6 +97,12 @@
 | `S12` | 工具模块瘦身（工具包详情弹窗、去掉 loop 策略列表） | [plan](plan/2026-09-16-s12-tools-module-simplify.md) · [changes](changes/2026-09-16-s12-tools-module-simplify.md) |
 | `S13` | `ask_user` 独立为 `interaction`（交互）工具包（prd D23） | [plan](plan/2026-09-16-s13-ask-user-interaction-package.md) · [changes](changes/2026-09-16-s13-ask-user-interaction-package.md) |
 | `S14` | 删除「默认路由」功能（prd D24；生效链收敛为两级） | [plan](plan/2026-09-16-s14-remove-model-routing.md) · [changes](changes/2026-09-16-s14-remove-model-routing.md) |
+| `S15` | 项目详情页瘦身：去「项目信息」卡、导出入口上移、运行细条归位编排图顶部（prd D25） | [plan](plan/2026-09-16-s15-project-detail-slim.md) · [changes](changes/2026-09-16-s15-project-detail-slim.md) |
+| `S16` | 会话页瘦身：去掉「实时通道已连接」成功态提示，仅断开时警告 | [plan](plan/2026-09-16-s16-session-page-slim.md) · [changes](changes/2026-09-16-s16-session-page-slim.md) |
+| `S17` | 编排图交互修复 + 「浏览 / 编辑」双模式（prd D26） | [plan](plan/2026-09-16-s17-orchestration-edit-mode.md) · [changes](changes/2026-09-16-s17-orchestration-edit-mode.md) |
+| `S18` | 删除边可用性修复（14px 点击热区 + 「删除选中边」按钮） | [plan](plan/2026-09-16-s18-edge-delete-affordance.md) · [changes](changes/2026-09-16-s18-edge-delete-affordance.md) |
+| `S19` | 会话页 Agent 列表只保留名称与状态（去掉消息预览与排队数） | [plan](plan/2026-09-16-s19-session-list-name-status.md) · [changes](changes/2026-09-16-s19-session-list-name-status.md) |
+| `S20` | 会话页聊天区放大（消息区高度自适应视口 + 左右两栏可收起） | [plan](plan/2026-09-16-s20-session-chat-roomier.md) · [changes](changes/2026-09-16-s20-session-chat-roomier.md) |
 
 - **测试规则编号**（`testing/plan.md` §2，共 33 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
 - 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。
