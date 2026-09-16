@@ -3,6 +3,7 @@
 > 类别：api · 状态：草稿(待评审) · 决策依据：架构 §10、FR-12；**本文件为草案**，编码阶段以实际实现为准并回写。
 > 关联：[ui.md](../design/ui.md)、[data-storage.md](../design/data-storage.md)、[orchestration.md](../design/orchestration.md)、[tool-packages.md](../design/tool-packages.md)、[agent-templates.md](../design/agent-templates.md)、[model-config.md](../design/model-config.md)（模型配置与 Agent 配置提交，2026-09-15）
 > 2026-09-15 修订：新增"模型配置"端点组（§2）；删除 `GET/PUT /api/settings/models（config.yaml 落盘）`（与"`.env` 是配置来源"口径冲突的残留，模型路由改由 `/api/model-routing` 承担）；Agent 模板写路径开放提示词/loop/模型三项。
+> 2026-09-16 修订（S11/D22）：新增 `DELETE /api/agent-templates/:roleId` 与 `POST /api/agent-templates/bulk-model`；**内置模板开放停用/启用与默认模型**（经 `data/agent-templates-state.json` 覆盖，仓库 yaml 只读），提示词/loop 对内置仍 `ERR_FORBIDDEN`；`GET /api/model-config/overview` 增 `unconfiguredAgents`。
 
 ## 1. 约定
 
@@ -27,8 +28,10 @@
 ### 角色库 / 团队
 | GET | /api/agent-templates | 模板列表（内置+自定义，含 artifactTypes/tools 元信息）；**`/api/roles` 为同一资源的废弃别名，实施期删除**（2026-09-15 术语收敛为"Agent 模板"）|
 | POST | /api/agent-templates | 自建模板（**基于内置复制新建**，B12/D16-⑤）：`{roleId(新 id), copyFrom, name?, scenario?, systemPrompt?, defaultLoop?, defaultModel?}` |
-| PATCH | /api/agent-templates/:roleId | 编辑模板的 **提示词 / loop / 模型**（FR-35）；内置模板 → `ERR_FORBIDDEN`（提示"基于内置复制新建"）|
-| POST | /api/agent-templates/:roleId/disable\|enable | 停用/启用模板；不影响既有实例（快照，D16-⑤），UI 仅标「模板已移除/已停用」|
+| PATCH | /api/agent-templates/:roleId | 编辑模板的 **提示词 / loop / 模型**（FR-35）；**用户模板**三项均可改（写 yaml + 历史快照）；**内置模板仅 `defaultModel` 可改**（S11：写数据目录覆盖，200），传 `systemPrompt`/`defaultLoop` → `ERR_FORBIDDEN`（提示"基于内置复制新建"），无可提交字段 → `ERR_VALIDATION` |
+| DELETE | /api/agent-templates/:roleId?confirm=true | **删除用户模板**（S11/D22）：物理删除 `<roleId>.yaml` 与 `<roleId>.history/`，并清理状态文件残留覆盖，写审计（`scope=template`、`action=delete`）→ `{"deleted":"<roleId>"}`；**内置模板 → 403 `ERR_FORBIDDEN`**（"内置模板只能停用，不能删除"）；缺 `confirm=true` → 400 `ERR_VALIDATION`；被任何项目实例引用 → 409 `ERR_CONFLICT` + `detail.referrers[{projectId,projectName,instanceId,displayName}]`（需先从这些项目移除成员）|
+| POST | /api/agent-templates/bulk-model | **批量设置默认模型**（S11/D22）：`{roleIds:string[], defaultModel:string\|null}`（`null` = 清空）→ `{updated:[roleId], skipped:[{roleId,code,message}]}`；内置与用户模板都生效（内置写状态覆盖、用户写 yaml），每个成功项各写一条模板审计；`roleIds` 非字符串数组 / 空数组 / 超过 200 项 → 400 `ERR_VALIDATION`；`defaultModel` 不是已启用模型条目 id 且不是 `null` → 400 `ERR_VALIDATION` |
+| POST | /api/agent-templates/:roleId/disable\|enable | 停用/启用模板；**内置模板亦可**（S11：写 `data/agent-templates-state.json` 状态覆盖，仓库 yaml 保持只读，重启/升级后仍生效；此前内置一律 `ERR_FORBIDDEN`）；用户模板写自身 yaml；不影响既有实例（快照，D16-⑤），UI 仅标「模板已移除/已停用」|
 | GET | /api/projects/:pid/team | 实例列表+状态 |
 | GET | /api/projects/:pid/agents | 团队实时状态投影（state/sessionId/currentTask；左栏与画布用）；**S2 阶段 `state` 恒为 `idle`，dispatcher 于 S3 接管** |
 | GET | /api/projects/:pid/agents/:iid | **角色详情**（只读）：身份/模型/loop/提示词/工具 + 实时状态；工具按**运行期口径**给出（`effective` 带 `whitelist`/`platform` 来源，`unavailable` 为白名单里配了却用不上的，无 `availableIn` 即注册表里已没有）；实例不存在 → 404 `ERR_NOT_FOUND` |
@@ -105,23 +108,24 @@
 | PATCH | /api/models/:mid | 编辑（含 `enabled`）；停用**被模板/实例引用**的模型需 `confirm:true`，否则 `ERR_CONFLICT` + `detail.referrers` |
 | DELETE | /api/models/:mid | 删除；被引用时需 `?confirm=true`，否则 `ERR_CONFLICT` + `detail.referrers`；删默认模型会同时清空路由指向 |
 | GET/PUT | /api/model-routing | 全局默认模型与 loop 步骤默认：`{defaultModelId, stepOverrides:{act?, plan?, critique?}}` |
-| GET | /api/model-config/overview | 一次取回 `{revision, providers[], models[], routing, notices[]}`（UI 首屏用；`notices` 为 v0/坏文件备份提示）|
+| GET | /api/model-config/overview | 一次取回 `{revision, providers[], models[], routing, notices[], unconfiguredAgents}`（UI 首屏用）；`unconfiguredAgents = {total, items:[{projectId, projectName, instanceId, displayName}]}`，口径 = 项目实例中 **enabled 且生效模型为空**（生效链 `实例覆盖 → 模板快照 → 平台默认 routing.defaultModelId`，S11/D22）；`notices` 为 v0/坏文件备份提示 |
 | POST | /api/model-config/import | 一次性导入遗留配置 `?source=env\|v0`（`.env` 的 `MODELS__PROVIDERS` / 旧 `data/model-config.json`）→ `{imported, skipped[]}` |
 
 > 校验与失败语义见 model-config.md §8：**不新增错误码**，沿用 `ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`；引用者列表放 `detail.referrers`。
 > 启动初始化（model-config.md §11）：① **迁移**——剔除 `kind` 已不在注册表中的供应商及其模型条目，清理 `routing.defaultModelId` 与 `stepOverrides` 中指向它们的值并写 `config-audit`；② 空配置且允许时一次性导入遗留 `MODELS__PROVIDERS`；③ `MODELS__DEFAULT` **初始化阶段生效**（命中已启用模型条目则设为平台默认；命中不到不预设，不静默换模型）；④ **不自动创建任何供应商/模型**（未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导）。
 
-### 首页库（工具包只读；Agent 模板已开放 提示词/loop/模型 三项提交）| 方法 | 路径 | 用途 |
+### 首页库（工具包只读；Agent 模板：用户模板开放 提示词/loop/模型 三项提交，内置仅默认模型可改、可停用，S11）| 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | /api/tool-packages | 工具包列表（含 `tools[]` 展开、`required`、`source`、`riskMax`）；每个工具带 `registered`（**展示态 vs 生效态**：已声明但当前版本未注册的工具标"未实现"）|
 | GET | /api/tool-packages/:packageId | 单包详情（含每个工具的作用/风险/网络/幂等/适用会话）|
 | GET | /api/tools | 已注册工具清单（名/包/风险/网络/是否需审批/幂等/适用会话）|
 | GET | /api/loops | 已注册 loop 策略（名 + 说明）|
-| GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要、`defaultModelAvailable`、`editable`；写路径同"角色库/团队"表）|
+| GET | /api/agent-templates?scenario= | Agent 模板列表（含 loop/模型/工具包/场景标签摘要、`defaultModelAvailable`、`editable`（提示词/loop 可改，内置恒 false）、`modelEditable`（默认模型可改，内置亦为 true）、`deletable`（仅用户模板）；写路径同"角色库/团队"表，S11）|
 | GET | /api/agent-templates/:roleId | 模板详情（身份/loop/**系统提示词预览**/工具按包展开/模型/审批规则）|
 | GET | /api/agent-templates/:roleId/history | 模板配置历史快照文件名列表（只增；仅用户模板有）|
 
-> 2026-09-15 更新：Agent 模板的**提示词 / loop / 模型**已开放提交（FR-35，写路径见"角色库 / 团队"表）；**工具包制作（U8）仍只读**。内置模板的编辑与停用均返回 `ERR_FORBIDDEN`（须"基于内置复制新建"）。
+> 2026-09-15 更新：Agent 模板的**提示词 / loop / 模型**已开放提交（FR-35，写路径见"角色库 / 团队"表）；**工具包制作（U8）仍只读**。
+> 2026-09-16 更新（S11/D22）：**内置模板的提示词/loop 仍只读**（`ERR_FORBIDDEN`），但**默认模型可改、可停用/启用**（写 `data/agent-templates-state.json` 覆盖，仓库 yaml 不被改写）；**模板删除仅对用户模板开放**（内置只能停用），删除需 `confirm=true` 且被项目实例引用时 409 + `detail.referrers`；新增 `DELETE /api/agent-templates/:roleId` 与 `POST /api/agent-templates/bulk-model`。
 > 项目内实例覆盖走 `PATCH /api/projects/:pid/team/:iid`（字段 `prompt`/`loop`/`model`，校验见 model-config.md §8 #13/#14）。
 
 ### 项目编排（拓扑图）
@@ -188,7 +192,7 @@ API 统一返回 `{ code: ERR_*, message }`。工具执行/审计事件内部用
 | --- | --- | --- |
 | ERR_NOT_FOUND | 资源不存在 | — |
 | ERR_CONFLICT | 状态冲突（Agent busy / 任务槽位被占 / 非法状态流转） | — |
-| ERR_FORBIDDEN | **归属限制**：该文件/产出物属他人（署名与归属锁，2026-09-12） | — |
+| ERR_FORBIDDEN | **归属/只读限制**：该文件/产出物属他人（署名与归属锁，2026-09-12）；内置 Agent 模板的提示词/loop 修改与删除（只读，只能停用，S11） | — |
 | ERR_FORBIDDEN_PATH | 路径越界 | FS_BOUNDARY |
 | ERR_APPROVAL_REQUIRED | 动作需审批（返回 approvalId） | APPROVAL_REQUIRED |
 | ERR_APPROVAL_REJECTED | 审批被拒（回注 Agent） | APPROVAL_REJECTED |

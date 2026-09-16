@@ -77,7 +77,7 @@
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
 
-### 3.4 阶段编号（`S0`~`S10`，`plan/development.md` §6）
+### 3.4 阶段编号（`S0`~`S11`，`plan/development.md` §6）
 
 | 阶段 | 主题 | 方案 / 记录 |
 | --- | --- | --- |
@@ -92,8 +92,9 @@
 | `S8` | 恢复、运行控制与收口 | [plan](plan/2026-09-15-s8-recovery-runtime.md) · [changes](changes/2026-09-15-s8-recovery-runtime.md) |
 | `S9` | 全量验收与文档收口 | [plan](plan/2026-09-15-s9-acceptance-closure.md) · [changes](changes/2026-09-15-s9-acceptance-closure.md) |
 | `S10` | 移除 mock 与 Agent 默认不配置模型（需求变更，prd D21） | [plan](plan/2026-09-16-s10-remove-mock.md) · [changes](changes/2026-09-16-s10-remove-mock.md) |
+| `S11` | 模板库删除/停用与一键配置模型（需求变更，prd D22） | [plan](plan/2026-09-16-s11-template-delete-bulk-model.md) · [changes](changes/2026-09-16-s11-template-delete-bulk-model.md) |
 
-- **测试规则编号**（`testing/plan.md` §2，共 31 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
+- **测试规则编号**（`testing/plan.md` §2，共 32 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
 - 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。
 
 ## 4. 维护约定

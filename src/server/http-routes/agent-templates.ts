@@ -3,6 +3,7 @@ import type { AgentConfigService } from '../../application/team/agent-config-ser
 import type { EventBroadcaster } from '../../ports/events'
 import type { LoopConfig, RoleTemplateCreateInput, RoleTemplatePatch } from '../../ports/role-templates'
 import { replyFromResult } from '../errors'
+import { err } from '../../shared/result'
 import { asRecord, readLoopConfig, readString, requireString } from './parse'
 
 export interface AgentTemplateRouteContext {
@@ -82,4 +83,30 @@ export function registerAgentTemplateRoutes(app: FastifyInstance, context: Agent
       return replyFromResult(reply, updated)
     })
   }
+
+  /** 删除用户模板（内置模板只能停用）；`confirm=true` 二次确认，被项目引用 → `ERR_CONFLICT` + referrers */
+  app.delete<{ Params: { roleId: string }; Querystring: { confirm?: string } }>(
+    '/api/agent-templates/:roleId',
+    async (request, reply) => {
+      const removed = await service.remove(request.params.roleId, request.query.confirm === 'true')
+      if (removed.ok) notify(removed.value.deleted)
+      return replyFromResult(reply, removed)
+    },
+  )
+
+  /** 批量设置默认模型（内置与用户模板均可，S11/D22-③）：`{ roleIds: string[], defaultModel: string | null }` */
+  app.post('/api/agent-templates/bulk-model', async (request, reply) => {
+    const body = asRecord(request.body)
+    const roleIds = body['roleIds']
+    if (!Array.isArray(roleIds) || roleIds.some((item) => typeof item !== 'string')) {
+      return replyFromResult(reply, err('ERR_VALIDATION', 'roleIds 必须是字符串数组'))
+    }
+    const rawModel = body['defaultModel']
+    if (rawModel !== undefined && rawModel !== null && typeof rawModel !== 'string') {
+      return replyFromResult(reply, err('ERR_VALIDATION', 'defaultModel 必须是模型条目 id 或 null'))
+    }
+    const result = await service.bulkSetDefaultModel(roleIds as string[], rawModel ?? null)
+    if (result.ok) for (const roleId of result.value.updated) notify(roleId)
+    return replyFromResult(reply, result)
+  })
 }

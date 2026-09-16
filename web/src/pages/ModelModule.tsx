@@ -24,6 +24,7 @@ import {
   type ProviderKind,
   type ProviderView,
   type RoutingView,
+  type UnconfiguredAgentRef,
 } from '../api/modelConfig'
 
 const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
@@ -50,6 +51,8 @@ export function ModelModule() {
   const [providers, setProviders] = useState<ProviderView[]>([])
   const [models, setModels] = useState<ModelView[]>([])
   const [routing, setRouting] = useState<RoutingView>({ defaultModelId: null, stepOverrides: {} })
+  /** 未配置模型的 Agent（S11：一键设全局默认的依据） */
+  const [unconfiguredAgents, setUnconfiguredAgents] = useState<readonly UnconfiguredAgentRef[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [providerForm] = Form.useForm<ProviderFormValues>()
@@ -63,16 +66,18 @@ export function ModelModule() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [presetList, providerList, modelList, routingValue] = await Promise.all([
+      const [presetList, providerList, modelList, routingValue, overview] = await Promise.all([
         modelConfigApi.listPresets(),
         modelConfigApi.listProviders(),
         modelConfigApi.listModels(),
         modelConfigApi.getRouting(),
+        modelConfigApi.overview(),
       ])
       setPresets(presetList)
       setProviders(providerList)
       setModels(modelList)
       setRouting(routingValue)
+      setUnconfiguredAgents(overview.unconfiguredAgents.items)
       setError(null)
     } catch (cause) {
       setError(describeError(cause))
@@ -261,6 +266,8 @@ export function ModelModule() {
       const saved = await modelConfigApi.putRouting(next)
       setRouting(saved)
       message.success('默认路由已保存（即时生效）')
+      // 全局默认一变，"未配置模型"的 Agent 数随之变化（S11）
+      await refresh()
     } catch (cause) {
       message.error(describeError(cause))
     }
@@ -400,11 +407,20 @@ export function ModelModule() {
             },
             {
               title: '操作',
-              width: 90,
+              width: 210,
               render: (_value, record) => (
-                <Button size="small" danger onClick={() => void removeModel(record)}>
-                  删除
-                </Button>
+                <Space size={4}>
+                  <Button
+                    size="small"
+                    disabled={!record.enabled || routing.defaultModelId === record.id}
+                    onClick={() => void saveRouting({ ...routing, defaultModelId: record.id })}
+                  >
+                    {routing.defaultModelId === record.id ? '已是全局默认' : '设为全局默认'}
+                  </Button>
+                  <Button size="small" danger onClick={() => void removeModel(record)}>
+                    删除
+                  </Button>
+                </Space>
               ),
             },
           ]}
@@ -412,6 +428,18 @@ export function ModelModule() {
       </Card>
 
       <Card title="默认路由">
+        {unconfiguredAgents.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`当前有 ${unconfiguredAgents.length} 个 Agent 未配置模型`}
+            description={`这些 Agent 启动回合会报 ERR_MODEL。把某个模型设为「全局默认」即可让它们立即生效（回退链：实例覆盖 → 模板默认 → 全局默认），无需逐个配置。未配置示例：${unconfiguredAgents
+              .slice(0, 3)
+              .map((item) => `${item.projectName}/${item.displayName}`)
+              .join('、')}${unconfiguredAgents.length > 3 ? ' …' : ''}`}
+          />
+        )}
         <Space size="large" wrap>
           <Space>
             <Typography.Text>全局默认模型</Typography.Text>

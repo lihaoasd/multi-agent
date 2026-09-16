@@ -11,6 +11,7 @@ import type {
 } from '../../ports/role-templates'
 import { err, ok, type Result } from '../../shared/result'
 import { validateTemplateCreate, validateTemplatePatch, type AgentConfigValidationContext } from './validate-agent-config'
+import type { TemplateReferenceQuery } from './template-references'
 
 export interface AgentConfigServiceOptions {
   readonly store: RoleTemplateStore
@@ -19,6 +20,8 @@ export interface AgentConfigServiceOptions {
   readonly ids: IdGenerator
   readonly clock: Clock
   readonly config: ConfigProvider
+  /** 删除前的引用保护（被项目实例引用 → 拒绝删除并点名，S11） */
+  readonly references: TemplateReferenceQuery
 }
 
 /** 模板视图：附带模型解析结果，便于 UI 标「模型已移除/已停用」 */
@@ -40,8 +43,17 @@ export interface RoleTemplateView {
   readonly source: 'builtin' | 'user'
   readonly enabled: boolean
   readonly copyFrom?: string
-  /** 可编辑字段（UI 置灰依据） */
+  /** 提示词/loop 等身份字段可编辑（UI 置灰依据；内置模板恒为 false） */
   readonly editable: boolean
+  /** 默认模型可编辑：**内置模板也可改**（经数据目录运行时覆盖，S11/D22-③） */
+  readonly modelEditable: boolean
+  /** 可删除：仅用户模板（内置模板只能停用） */
+  readonly deletable: boolean
+}
+
+export interface BulkModelResult {
+  readonly updated: readonly string[]
+  readonly skipped: readonly { readonly roleId: string; readonly code: string; readonly message: string }[]
 }
 
 export interface AgentConfigService {
@@ -50,8 +62,15 @@ export interface AgentConfigService {
   create(input: RoleTemplateCreateInput): Promise<Result<RoleTemplateView>>
   update(roleId: string, patch: RoleTemplatePatch): Promise<Result<RoleTemplateView>>
   setEnabled(roleId: string, enabled: boolean): Promise<Result<RoleTemplateView>>
+  /** 删除用户模板（`confirm` 必须为 true；被项目实例引用 → `ERR_CONFLICT` + referrers） */
+  remove(roleId: string, confirm: boolean): Promise<Result<{ readonly deleted: string }>>
+  /** 批量设置默认模型（内置与用户模板均可；`defaultModel: null` = 清空默认模型） */
+  bulkSetDefaultModel(roleIds: readonly string[], defaultModel: string | null): Promise<Result<BulkModelResult>>
   listHistory(roleId: string): Promise<Result<readonly string[]>>
 }
+
+/** 单次批量改模型的上限（防御性；UI 也不会超过模板总数） */
+const BULK_LIMIT = 200
 
 /**
  * Agent 配置服务（FR-35 / agent-templates.md §4）：
@@ -97,11 +116,13 @@ export function createAgentConfigService(options: AgentConfigServiceOptions): Ag
       enabled: template.enabled,
       ...(template.copyFrom === undefined ? {} : { copyFrom: template.copyFrom }),
       editable: template.source === 'user',
+      modelEditable: true,
+      deletable: template.source === 'user',
     }
   }
 
   const writeAudit = async (
-    action: 'create' | 'update',
+    action: 'create' | 'update' | 'delete',
     roleId: string,
     diff: Readonly<Record<string, unknown>>,
   ): Promise<void> => {
@@ -148,10 +169,22 @@ export function createAgentConfigService(options: AgentConfigServiceOptions): Ag
     async update(roleId: string, patch: RoleTemplatePatch): Promise<Result<RoleTemplateView>> {
       const existing = await store.get(roleId)
       if (!existing.ok) return existing
-      if (existing.value.source === 'builtin') {
-        return err('ERR_FORBIDDEN', '内置模板不可修改；请基于内置复制新建', { roleId })
-      }
       const context = await validationContext()
+      if (existing.value.source === 'builtin') {
+        // 内置模板：身份字段（提示词/loop）只读；**默认模型可改**（写数据目录覆盖，D22-③）
+        if (patch.systemPrompt !== undefined || patch.defaultLoop !== undefined) {
+          return err('ERR_FORBIDDEN', '内置模板的提示词/loop 不可修改；请基于内置复制新建', { roleId })
+        }
+        if (patch.defaultModel === undefined) {
+          return err('ERR_VALIDATION', '没有可提交的字段', { roleId })
+        }
+        const validated = validateTemplatePatch({ defaultModel: patch.defaultModel }, context)
+        if (!validated.ok) return validated
+        const updated = await store.setModelDefault(roleId, validated.value.defaultModel ?? null)
+        if (!updated.ok) return updated
+        await writeAudit('update', roleId, { fields: ['defaultModel'], defaultModel: validated.value.defaultModel ?? null })
+        return ok(await toView(updated.value))
+      }
       const validated = validateTemplatePatch(patch, context)
       if (!validated.ok) return validated
       const updated = await store.update(roleId, validated.value)
@@ -165,6 +198,58 @@ export function createAgentConfigService(options: AgentConfigServiceOptions): Ag
       if (!updated.ok) return updated
       await writeAudit('update', roleId, { fields: ['enabled'], enabled })
       return ok(await toView(updated.value))
+    },
+
+    async remove(roleId: string, confirm: boolean): Promise<Result<{ readonly deleted: string }>> {
+      const existing = await store.get(roleId)
+      if (!existing.ok) return existing
+      if (existing.value.source === 'builtin') {
+        return err('ERR_FORBIDDEN', '内置模板只能停用，不能删除', { roleId })
+      }
+      if (!confirm) {
+        return err('ERR_VALIDATION', '删除模板需要二次确认（confirm=true）', { roleId })
+      }
+      const referrers = await options.references.findTemplateReferrers(roleId)
+      if (referrers.length > 0) {
+        return err('ERR_CONFLICT', '该模板被项目实例引用，删除前请先从这些项目移除成员', {
+          roleId,
+          referrers,
+        })
+      }
+      const removed = await store.delete(roleId)
+      if (!removed.ok) return removed
+      await writeAudit('delete', roleId, { source: existing.value.source })
+      return ok(removed.value)
+    },
+
+    async bulkSetDefaultModel(
+      roleIds: readonly string[],
+      defaultModel: string | null,
+    ): Promise<Result<BulkModelResult>> {
+      const wanted = [...new Set(roleIds)]
+      if (wanted.length === 0) {
+        return err('ERR_VALIDATION', '至少选择一个模板')
+      }
+      if (wanted.length > BULK_LIMIT) {
+        return err('ERR_VALIDATION', `单次最多配置 ${BULK_LIMIT} 个模板`, { count: wanted.length })
+      }
+      const context = await validationContext()
+      const validated = validateTemplatePatch({ defaultModel }, context)
+      if (!validated.ok) return validated
+      const model = validated.value.defaultModel ?? null
+
+      const updated: string[] = []
+      const skipped: { roleId: string; code: string; message: string }[] = []
+      for (const roleId of wanted) {
+        const result = await store.setModelDefault(roleId, model)
+        if (!result.ok) {
+          skipped.push({ roleId, code: result.error.code, message: result.error.message })
+          continue
+        }
+        updated.push(roleId)
+        await writeAudit('update', roleId, { fields: ['defaultModel'], defaultModel: model })
+      }
+      return ok({ updated, skipped })
     },
 
     async listHistory(roleId: string): Promise<Result<readonly string[]>> {

@@ -75,6 +75,7 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
     services: {
       modelConfig: deps.modelConfig,
       agentConfig: deps.agentConfig,
+      agentReferences: deps.agentReferences,
       project: deps.project,
       team: deps.team,
       sessions: deps.sessions,

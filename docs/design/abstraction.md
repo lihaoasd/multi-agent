@@ -105,7 +105,7 @@ domain/fsm/question.ts  pending → answered
 | 端口 | 职责 | 默认适配器 | 测试替身 |
 | --- | --- | --- | --- |
 | `ProjectStore` | 项目 CRUD + `project.json` 读写 | infra/file-store | InMemoryProjectStore |
-| `RoleTemplateStore` | 模板列表/读取/复制新建/停用 | infra/file-store（内置只读 + data/roles） | 固定模板集 |
+| `RoleTemplateStore` | 模板列表/读取/复制新建/编辑/停用/**删除用户模板**/**设置默认模型**（内置的停用与默认模型写数据目录覆盖） | infra/file-store（内置 yaml 只读 + data/roles + `agent-templates-state.json`） | 固定模板集 |
 | `SessionLogStore` | 会话事件追加（分配 seq）、窗口读取、轮转 | infra/file-store | InMemoryLogStore |
 | `SessionMetaStore` | 会话 meta 读写（状态/分段/摘要引用） | infra/file-store | InMemoryMetaStore |
 | `MemoryStore` | L3 条目（global/角色）读写与检索 | infra/file-store | InMemoryMemoryStore |
@@ -441,7 +441,7 @@ export async function buildContainer(env: Env): Promise<Container> {
 三条硬约束：
 
 1. **容器只注入稳定能力**：端口、注册表、解析器、锁、时钟。**永远不把**"某实例允许的工具列表""某实例的 loop 策略对象"注入构造函数。
-2. **实例配置每回合解析**：`EffectiveAgentConfigResolver.resolve(projectId, instanceId)` 按 `模板快照 → 实例覆盖 → 项目策略 → 平台默认` 合成 `EffectiveAgentConfig`，作为 `TurnContext.config` 传给用例；解析结果按 `(projectId, instanceId, configVersion)` 缓存。
+2. **实例配置每回合解析**：`EffectiveAgentConfigResolver.resolve(projectId, instanceId)` 按 `实例覆盖 → 模板快照 → 平台默认` 合成 `EffectiveAgentConfig`（真源：`src/application/team/effective-config.ts`；S11 的"未配置 Agent 统计"用同一函数），作为 `TurnContext.config` 传给用例；解析结果按 `(projectId, instanceId, configVersion)` 缓存。
 3. **按 id 运行期查表**：工具通过 `ToolRegistry.get(name)`、loop 通过 `LoopRegistry.get(strategy)` 在**回合开始时**解析；因此新增/替换实现只需 `register`。
 
 时序（用户改配置 → 生效）：

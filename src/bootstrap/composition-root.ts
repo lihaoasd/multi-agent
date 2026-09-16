@@ -21,6 +21,7 @@ import { createSessionService, type SessionService } from '../application/sessio
 import { createProjectService, type ProjectService } from '../application/project/service'
 import { createTeamService, type TeamService } from '../application/team/team-service'
 import { createTemplateModelReferenceQuery } from '../application/model-config/references'
+import { createProjectTemplateReferenceQuery, type TemplateReferenceQuery } from '../application/team/template-references'
 import { createModelConfigService, type ModelConfigService } from '../application/model-config/service'
 import { createAgentConfigService, type AgentConfigService } from '../application/team/agent-config-service'
 import {
@@ -372,6 +373,8 @@ export interface AppDeps {
   readonly gateway: ModelGateway
   readonly modelConfig: ModelConfigService
   readonly agentConfig: AgentConfigService
+  /** 模板/Agent 引用查询（删除保护与"未配置模型"统计，S11） */
+  readonly agentReferences: TemplateReferenceQuery
   readonly project: ProjectService
   readonly team: TeamService
   readonly sessions: SessionService
@@ -423,6 +426,13 @@ export function resolveDeps(
   const gateway = overrides.gateway ?? container.resolve<ModelGateway>(TOKENS.ModelGateway)
   const envMap = overrides.envMap ?? process.env
 
+  // 项目/团队维度的引用查询（S11）：模板删除保护 + 未配置模型的 Agent 统计
+  const projectStore = container.resolve<ProjectStore>(TOKENS.ProjectStore)
+  const templateReferences: TemplateReferenceQuery = createProjectTemplateReferenceQuery({
+    projects: projectStore,
+    catalog,
+  })
+
   const modelConfig = createModelConfigService({
     store: modelConfigStore,
     catalog,
@@ -451,6 +461,7 @@ export function resolveDeps(
     ids,
     clock,
     config: configProvider,
+    references: templateReferences,
   })
 
   const project = createProjectService({
@@ -693,7 +704,7 @@ export function resolveDeps(
     fileStore: container.resolve(TOKENS.FileStore),
     lock: container.resolve(TOKENS.LockManager),
     directoryBrowser: container.resolve(TOKENS.DirectoryBrowser),
-    projectStore: container.resolve(TOKENS.ProjectStore),
+    projectStore,
     sessionMetaStore: container.resolve(TOKENS.SessionMetaStore),
     sessionLogStore: container.resolve(TOKENS.SessionLogStore),
     modelConfigStore,
@@ -705,6 +716,7 @@ export function resolveDeps(
     gateway,
     modelConfig,
     agentConfig,
+    agentReferences: templateReferences,
     project,
     team,
     sessions,

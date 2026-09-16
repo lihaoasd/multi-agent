@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import type { ModelConfigService, ProviderUpdateInput, ModelUpdateInput } from '../../application/model-config/service'
 import type { ModelInput, ProviderInput } from '../../application/model-config/validate'
+import type { AgentReference } from '../../application/team/template-references'
 import type { ProviderKind } from '../../ports/model'
 import type { EventBroadcaster } from '../../ports/events'
-import { err } from '../../shared/result'
+import { err, ok } from '../../shared/result'
 import { replyFromResult } from '../errors'
 import {
   asRecord,
@@ -18,6 +19,8 @@ import {
 export interface ModelConfigRouteContext {
   readonly service: ModelConfigService
   readonly broadcaster: EventBroadcaster
+  /** 未配置模型的 Agent（S11/D22-④）：随 overview 返回，供"一键设为全局默认"提示 */
+  readonly unconfiguredAgents?: () => Promise<readonly AgentReference[]>
 }
 
 function providerInputOf(record: Record<string, unknown>, id: string): ProviderInput {
@@ -217,7 +220,9 @@ export function registerModelConfigRoutes(app: FastifyInstance, context: ModelCo
 
   app.get('/api/model-config/overview', async (_request, reply) => {
     const overview = await service.overview()
-    return replyFromResult(reply, overview)
+    if (!overview.ok) return replyFromResult(reply, overview)
+    const items = context.unconfiguredAgents === undefined ? [] : await context.unconfiguredAgents()
+    return replyFromResult(reply, ok({ ...overview.value, unconfiguredAgents: { total: items.length, items } }))
   })
 
   app.post<{ Querystring: { source?: string } }>('/api/model-config/import', async (request, reply) => {

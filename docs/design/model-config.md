@@ -17,7 +17,7 @@
 平台级  data/model-config.json          供应商 + 模型条目 + 全局默认路由（UI 可改，即时生效）
   ▲
 模板级  data/roles/<roleId>.yaml        systemPrompt / defaultLoop / defaultModel / packages / tools / …
-  ▲                                    （首页 Agent 模块可编辑；内置模板只读，需"基于内置复制新建"）
+  ▲                                    （首页 Agent 模块可编辑；内置模板的提示词/loop 只读，**仅默认模型可改**，S11）
 实例级  project.json  team[]            prompt / loop / model 覆盖（创建时快照模板默认值，D16-⑤）
 ```
 
@@ -146,7 +146,10 @@
 | 12 | `stepOverrides` 的 key 必须是已注册 loop 步骤名、value 指向已启用模型 | `ERR_VALIDATION` |
 | 13 | Agent 提示词：非空、长度 ≤ 上限（默认 20000 字符，平台可配） | `ERR_VALIDATION` |
 | 14 | Agent loop：`strategy` 已注册；`maxIterations` 1..20、`toolBudget` 0..200、`stepModelOverride` 指向已启用模型 | `ERR_VALIDATION` |
-| 15 | 内置模板不可原地修改/停用 | `ERR_FORBIDDEN`（提示"基于内置复制新建"） |
+| 15 | 内置模板不可原地修改：`systemPrompt`/`defaultLoop` 只读（须"基于内置复制新建"）；`defaultModel` 与停用/启用**例外**（写 `data/agent-templates-state.json` 覆盖，S11） | `ERR_FORBIDDEN`（提示词/loop） |
+| 16 | 模板删除：仅用户模板可删（内置 → `ERR_FORBIDDEN`）；缺少 `confirm=true` | `ERR_VALIDATION` |
+| 17 | 模板删除：被任何项目实例（`roleTemplateId`）引用即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
+| 18 | 批量设置默认模型：`roleIds` 非字符串数组 / 空数组 / 去重后超过 200 项 → 拒绝；`defaultModel` 必须是**已启用模型条目 id** 或 `null` | `ERR_VALIDATION` |
 
 - 错误码沿用 `contract.md` §4 既有集合（`ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`），**不新增错误码**；引用者与供应商原始错误放 `detail`。
 - 供应商返回的 HTTP 错误映射为 `ERR_MODEL`，`detail` 含 `{ providerId, modelId, status, code?, message(截断+脱敏) }`。
@@ -158,13 +161,23 @@
 | 新增/编辑/停用供应商 | 其下模型的调用 | 下一次模型调用 | 否 |
 | 新增/编辑模型条目 | 引用它的 Agent | 下一次模型调用 | 否 |
 | 改全局默认路由 | 未显式指定模型的角色 | 下一回合解析 | 否 |
-| 编辑系统模板（提示词/loop/模型） | **仅未来新建实例**（快照） | 保存即写模板文件 | 否 |
+| 编辑系统模板（提示词/loop/模型，含内置仅默认模型） | **仅未来新建实例**（快照） | 保存即写模板文件 / 内置写 `agent-templates-state.json` 覆盖 | 否 |
+| 停用/启用模板（含内置） | 此后新建/组队的可选清单；既有实例靠快照不受影响 | 保存即写模板文件 / 状态覆盖 | 否 |
+| 删除用户模板 | 此后新建实例的可选清单；既有实例靠快照 | 立即；被项目实例引用时被拒（§8 #17） | 否 |
+| 批量设置默认模型（`bulk-model`） | 相关模板的**此后新建实例** | 保存即写（内置写状态覆盖、用户写 yaml） | 否 |
 | 实例覆盖（提示词/loop/模型） | 该实例 | 下一回合开始（缓存失效）；运行中回合到可中断点 | 否 |
 | 删除被引用的供应商/模型 | — | 被拒（§8 #8/#9） | — |
 | 换 kind 适配器实现 / 改 `MODELS__CONFIG_FILE` | 全体 | 启动期装配 | **是** |
 
 - 机制上只有两步：**原子写 `data/model-config.json` → `ModelCatalog.invalidate()`**；容器、注册表、进程均不变（abstraction §5.5 三约束）。
 - 写入与缓存失效之间不存在"半生效"：缓存按文件版本号（`revision`）判定，读到新 `revision` 才重建解析结果。
+
+### 9.1 未配置模型统计与"一键设全局默认"（2026-09-16，S11/D22-④）
+
+- `GET /api/model-config/overview` 增字段 `unconfiguredAgents: {total, items:[{projectId, projectName, instanceId, displayName}]}`；口径 = **项目实例中 `enabled=true` 且生效模型为空**（停用实例不参与统计）。
+- 生效链与 dispatcher 一致：`实例覆盖 → 模板快照 → 平台默认 routing.defaultModelId`；三级都没有模型时为 `null`，该实例启动回合报 `ERR_MODEL`（§2，不静默挑模型）。
+- 用途：模型模块"默认路由"卡片在 `total > 0` 时显示 Alert「当前有 n 个 Agent 未配置模型」，并对模型条目提供 **[设为全局默认]**（已是默认则置灰）——把 `routing.defaultModelId` 指向该模型即可让这些 Agent **立即**有生效模型（回退链兜底），无需逐个改模板/实例；设为默认后计数随 `model-config.updated` / 重新拉取 overview 刷新。
+- 反向入口：Agent 模块的「全选未配置 + 一键配置模型」直接给被勾选的模板写 `defaultModel`（`POST /api/agent-templates/bulk-model`，写路径与校验见 agent-templates.md §4、contract.md §2「角色库 / 团队」）。
 
 ## 10. 审计与留痕
 
@@ -210,7 +223,8 @@
 | `ModelCatalog` | `modelId → {provider, credential, model 名, params, kind}` 解析 + `revision` 缓存 + `invalidate()` | application/model-config |
 | `ModelGateway` | 按 `ModelId` 路由到适配器，统一 `ModelChunk`，外挂脱敏装饰 | infra/model |
 | `ModelConfigService` | 供应商/模型/路由的增删改查 + 校验 + 测试/发现 + 迁移导入 | application/model-config |
-| `AgentConfigService` | 模板 CRUD（复制新建/编辑/停用）与实例覆盖写入 + 校验 + 快照 + 审计 | application/team |
+| `AgentConfigService` | 模板 CRUD（复制新建/编辑/停用/**删除用户模板**/**批量设置默认模型**）与实例覆盖写入 + 校验 + 快照 + 审计 | application/team |
+| `TemplateReferenceQuery` | 模板 → 项目实例引用查询（删除保护 `findTemplateReferrers`）与**未配置模型 Agent** 查询（`findUnconfiguredAgents`，S11） | application/team |
 | 预置目录 | 9 家的 kind/baseUrl/凭证提示/建议模型 | src/shared/model-presets.yaml（只读） |
 
 - 关键约束：`ModelCatalog` **不缓存凭证到进程外**、不进日志；`AgentConfigService` 写实例配置后必须调用 `EffectiveAgentConfigResolver.invalidate(projectId, instanceId)`。
@@ -219,7 +233,7 @@
 
 | 面 | 内容 |
 | --- | --- |
-| REST | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET\|PUT /api/model-routing`、`POST /api/model-config/import`；Agent 侧 `POST /api/agent-templates`、`PATCH /api/agent-templates/:roleId`、`GET\|PATCH /api/projects/:pid/team/:iid` |
+| REST | `GET /api/model-presets`、`GET\|POST /api/model-providers`、`PATCH\|DELETE /api/model-providers/:pid`、`POST /api/model-providers/:pid/test`、`GET /api/model-providers/:pid/discover`、`GET\|POST /api/models`、`POST /api/models/bulk`、`PATCH\|DELETE /api/models/:mid`、`GET\|PUT /api/model-routing`、`GET /api/model-config/overview`（含 `unconfiguredAgents`，S11）、`POST /api/model-config/import`；Agent 侧 `POST /api/agent-templates`、`PATCH\|DELETE /api/agent-templates/:roleId`、`POST /api/agent-templates/:roleId/{disable,enable}`、`POST /api/agent-templates/bulk-model`、`GET\|PATCH /api/projects/:pid/team/:iid` |
 | WS | 新增下行 `model-config.updated`（供应商/模型/路由变更）、`agent-config.updated`（模板或实例配置变更） |
 | 错误码 | 沿用既有集合，不新增（§8） |
 

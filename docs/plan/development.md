@@ -36,8 +36,9 @@
 | **S8** | 恢复、运行控制与验收收口 | 未完成回合恢复三选、排队消息恢复、暂停/停止、停止生成、进行中细条、导出 zip、`reindex`、文档回写 | S7 | 14、19、20 | **已完成（2026-09-15）**：[方案](2026-09-15-s8-recovery-runtime.md) · [记录](../changes/2026-09-15-s8-recovery-runtime.md) |
 | **S9** | 全量验收与文档收口 | prd §9 脚本 1~8 全绿、覆盖率达标、`contract.md`/`data-storage.md` 回写 | S8 | 全部 | **已完成（2026-09-15）**：[方案](2026-09-15-s9-acceptance-closure.md) · [记录](../changes/2026-09-15-s9-acceptance-closure.md) |
 | **S10** | 移除 mock 与"Agent 默认不配置模型"（需求变更，见 prd D21） | 删除 mock 适配器/kind/预置/启动兜底、8 个内置角色默认模型置空、`MODELS__DEFAULT` 生效、旧 kind 启动迁移、prd/design/api/testing 回写 | S9 | 27~31 | **已完成（2026-09-16）**：[方案](2026-09-16-s10-remove-mock.md) · [记录](../changes/2026-09-16-s10-remove-mock.md) |
+| **S11** | Agent 模板库删除/停用 + 一键配置模型（需求变更，见 prd D22） | 用户模板可删（引用保护 409+点名）、内置模板可停用（数据目录覆盖，重启不丢）、`bulk-model` 批量设默认模型、`overview.unconfiguredAgents` 计数与一键设全局默认、前端多选/删除/配置交互 | S10 | 32 | **已完成（2026-09-16）**：[方案](2026-09-16-s11-template-delete-bulk-model.md) · [记录](../changes/2026-09-16-s11-template-delete-bulk-model.md) |
 
-> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10 为 S9 之后的需求变更收口。
+> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10/S11 为 S9 之后的需求变更收口。
 
 ## 4. S0 · 工程脚手架与依赖门禁
 
@@ -88,6 +89,7 @@
 | **S8 恢复、运行控制与收口** | 未完成回合横幅三选（缺 `turn_end`）、排队消息恢复、暂停/停止（未结算改动先结算快照）、"停止生成"、进行中细条、项目导出 zip。验收：跨重启会话/画布/记忆恢复（规则 14/19/20）。**结果（2026-09-15）**：`RecoveryService` 栈式配对判定未完成回合 + 三选（`report/continue/complete` 唤醒、`ignore` 静默、重复 `ERR_CONFLICT`）；`stop(turn/task)`（停生成保留队列 / 终止任务先结算 code artifact）；`GET /runtime` 细条（占用者 + 任务 + plan 状态 + 未完成回合 + 队列）；零依赖 STORE ZIP 导出运行时项目文件夹（附范围说明、不含工作目录）；启动自检记录未完成回合且**不自动续跑**。**遗留**：导入/恢复向导、流式压缩导出、多进程停止语义（S9 或 P1） |
 | **S9 全量验收与文档收口** | 跑通 prd §9 脚本 1~8；`contract.md`/`data-storage.md`/`testing/plan.md` 按实现回写；覆盖率门禁达标；`README.md` 编号索引同步。**结果（2026-09-15）**：`tests/acceptance/prd-section9.test.ts` 8/8 通过（脚本化 Mock 网关让委派/唤醒/提问/审批真的经过 agent loop）；全量 44 files / 302 tests 全绿；`npm run coverage` 触达门禁 141/141；验收暴露并修复 4 个缺陷（调度态读改写、模板工具白名单、`GET /api/config`、死代码）；文档与索引已回写 |
 | **S10 移除 mock 与 Agent 默认不配置模型** | 彻底删除 mock（`ProviderKind` 收敛四种、删 `providers/mock.ts` 与注册、预置目录 9 家、校验不再豁免）、8 个内置角色 `defaultModel` 置空、出厂不再自动创建供应商/模型、`MODELS__DEFAULT` 改为初始化阶段生效、启动迁移未知 kind 并写审计、测试替身下沉 `tests/`。**结果（2026-09-16）**：`tests/acceptance/prd-section9.test.ts` 按新口径 8/8（脚本 2 改为"未配置模型 → `ERR_MODEL` + 引导"）；全量 **45 files / 306 tests 全绿**；`typecheck`/`eslint`/依赖棘轮 0 违规、触达门禁 **140/140**、`vite build` 通过；真实 `data/model-config.json` 已在运行实例上完成迁移（`config-audit.jsonl` 记 `migrate/removedProviders:["mock"]`） |
+| **S11 模板库删除/停用与一键配置模型** | 用户模板可删（`confirm` 二次确认 + 被项目实例引用 → `409` + referrers 点名）、内置模板只能停用且停用/默认模型写 `data/agent-templates-state.json` 覆盖（仓库 yaml 只读、重启不丢）、`POST /api/agent-templates/bulk-model` 批量写默认模型、`overview.unconfiguredAgents` 计数 + 模型模块一键设全局默认、Agent 模块多选/删除/配置交互。**结果（2026-09-16）**：全量 **46 files / 311 tests 全绿**（新增 `s11-template-delete-bulk.test.ts` 5 例）；`coverage` 触达门禁 **141/141**；`typecheck`/`eslint`/依赖棘轮 0 违规、`vite build` 通过；修复 1 个真实缺陷（`team-service` 未走完整回退链，靠全局默认生效的实例被误标"模型不可用"） |
 
 ## 7. 每阶段完成定义（DoD，缺一不算完成）
 

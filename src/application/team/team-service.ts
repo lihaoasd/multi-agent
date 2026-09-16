@@ -98,11 +98,12 @@ export function createTeamService(options: TeamServiceOptions): TeamService {
   const toView = async (instance: RoleInstance): Promise<InstanceView> => {
     const templates = await roleTemplates.list()
     const template = templates.ok ? templates.value.find((item) => item.roleId === instance.roleTemplateId) : undefined
+    // 生效模型必须走完整回退链（实例 → 模板快照 → 平台默认），否则"靠全局默认生效"的实例会被误标为未配置/不可用
+    const effective = resolveEffectiveAgentConfig(instance, { defaultModelId: await platformDefaultModel() })
     const loaded = await catalog.current()
     const model = loaded.ok
-      ? loaded.value.snapshot.models.find((entry) => entry.id === (instance.model ?? instance.snapshot.defaultModel))
+      ? loaded.value.snapshot.models.find((entry) => entry.id === effective.model)
       : undefined
-    const effective = resolveEffectiveAgentConfig(instance, { defaultModelId: await platformDefaultModel() })
     return {
       instanceId: instance.instanceId,
       roleTemplateId: instance.roleTemplateId,

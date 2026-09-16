@@ -7,6 +7,7 @@ interface TemplateBody {
   name: string
   source: 'builtin' | 'user'
   editable: boolean
+  enabled: boolean
   systemPrompt: string
   defaultModel: string | null
   defaultModelAvailable: boolean
@@ -194,12 +195,33 @@ describe('API · Agent 模板配置（FR-35 / 规则 29）', () => {
     expect((await inject({ method: 'DELETE', url: '/api/models/ref-model' })).statusCode).toBe(200)
   })
 
-  it('停用/启用模板（内置不可停用）与 WS 广播', async () => {
-    expect((await inject({ method: 'POST', url: '/api/agent-templates/pm/disable' })).statusCode).toBe(403)
+  it('停用/启用模板（S11：内置模板也可停用，状态落数据目录并跨重启保持）与 WS 广播', async () => {
+    // 内置模板：停用写 `data/agent-templates-state.json`（仓库 yaml 只读）
+    const disabledBuiltin = await inject({ method: 'POST', url: '/api/agent-templates/pm/disable' })
+    expect(disabledBuiltin.statusCode).toBe(200)
+    expect(disabledBuiltin.json<TemplateBody & { enabled: boolean }>().enabled).toBe(false)
 
-    const disabled = await inject({ method: 'POST', url: '/api/agent-templates/pm-x/disable' })
-    expect(disabled.statusCode).toBe(200)
-    expect(disabled.json<TemplateBody & { enabled: boolean }>().enabled).toBe(false)
+    const state = await context.deps.fileStore.readJson<{ disabledBuiltins: string[] }>(
+      `${context.dataDir}/agent-templates-state.json`,
+    )
+    expect(state.ok && state.value.disabledBuiltins).toContain('pm')
+
+    // 模拟重启：同一数据根的新容器仍然停用
+    const revived = await createTestServer({ root: context.root, cleanupRoot: false })
+    try {
+      const templates = (await revived.app.inject({ method: 'GET', url: '/api/agent-templates' })).json<TemplateBody[]>()
+      expect(templates.find((item) => item.roleId === 'pm')?.enabled).toBe(false)
+    } finally {
+      await revived.cleanup()
+    }
+
+    const reEnabled = await inject({ method: 'POST', url: '/api/agent-templates/pm/enable' })
+    expect(reEnabled.statusCode).toBe(200)
+    expect(reEnabled.json<TemplateBody & { enabled: boolean }>().enabled).toBe(true)
+
+    const userDisabled = await inject({ method: 'POST', url: '/api/agent-templates/pm-x/disable' })
+    expect(userDisabled.statusCode).toBe(200)
+    expect(userDisabled.json<TemplateBody & { enabled: boolean }>().enabled).toBe(false)
 
     const enabled = await inject({ method: 'POST', url: '/api/agent-templates/pm-x/enable' })
     expect(enabled.json<TemplateBody & { enabled: boolean }>().enabled).toBe(true)

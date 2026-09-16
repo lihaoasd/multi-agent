@@ -16,6 +16,7 @@ import type { WsRealtime } from '../ports/events'
 import type { SessionService } from '../application/session/session-service'
 import type { ProjectService } from '../application/project/service'
 import type { AgentConfigService } from '../application/team/agent-config-service'
+import type { TemplateReferenceQuery } from '../application/team/template-references'
 import type { TeamService } from '../application/team/team-service'
 import type { EventBroadcaster } from '../ports/events'
 import type { IdGenerator } from '../ports/id'
@@ -40,6 +41,8 @@ import { registerStaticRoutes } from './static'
 export interface ServerServices {
   readonly modelConfig: ModelConfigService
   readonly agentConfig: AgentConfigService
+  /** 模板/Agent 引用查询（S11）：随 `/api/model-config/overview` 返回"未配置模型"的 Agent */
+  readonly agentReferences?: TemplateReferenceQuery
   readonly project: ProjectService
   readonly team: TeamService
   readonly sessions: SessionService
@@ -109,6 +112,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   registerModelConfigRoutes(app, {
     service: options.services.modelConfig,
     broadcaster: options.services.broadcaster,
+    ...(options.services.agentReferences === undefined
+      ? {}
+      : { unconfiguredAgents: options.services.agentReferences.findUnconfiguredAgents }),
   })
   registerAgentTemplateRoutes(app, {
     service: options.services.agentConfig,

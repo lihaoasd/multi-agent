@@ -23,6 +23,7 @@ agent_haness/                    # 平台仓库
 │   ├── model-config.v0.bak.json # 旧形状自动备份（检测到无 schemaVersion 的遗留文件时生成）
 │   ├── model-config.invalid.bak.json # 坏 JSON 自动备份（解析失败时生成）
 │   ├── config-audit.jsonl       # 配置变更审计：平台/模板/实例（append-only，2026-09-15；路径随 DATA_DIR，即 `<DATA_DIR>/config-audit.jsonl`）
+│   ├── agent-templates-state.json # 【内置模板运行时覆盖】disabledBuiltins + roleModelDefaults（2026-09-16，S11；仓库 yaml 保持只读，结构见 §8）
 │   ├── roles/                   # 【系统角色库】用户自建/修改的模板（内置模板随仓库 src/shared/roles）
 │   │   ├── <roleId>.yaml
 │   │   └── <roleId>.history/<ts>.yaml   # 模板配置历史快照（只增不改，2026-09-15）
@@ -248,12 +249,19 @@ agent_haness/                    # 平台仓库
 ## 8. 角色模板（系统角色库）
 
 - 内置：`src/shared/roles/<roleId>.yaml`（随仓库版本，**只读**，升级可覆盖）。
-- 用户自建：`data/roles/<roleId>.yaml`（B12/D16-⑤）：内置模板**只读、不可原地改/删**；需变更时在 UI「基于内置复制新建」（新 roleId）。**不存在"同名文件覆盖内置"路径**。
+- 用户自建：`data/roles/<roleId>.yaml`（B12/D16-⑤）：**可编辑、可停用、可删除**（S11）；内置模板的**名称/提示词/loop/工具不可原地改**（需在 UI「基于内置复制新建」，新 roleId），其**默认模型与停用/启用**例外（写状态文件覆盖，见下）。**不存在"同名文件覆盖内置"路径**。
 - **目录归属判定（2026-09-15 实现口径）**：`ROLE_DIRS` 中**位于数据根下**的那份（默认 `data/roles`）视为用户模板目录（可写），其余为内置目录（只读）；同名 roleId 同时存在时用户文件优先（属异常配置，UI 只允许用新 roleId 复制）。
 - 模板结构：`{ roleId, name, category, scenario, description, systemPrompt, defaultModel,
   defaultLoop:{strategy,params}, packages:[], tools:[], artifactTypes:[], defaultApprovalRules }`（`scenario` 与 `packages` 为 2026-09-14 新增，见 agent-templates.md / tool-packages.md）。
-- 项目内实例配置见 §3 team 数组（prompt/model/loop/tools 覆盖模板）；实例创建时**快照**模板默认值（D16-⑤），此后模板增删改不影响既有实例；`roleTemplateId` 仅作溯源（模板被删除时 UI 标「模板已移除」）。
-- **模板可编辑（2026-09-15，FR-35）**：首页 Agent 模块可提交 **`systemPrompt` / `defaultLoop` / `defaultModel`** 三项；内置模板（`src/shared/roles/`）只读，变更须"基于内置复制新建"（新 roleId 落 `data/roles/`）；`packages`/`tools` 本轮仍只读（U9 剩余）。
+- 项目内实例配置见 §3 team 数组（prompt/model/loop/tools 覆盖模板）；实例创建时**快照**模板默认值（D16-⑤），此后模板增删改不影响既有实例；`roleTemplateId` 仅作溯源（模板被停用时 UI 标「模板已停用」；删除仅对**无项目实例引用**的用户模板开放，否则 `ERR_CONFLICT` + `referrers`，S11）。
+- **模板可编辑（2026-09-15，FR-35；2026-09-16 S11 放宽）**：首页 Agent 模块对**用户模板**可提交 **`systemPrompt` / `defaultLoop` / `defaultModel`** 三项；**内置模板**（`src/shared/roles/`）的提示词/loop 仍只读（变更须"基于内置复制新建"，新 roleId 落 `data/roles/`），但自 S11 起**默认模型与停用/启用**可改（落状态文件覆盖，见下）；`packages`/`tools` 本轮仍只读（U9 剩余）。
+- **内置模板的运行时覆盖（2026-09-16，S11）**：`<DATA_DIR>/agent-templates-state.json`（默认 `data/agent-templates-state.json`）只保存内置模板的**停用**与**默认模型**两项：
+  ```jsonc
+  { "schemaVersion": 1, "disabledBuiltins": ["pm"], "roleModelDefaults": { "pm": "ds-chat" } }
+  ```
+  - **只对内置模板生效**：`disabledBuiltins` 决定 `enabled`（命中 = 停用），`roleModelDefaults` 决定 `defaultModel`（值可为 `null` = 显式清空）；其余字段（名称/提示词/loop/工具/产出类型）一律仍读仓库 `src/shared/roles/<roleId>.yaml`，仓库文件**保持只读、不被改写**（此前内置模板的停用/默认模型一律 `ERR_FORBIDDEN`，S11 起放宽为"仅 `defaultModel` 与停用可改、提示词/loop 仍只读"）。用户模板的 `enabled`/`defaultModel` 仍以自身 yaml 为准，不读覆盖表。
+  - **容错读取**：文件缺失、`schemaVersion` 不为 `1`、键值非法（`disabledBuiltins` 非字符串数组 / `roleModelDefaults` 值既不是字符串也不是 `null`）→ 一律视为**空覆盖**，不报错；未出现在覆盖表中的内置模板行为与覆盖前一致。
+  - **残留清理时机**：删除用户模板时同步清掉该 `roleId` 在状态文件中的覆盖项（`disabledBuiltins` 与 `roleModelDefaults` 均按 key 过滤）；删除内置模板本身不被允许（只能停用），因此不存在需要清理的内置项。
 - **`defaultModel` 口径**：引用 `data/model-config.json` 的**模型条目 id**（不再是 provider id，见 model-config.md §2/§11）。
 
 ## 9. 迁移 / 备份 / 损坏恢复

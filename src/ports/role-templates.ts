@@ -62,12 +62,19 @@ export interface RoleTemplateCreateInput {
 }
 
 export interface RoleTemplateStore {
-  /** 内置 + 用户模板（用户同名覆盖内置的情形不存在：须用新 roleId） */
+  /** 内置 + 用户模板（用户同名覆盖内置的情形不存在：须用新 roleId）；返回值为**合并数据目录覆盖后的有效值** */
   list(): Promise<Result<readonly RoleTemplate[]>>
   get(roleId: RoleId): Promise<Result<RoleTemplate>>
   create(input: RoleTemplateCreateInput): Promise<Result<RoleTemplate>>
   update(roleId: RoleId, patch: RoleTemplatePatch): Promise<Result<RoleTemplate>>
   setEnabled(roleId: RoleId, enabled: boolean): Promise<Result<RoleTemplate>>
+  /**
+   * 设置默认模型：用户模板写自身 yaml；**内置模板写入数据目录的运行时覆盖**
+   * （仓库 yaml 只读，`data/agent-templates-state.json` 里的覆盖优先，重启不丢）。
+   */
+  setModelDefault(roleId: RoleId, modelId: ModelId | null): Promise<Result<RoleTemplate>>
+  /** 删除**用户模板**（yaml + 历史目录）；内置模板只能停用（返回 `ERR_FORBIDDEN`） */
+  delete(roleId: RoleId): Promise<Result<{ readonly deleted: string }>>
   /** 配置历史快照（只增不改）；返回写入的相对路径 */
   appendHistory(roleId: RoleId, template: RoleTemplate): Promise<Result<string>>
   listHistory(roleId: RoleId): Promise<readonly string[]>

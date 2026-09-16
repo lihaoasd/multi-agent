@@ -1,6 +1,7 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { Clock } from '../../ports/clock'
 import type { FileStore, RelPath } from '../../ports/file-store'
+import type { ModelId } from '../../ports/model'
 import type {
   LoopConfig,
   RoleTemplate,
@@ -17,6 +18,23 @@ export interface RoleTemplateStoreOptions {
   readonly roleDirs: readonly RelPath[]
   readonly dataDir: RelPath
   readonly clock: Clock
+}
+
+/**
+ * 内置模板的运行时覆盖（`data/agent-templates-state.json`，data-storage.md §8）。
+ * 仓库 `src/shared/roles/*.yaml` 只读且会被升级覆盖，因此内置模板的**停用**与**默认模型**
+ * 只能落在数据目录；其余字段（名称/提示词/loop/工具）对内置模板仍只读。
+ */
+export interface RoleTemplateState {
+  readonly schemaVersion: 1
+  readonly disabledBuiltins: readonly string[]
+  readonly roleModelDefaults: Readonly<Record<string, ModelId | null>>
+}
+
+export const EMPTY_ROLE_TEMPLATE_STATE: RoleTemplateState = {
+  schemaVersion: 1,
+  disabledBuiltins: [],
+  roleModelDefaults: {},
 }
 
 function asString(value: unknown, fallback = ''): string {
@@ -112,14 +130,56 @@ export function createRoleTemplateStore(options: RoleTemplateStoreOptions): Role
     return templates
   }
 
+  const statePath: RelPath = `${options.dataDir}/agent-templates-state.json`
+
+  const loadState = async (): Promise<RoleTemplateState> => {
+    const raw = await fileStore.readJson<unknown>(statePath)
+    if (!raw.ok) return EMPTY_ROLE_TEMPLATE_STATE
+    const record = typeof raw.value === 'object' && raw.value !== null ? (raw.value as Record<string, unknown>) : {}
+    if (record['schemaVersion'] !== 1) return EMPTY_ROLE_TEMPLATE_STATE
+    const defaultsRaw =
+      typeof record['roleModelDefaults'] === 'object' && record['roleModelDefaults'] !== null
+        ? (record['roleModelDefaults'] as Record<string, unknown>)
+        : {}
+    const roleModelDefaults: Record<string, ModelId | null> = {}
+    for (const [key, value] of Object.entries(defaultsRaw)) {
+      if (value === null) roleModelDefaults[key] = null
+      else if (typeof value === 'string') roleModelDefaults[key] = value
+    }
+    return {
+      schemaVersion: 1,
+      disabledBuiltins: asStringArray(record['disabledBuiltins']),
+      roleModelDefaults,
+    }
+  }
+
+  const saveState = async (state: RoleTemplateState): Promise<Result<RoleTemplateState>> => {
+    const written = await fileStore.writeJsonAtomic(statePath, state)
+    return written.ok ? ok(state) : written
+  }
+
+  /** 覆盖只作用于**内置模板**：用户模板的 enabled/defaultModel 仍以自身 yaml 为准 */
+  const applyOverrides = (template: RoleTemplate, state: RoleTemplateState): RoleTemplate => {
+    if (template.source !== 'builtin') return template
+    const hasModel = Object.prototype.hasOwnProperty.call(state.roleModelDefaults, template.roleId)
+    return {
+      ...template,
+      enabled: !state.disabledBuiltins.includes(template.roleId),
+      defaultModel: hasModel ? (state.roleModelDefaults[template.roleId] ?? null) : template.defaultModel,
+    }
+  }
+
   const loadAll = async (): Promise<readonly RoleTemplate[]> => {
-    const builtin = (await Promise.all(builtinDirs.map((dir) => readDir(dir, 'builtin')))).flat()
-    const user = await readDir(userDir, 'user')
+    const [builtin, user, state] = await Promise.all([
+      Promise.all(builtinDirs.map((dir) => readDir(dir, 'builtin'))).then((groups) => groups.flat()),
+      readDir(userDir, 'user'),
+      loadState(),
+    ])
     const merged = new Map<string, RoleTemplate>()
     for (const template of builtin) merged.set(template.roleId, template)
     // 用户模板优先（同名视为用户显式接管；UI 只允许用新 roleId 复制，故属异常配置）
     for (const template of user) merged.set(template.roleId, template)
-    return [...merged.values()]
+    return [...merged.values()].map((template) => applyOverrides(template, state))
   }
 
   const pathOf = (roleId: string): RelPath => `${userDir}/${roleId}.yaml`
@@ -134,6 +194,98 @@ export function createRoleTemplateStore(options: RoleTemplateStoreOptions): Role
     const path = `${userDir}/${roleId}.history/${stamp}.yaml`
     const receipt = await fileStore.writeTextAtomic(path, serialize(template))
     return receipt.ok ? ok(path) : receipt
+  }
+
+  const applyUpdate = async (roleId: string, patch: RoleTemplatePatch): Promise<Result<RoleTemplate>> => {
+    const all = await loadAll()
+    const existing = all.find((template) => template.roleId === roleId)
+    if (existing === undefined) {
+      return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
+    }
+    if (existing.source === 'builtin') {
+      return err('ERR_FORBIDDEN', '内置模板不可修改；请基于内置复制新建', { roleId })
+    }
+    const updated: RoleTemplate = {
+      ...existing,
+      systemPrompt: patch.systemPrompt ?? existing.systemPrompt,
+      defaultLoop: patch.defaultLoop ?? existing.defaultLoop,
+      defaultModel: patch.defaultModel === undefined ? existing.defaultModel : patch.defaultModel,
+    }
+    const written = await write(updated)
+    if (!written.ok) return written
+    await appendHistory(roleId, updated)
+    return ok(updated)
+  }
+
+  /** 停用：用户模板写 yaml；内置模板写数据目录覆盖（仓库 yaml 只读） */
+  const setTemplateEnabled = async (roleId: string, enabled: boolean): Promise<Result<RoleTemplate>> => {
+    const all = await loadAll()
+    const existing = all.find((template) => template.roleId === roleId)
+    if (existing === undefined) {
+      return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
+    }
+    if (existing.source !== 'builtin') {
+      const updated: RoleTemplate = { ...existing, enabled }
+      const written = await write(updated)
+      if (!written.ok) return written
+      await appendHistory(roleId, updated)
+      return ok(updated)
+    }
+    const state = await loadState()
+    const disabledBuiltins = enabled
+      ? state.disabledBuiltins.filter((id) => id !== roleId)
+      : [...new Set([...state.disabledBuiltins, roleId])]
+    const saved = await saveState({ ...state, disabledBuiltins })
+    if (!saved.ok) return saved
+    return ok({ ...existing, enabled })
+  }
+
+  const setModelDefault = async (roleId: string, modelId: ModelId | null): Promise<Result<RoleTemplate>> => {
+    const all = await loadAll()
+    const existing = all.find((template) => template.roleId === roleId)
+    if (existing === undefined) {
+      return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
+    }
+    if (existing.source !== 'builtin') {
+      return applyUpdate(roleId, { defaultModel: modelId })
+    }
+    const state = await loadState()
+    const saved = await saveState({
+      ...state,
+      roleModelDefaults: { ...state.roleModelDefaults, [roleId]: modelId },
+    })
+    if (!saved.ok) return saved
+    return ok({ ...existing, defaultModel: modelId })
+  }
+
+  /** 删除用户模板（yaml + 历史 + 残留覆盖）；内置模板只能停用 */
+  const removeTemplate = async (roleId: string): Promise<Result<{ readonly deleted: string }>> => {
+    const all = await loadAll()
+    const existing = all.find((template) => template.roleId === roleId)
+    if (existing === undefined) {
+      return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
+    }
+    if (existing.source === 'builtin') {
+      return err('ERR_FORBIDDEN', '内置模板只能停用，不能删除', { roleId })
+    }
+    const removed = await fileStore.remove(pathOf(roleId))
+    if (!removed.ok) return removed
+    await fileStore.remove(`${userDir}/${roleId}.history`)
+    const state = await loadState()
+    const hasOverride =
+      state.disabledBuiltins.includes(roleId) ||
+      Object.prototype.hasOwnProperty.call(state.roleModelDefaults, roleId)
+    if (hasOverride) {
+      const saved = await saveState({
+        ...state,
+        disabledBuiltins: state.disabledBuiltins.filter((id) => id !== roleId),
+        roleModelDefaults: Object.fromEntries(
+          Object.entries(state.roleModelDefaults).filter(([key]) => key !== roleId),
+        ),
+      })
+      if (!saved.ok) return saved
+    }
+    return ok({ deleted: roleId })
   }
 
   return {
@@ -174,42 +326,10 @@ export function createRoleTemplateStore(options: RoleTemplateStoreOptions): Role
       return ok(created)
     },
 
-    async update(roleId: string, patch: RoleTemplatePatch): Promise<Result<RoleTemplate>> {
-      const all = await loadAll()
-      const existing = all.find((template) => template.roleId === roleId)
-      if (existing === undefined) {
-        return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
-      }
-      if (existing.source === 'builtin') {
-        return err('ERR_FORBIDDEN', '内置模板不可修改；请基于内置复制新建', { roleId })
-      }
-      const updated: RoleTemplate = {
-        ...existing,
-        systemPrompt: patch.systemPrompt ?? existing.systemPrompt,
-        defaultLoop: patch.defaultLoop ?? existing.defaultLoop,
-        defaultModel: patch.defaultModel === undefined ? existing.defaultModel : patch.defaultModel,
-      }
-      const written = await write(updated)
-      if (!written.ok) return written
-      await appendHistory(roleId, updated)
-      return ok(updated)
-    },
-
-    async setEnabled(roleId: string, enabled: boolean): Promise<Result<RoleTemplate>> {
-      const all = await loadAll()
-      const existing = all.find((template) => template.roleId === roleId)
-      if (existing === undefined) {
-        return err('ERR_NOT_FOUND', `角色模板不存在：${roleId}`, { roleId })
-      }
-      if (existing.source === 'builtin') {
-        return err('ERR_FORBIDDEN', '内置模板不可停用；请基于内置复制新建', { roleId })
-      }
-      const updated: RoleTemplate = { ...existing, enabled }
-      const written = await write(updated)
-      if (!written.ok) return written
-      await appendHistory(roleId, updated)
-      return ok(updated)
-    },
+    update: applyUpdate,
+    setEnabled: setTemplateEnabled,
+    setModelDefault,
+    delete: removeTemplate,
 
     appendHistory,
 
