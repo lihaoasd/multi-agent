@@ -10,7 +10,7 @@
   - OpenAI 兼容 API（DeepSeek / OpenAI / 通义百炼 / Kimi / 智谱 GLM / 火山方舟 / 自定义）：需 API Key；
   - Anthropic Claude / Google Gemini：原生协议，需 API Key；
   - Ollama 本地模型：Ollama 已启动并已 pull 模型；
-  - Mock：内置，无需任何 Key，首次体验默认（prd §9 验收 2）。
+  - **出厂状态不含任何供应商与模型**：需先在 UI"模型"模块添加供应商与模型条目（离线可用本地 Ollama，但需本机已启动 Ollama 服务）；未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导。
 
 ## 2. 安装与运行
 
@@ -52,7 +52,7 @@ DATA_DIR=data                                  # 运行时数据根（默认仓�
 ROLE_DIRS=["src/shared/roles","data/roles"]    # 内置角色模板 + 用户自定义角色
 
 MODELS__CONFIG_FILE=data/model-config.json     # 运行时模型配置文件（UI 维护；不存在时按下方策略初始化）
-MODELS__DEFAULT=mock                           # 首次初始化时的默认模型条目 id（mock | 已配置的模型 id）
+MODELS__DEFAULT=deepseek-chat                  # 初始化阶段生效：命中已启用的模型条目时设为平台默认模型；留空或命中不到则不预设（Agent 未配置模型时启动回合会明确报错引导）
 MODELS__IMPORT_FROM_ENV=true                   # 是否允许从遗留 MODELS__PROVIDERS 一次性导入（此后不再读写）
 MODELS__REQUEST_TIMEOUT_MS=60000               # 单次模型请求超时上限
 MODELS__MAX_PROMPT_CHARS=20000                 # Agent 提示词长度上限

@@ -23,7 +23,6 @@ export function validateId(id: string, label: string): Result<string> {
 }
 
 export function validateBaseUrl(baseUrl: string, kind: ProviderKind): Result<string> {
-  if (kind === 'mock') return ok(baseUrl)
   const trimmed = baseUrl.trim()
   if (trimmed.length === 0) {
     return err('ERR_VALIDATION', 'baseUrl 不能为空', { kind })
@@ -39,8 +38,8 @@ export function validateCredential(
   secrets: SecretResolver,
   opts: { readonly isCreate: boolean; readonly kind: ProviderKind },
 ): Result<Credential> {
-  if (opts.kind === 'mock' || opts.kind === 'ollama') {
-    // 本地/离线后端允许无凭证
+  if (opts.kind === 'ollama') {
+    // 本地后端允许无凭证
     return ok(credential)
   }
   if (credential.mode === 'env') {
@@ -101,7 +100,7 @@ export function validateProvider(
   if (!baseUrl.ok) return baseUrl
 
   const credential =
-    input.credential ?? ctx.existing?.credential ?? (input.kind === 'mock' || input.kind === 'ollama'
+    input.credential ?? ctx.existing?.credential ?? (input.kind === 'ollama'
       ? ({ mode: 'file', value: '' } as const)
       : undefined)
   if (credential === undefined) {

@@ -48,7 +48,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
         text: reply.text ?? '',
         reasoning: reply.reasoning ?? '',
         toolCalls: reply.toolCalls ?? [],
-        modelId: 'mock',
+        modelId: 'test-model',
       })
     },
     runTool: async (call): Promise<Result<{ ok: boolean; text: string }>> => {

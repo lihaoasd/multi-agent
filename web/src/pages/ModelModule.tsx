@@ -31,7 +31,6 @@ const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'ollama', label: 'Ollama（本地）' },
-  { value: 'mock', label: 'Mock（离线）' },
 ]
 
 interface ProviderFormValues {

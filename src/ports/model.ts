@@ -8,7 +8,7 @@ import type { Result } from '../shared/result'
 export type ProviderId = string
 export type ModelId = string
 
-export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama' | 'mock'
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama'
 
 export type ModelCapability = 'chat' | 'stream' | 'tools' | 'reasoning'
 

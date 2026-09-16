@@ -50,7 +50,7 @@ async function createHarness(): Promise<Harness> {
   })
   const sessions = createSessionService({ metaStore, logStore, pipeline, projectStore, clock })
   const memory = createMemoryService({ store: memoryStore, ids: createIdGenerator(), clock, config })
-  const model = { value: 'mock' as string | null, fail: false, calls: 0 }
+  const model = { value: 'test-model' as string | null, fail: false, calls: 0 }
 
   const gateway: ModelGateway = {
     async stream() {
@@ -128,7 +128,7 @@ describe('application/summary-engine · 滚动摘要（规则 6）', () => {
     expect(history.ok).toBe(true)
     if (!history.ok) return
     const summary = history.value.find((event) => event.kind === 'summary')
-    expect(summary?.payload).toMatchObject({ summaryId: outcome.value.summaryId, ofSeq: 1, toSeq: 40, model: 'mock' })
+    expect(summary?.payload).toMatchObject({ summaryId: outcome.value.summaryId, ofSeq: 1, toSeq: 40, model: 'test-model' })
     expect(summary?.payload['digest']).toMatchObject({ topic: '登录模块', decisions: ['采用 JWT'] })
 
     const memories = await harness.memory.list(PROJECT, { scope: 'agent', instanceId: 'dev_1' })

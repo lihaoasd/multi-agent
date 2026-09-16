@@ -288,7 +288,7 @@ export function AgentModule() {
                 <Form.Item name="stepModelOverride" label="步骤级模型覆盖">
                   <Select allowClear style={{ width: 240 }} options={modelOptions} />
                 </Form.Item>
-                <Form.Item name="defaultModel" label="默认模型">
+                <Form.Item name="defaultModel" label="默认模型（留空 = 未配置）">
                   <Select allowClear style={{ width: 240 }} options={modelOptions} />
                 </Form.Item>
               </Space>

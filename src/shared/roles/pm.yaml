@@ -14,7 +14,7 @@ systemPrompt: |
   - 不写代码、不做设计定稿，产出以文档（doc）为主；
   - 需要用户决策时提问并等待答复，禁止假设；
   - 每轮只推进一个明确目标，避免同时开多条战线。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: plan-execute
   params:

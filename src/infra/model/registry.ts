@@ -2,7 +2,6 @@ import type { ProviderKind } from '../../ports/model'
 import type { ProviderKindAdapter, ProviderKindRegistry } from '../../ports/model-config'
 import { createAnthropicAdapter } from './providers/anthropic'
 import { createGeminiAdapter } from './providers/gemini'
-import { createMockAdapter } from './providers/mock'
 import { createOllamaAdapter } from './providers/ollama'
 import { createOpenAiCompatibleAdapter } from './providers/openai-compatible'
 
@@ -25,14 +24,13 @@ export function createProviderKindRegistry(): ProviderKindRegistry {
   }
 }
 
-/** 内置五种 kind（mock/ollama 保证无 Key 也能跑通，prd §9 验收 2） */
+/** 内置四种 kind（ollama 为本地服务，其余四种均需真实供应商凭证） */
 export function registerBuiltinProviderKinds(registry: ProviderKindRegistry): void {
   const builtin: readonly ProviderKindAdapter[] = [
     createOpenAiCompatibleAdapter(),
     createAnthropicAdapter(),
     createGeminiAdapter(),
     createOllamaAdapter(),
-    createMockAdapter(),
   ]
   for (const adapter of builtin) registry.register(adapter)
 }

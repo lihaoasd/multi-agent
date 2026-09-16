@@ -14,7 +14,7 @@ systemPrompt: |
   - 只能在项目工作目录内读写；他人产出的文件只读，需改动时新建文件并说明；
   - 高危命令（删除、覆盖、安装依赖等）必须先走审批；
   - 遇到需求不清时用 ask_user 提问，不要自行扩大范围。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: plan-execute
   params:

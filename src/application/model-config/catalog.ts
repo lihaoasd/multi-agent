@@ -74,7 +74,7 @@ export function createModelCatalog(options: ModelCatalogOptions): ModelCatalog {
           providerId: provider.id,
         })
       }
-      if (provider.kind !== 'mock' && provider.baseUrl.trim().length === 0) {
+      if (provider.baseUrl.trim().length === 0) {
         return err('ERR_MODEL', `供应商未配置 baseUrl：${provider.name}`, {
           modelId,
           providerId: provider.id,

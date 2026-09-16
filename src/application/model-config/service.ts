@@ -639,51 +639,71 @@ export function createModelConfigService(options: ModelConfigServiceOptions): Mo
     async ensureInitialized(): Promise<Result<{ imported: number }>> {
       const current = await loadSnapshot()
       if (!current.ok) return current
-      if (current.value.providers.length > 0 || current.value.models.length > 0) {
+
+      // ① 迁移：剔除**已不再注册的协议 kind**（含其模型条目）并清理指向它们的路由（model-config.md §11）
+      //    场景：历史数据里有已删除的 kind（如 mock）。用注册表判定，未来删任何 kind 都自动生效。
+      const knownKinds = new Set(options.kinds.list())
+      const staleProviders = current.value.providers.filter((provider) => !knownKinds.has(provider.kind))
+      if (staleProviders.length > 0) {
+        const staleProviderIds = new Set(staleProviders.map((provider) => provider.id))
+        const droppedModels = current.value.models.filter((entry) => staleProviderIds.has(entry.providerId))
+        const droppedModelIds = new Set(droppedModels.map((entry) => entry.id))
+        const saved = await commit((snapshot) => {
+          const overrides = Object.fromEntries(
+            Object.entries(snapshot.routing.stepOverrides ?? {}).filter(([, modelId]) => !droppedModelIds.has(modelId)),
+          )
+          return ok({
+            ...snapshot,
+            providers: snapshot.providers.filter((provider) => !staleProviderIds.has(provider.id)),
+            models: snapshot.models.filter((entry) => !droppedModelIds.has(entry.id)),
+            routing: {
+              defaultModelId:
+                snapshot.routing.defaultModelId !== null && droppedModelIds.has(snapshot.routing.defaultModelId)
+                  ? null
+                  : snapshot.routing.defaultModelId,
+              ...(Object.keys(overrides).length === 0 ? {} : { stepOverrides: overrides }),
+            },
+          })
+        })
+        if (!saved.ok) return saved
+        await audit('migrate', { kind: 'provider', id: 'unsupported-kind' }, {
+          removedProviders: staleProviders.map((provider) => provider.id),
+          removedModels: droppedModels.map((entry) => entry.id),
+        })
+      }
+
+      const after = await loadSnapshot()
+      if (!after.ok) return after
+      if (after.value.providers.length > 0 || after.value.models.length > 0) {
         return ok({ imported: 0 })
       }
 
-      // ① 优先导入遗留 `.env` 配置（model-config.md §11）
+      // ② 出厂状态为**空配置**：仅按需导入遗留 `.env` 配置，**绝不自动创建任何供应商/模型**
+      let imported = 0
       if (platform.models.importFromEnv) {
-        const imported = await service.importLegacy('env')
-        if (!imported.ok) return imported
-        if (imported.value.imported > 0) return ok({ imported: imported.value.imported })
+        const legacy = await service.importLegacy('env')
+        if (!legacy.ok) return legacy
+        imported = legacy.value.imported
       }
 
-      // ② 兜底：内置 Mock 供应商 + 模型，保证"无任何 Key 也能跑通全流程"（prd §9 验收 2）
-      const stampedAt = nowIso()
-      const provider: ModelProviderConfig = {
-        id: 'mock',
-        name: 'Mock（离线演示）',
-        kind: 'mock',
-        baseUrl: '',
-        credential: { mode: 'file', value: '' },
-        enabled: true,
-        presetId: 'mock',
-        createdAt: stampedAt,
-        updatedAt: stampedAt,
+      // ③ `MODELS__DEFAULT` 生效：命中**已启用**的模型条目 → 设为平台默认
+      //    口径：初始化阶段以 `MODELS__DEFAULT` 为准（覆盖导入时的"第一条即默认"临时值）；
+      //    命中不到则保留导入结果或保持为空，**绝不静默换模型**（D20-⑥）。
+      const configuredDefault = platform.models.defaultModelId.trim()
+      if (configuredDefault.length > 0) {
+        const snapshot = await loadSnapshot()
+        if (!snapshot.ok) return snapshot
+        const matched = snapshot.value.models.find((entry) => entry.id === configuredDefault && entry.enabled)
+        if (matched !== undefined && snapshot.value.routing.defaultModelId !== matched.id) {
+          const saved = await commit((value) =>
+            ok({ ...value, routing: { ...value.routing, defaultModelId: matched.id } }),
+          )
+          if (!saved.ok) return saved
+          await audit('migrate', { kind: 'routing', id: 'platform-default' }, { defaultModelId: matched.id })
+        }
       }
-      const entry: ModelEntry = {
-        id: 'mock',
-        providerId: 'mock',
-        model: 'mock',
-        displayName: 'Mock 模型',
-        capabilities: ['chat', 'stream', 'tools'],
-        enabled: true,
-        createdAt: stampedAt,
-        updatedAt: stampedAt,
-      }
-      const saved = await commit((snapshot) =>
-        ok({
-          ...snapshot,
-          providers: [...snapshot.providers, provider],
-          models: [...snapshot.models, entry],
-          routing: { ...snapshot.routing, defaultModelId: entry.id },
-        }),
-      )
-      if (!saved.ok) return saved
-      await audit('migrate', { kind: 'provider', id: provider.id }, { bootstrap: 'mock' })
-      return ok({ imported: 2 })
+
+      return ok({ imported })
     },
   }
 

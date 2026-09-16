@@ -4,13 +4,13 @@
 
 ## 1. 测试分层与工具
 
-Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人工验收脚本为主（Playwright P1）。
+Vitest 统一运行（单元 + 集成）；模型替身保证可重复；E2E 人工验收脚本为主（Playwright P1）。
 
 | 层 | 对象 | 示例 |
 | --- | --- | --- |
 | 单元（domain，无 IO） | 状态机/规则/解析/schema 校验 | Agent 单工状态流转、路径边界判定、命令危险清单、审批策略函数、会话事件 kind 校验 |
 | 单元（shared） | 错误码、配置加载、id/时间工具 | `.env` → 配置解析（`__` 分层键、JSON 数组、非法值回退默认）与缺省覆盖 |
-| 集成（infra） | file-store、索引、model-gateway(mock) | 原子写/半截恢复、JSONL 逐行容错、倒排索引建/增量/查、流式 chunk 聚合 |
+| 集成（infra） | file-store、索引、model-gateway(替身网关) | 原子写/半截恢复、JSONL 逐行容错、倒排索引建/增量/查、流式 chunk 聚合 |
 | 集成（application） | 会话/审批/提交/记忆/检索服务 | 消息先盘后推、提交校验与回退、摘要触发、restart 恢复 |
 | E2E 验收 | 验收脚本（prd §9 主路径） | 本机走查：建项目→对话→提交→任务流转→重启恢复 |
 
@@ -32,10 +32,10 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 14. plan-execute 回合语义（D16-③）：回合内用户消息只入队不打断；跨重启缺 turn_end 不自动续跑（汇报中断点/续做剧本）。
 15. 任务激活规则（D16-④，D17-① 修订）：每 Agent 单 in_progress（已有时新任务不可置位、无自动回退；仅完成或用户终止释放）；todo 不入上下文、口头指派改动按回合兜底。
 16. 模板快照与 doc 审批预览（D16-⑤/⑥）：实例创建后修改/删除模板不影响既有实例（仅 UI 标「模板已移除」）；doc 提交审批卡含只读预览、审批记录带 previewRef。
-17. 任务不抢占与终止（D17-①）：已有 in_progress 时新任务置位被拦（可先置 todo）；终止确认：存在未结算改动先结算为 code artifact 快照再置 `terminated`（可回退）；执行中终止到可中断点生效并回注 Agent（Mock 剧本验证后续步骤不再执行）。
+17. 任务不抢占与终止（D17-①）：已有 in_progress 时新任务置位被拦（可先置 todo）；终止确认：存在未结算改动先结算为 code artifact 快照再置 `terminated`（可回退）；执行中终止到可中断点生效并回注 Agent（脚本化网关剧本验证后续步骤不再执行）。
 18. doc 审批降噪与信任（D17-④）：托盘批量同意/拒绝生效；信任开关默认仅 doc/test（config/deploy 仍逐条审批）；撤销后恢复逐条。
 19. 未完成回合恢复（D17-⑤）：缺 turn_end 的会话重开/重连后标「未完成」点并展示横幅三选（汇报中断点/继续执行/忽略），三选行为与 plan 事件一致；文本半截消息补全按钮并存。
-20. 可停止与进行中细条（D17-⑥）：流式「停止生成」停当前回合输出且队列保留；顶部「n 个 Agent 正在工作」列表项与 plan 事件一致（Mock 长任务剧本）。
+20. 可停止与进行中细条（D17-⑥）：流式「停止生成」停当前回合输出且队列保留；顶部「n 个 Agent 正在工作」列表项与 plan 事件一致（脚本化网关长任务剧本）。
 21. 共享与归属（FR-06）：工作目录内文件**全员可读**（任一角色都能 fs_read 他人产出物）；非 owner 写入返回 `ERR_FORBIDDEN` 并点名 owner；无归属文件首写即认领；用户本人不受归属校验。
 22. 编排图保存与校验（D19-④）：自环/重复边/跨项目节点被拒（`ERR_ORCHESTRATION_INVALID`）；`version` 不匹配返回 `ERR_CONFLICT`；保存成功广播 `orchestration.updated`。
 23. 委派边约束（D19-④）：Agent 沿出边派单成功（入 `todo` + 通知受派者）；越边目标返回 `ERR_ORCHESTRATION_EDGE` **且不建任务**；用户手动派单不受边约束。
@@ -46,13 +46,13 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 28. **凭证不外泄（D20-④）**：供应商列表/详情响应、`config-audit.jsonl`、平台日志、`kind=error` 事件与 `ERR_MODEL` 的 `detail` 中**均不出现明文密钥**（只掩码 `hasValue`/`masked`）；供应商原始错误正文截断且脱敏。
 29. **Agent 配置提交与生效（D20-⑦/FR-35）**：模板保存只影响此后新建实例（既有实例快照不变）；实例覆盖下一回合生效、运行中回合到可中断点；提示词超长、loop 参数越界、`stepModelOverride` 指向未启用模型均被拒；每次保存各写一条历史快照与 `config-audit` 记录（审计不含提示词全文）。
 30. **模型调用不静默换模型（D20-⑥）**：解析失败（模型被删/停用/供应商禁用/凭证缺失）时回合报 `ERR_MODEL` 并落 `error` 事件，**不得**回退到 `defaultModelId` 或其它模型。
-31. **协议适配器归一化（D20-②）**：五种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`）的流式增量统一归一为 `ModelChunk`（`text-delta`/`reasoning-delta`/`tool-call`/`usage`），含错误映射为 `ERR_MODEL`；Mock 剧本可驱动完整 E2E。
+31. **协议适配器归一化（D20-②）**：四种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`）的流式增量统一归一为 `ModelChunk`（`text-delta`/`reasoning-delta`/`tool-call`/`usage`），含错误映射为 `ERR_MODEL`；替身剧本（脚本化网关）可驱动完整 E2E。
 
 ## 3. 测试数据与隔离
 
 - 每个测试用例使用独立临时项目目录（os.tmpdir 下创建，测后清理），绝不触碰真实 workdir。
-- Mock 模型：可编程响应（按输入匹配/固定剧本），用于模拟多轮工具调用与"模型失败重试"。
-  - **脚本化 Mock（S9 落地）**：`tests/helpers-scripted-gateway.ts` 按"未消费的剧本步骤"返回文本与 `tool-call`（带条件的步骤优先于无条件兜底），使 prd §9 验收 1 的委派/领取/汇报/提问/高危命令**真的经过 agent loop**；`resolveDeps({ gateway })` 支持注入替身。
+- 模型替身位于 `tests/`：`helpers-in-memory-adapter.ts`（适配器归一化基准）、`helpers-scripted-gateway.ts`（脚本化网关，让委派/领取/提问/审批真的经过 agent loop）。
+  - 脚本化网关（S9 落地）按"未消费的剧本步骤"返回文本与 `tool-call`（带条件的步骤优先于无条件兜底），`resolveDeps({ gateway })` 支持注入替身；`helpers-model.ts` 的 `configureTestModel` 为用例显式登记供应商/模型/平台默认（测试不再依赖任何默认值）。
 - 覆盖 flaky 点：流式中断、审批超时、文件并发写（单进程串行验证）。
 
 ## 4. 执行与门禁
@@ -85,3 +85,4 @@ Vitest 统一运行（单元 + 集成）；Mock 模型保证可重复；E2E 人�
 | 日期 | 范围 | 结果 |
 | --- | --- | --- |
 | 2026-09-15（S9） | prd §9 脚本 1~8（`tests/acceptance/prd-section9.test.ts`） | 8/8 通过；全量 `npm run test` 44 files / 302 tests 全绿；发现并修复 2 个真实缺陷（见 `docs/changes/2026-09-15-s9-acceptance-closure.md`） |
+| 2026-09-16（S10） | prd §9 脚本 1~8 按新口径（移除 mock / Agent 默认不配置模型，prd D21） | 8/8 通过（脚本 2 重写为"未配置模型 → `ERR_MODEL` + 配置引导"）；全量 `npm run test` **45 files / 306 tests 全绿**；`coverage` 触达门禁 140/140；活体验证真实 `data/model-config.json` 迁移（审计 `removedProviders:["mock"]`）且未配置模型启动回合报 `ERR_MODEL`；发现并修复 2 个问题（`MODELS__DEFAULT` 未生效、测试未合成 env 配置），见 `docs/changes/2026-09-16-s10-remove-mock.md` |

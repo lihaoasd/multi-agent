@@ -10,7 +10,7 @@
 | --- | --- |
 | **高扩展**：新增工具 / 工具包 / loop 策略 / 模型 provider / 产出物类型 / 场景，不改核心代码 | 注册表（Registry）+ 策略（Strategy）+ 每回合解析的有效配置 |
 | **可替换**：文件存储、模型后端、锁、索引、时钟都可换 | 端口（Port）+ 适配器（Adapter），跨层只走接口 |
-| **可测**：领域逻辑零 IO、外部依赖可替身 | domain/ports 不依赖 node API；每端口配 Mock 适配器与契约测试 |
+| **可测**：领域逻辑零 IO、外部依赖可替身 | domain/ports 不依赖 node API；每端口配 InMemory 替身与契约测试 |
 | **用户可动态配置**（U9 三项已定案 D20-⑧，工具挂载仍待定） | 运行时改**模型/loop/提示词**（模型配置范围见 model-config.md）与后续的工具挂载，**不重建容器、不重启** | 依赖注入只注入稳定能力；实例配置作为 `TurnContext` **参数**传递；工具与 loop 运行期查表 |
 | **简单可靠**：单进程、纯文件系统、零重型依赖 | 自研轻量容器；不引装饰器/反射库；不引 ORM/DB |
 
@@ -122,7 +122,7 @@ domain/fsm/question.ts  pending → answered
 | 端口 | 职责 | 默认适配器 |
 | --- | --- | --- |
 | `ModelConfigStore` | 平台模型配置（`data/model-config.json`）读取/原子写 + `revision` 乐观并发 + 配置审计追加 | infra/file-store |
-| `ProviderKindAdapter` | **单个协议适配**：`stream` / `listModels?` / `test?` / `capabilities`（由原 `ModelProvider` 更名，避免与"用户配置的供应商"混淆） | infra/model/providers（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`） |
+| `ProviderKindAdapter` | **单个协议适配**：`stream` / `listModels?` / `test?` / `capabilities`（由原 `ModelProvider` 更名，避免与"用户配置的供应商"混淆） | infra/model/providers（`openai-compatible`/`anthropic`/`gemini`/`ollama`） |
 | `ProviderKindRegistry` | `kind → 适配器` 注册与解析（由原 `ProviderRegistry` 更名） | infra/model |
 | `ModelCatalog` | `modelId → {provider, credential, model 名, params, kind}` 解析 + `revision` 缓存 + `invalidate()` | application/model-config |
 | `ModelGateway` | 按**模型条目 id** 路由到适配器，统一流式输出，外挂脱敏装饰 | infra/model |
@@ -242,7 +242,7 @@ export interface ModelGateway {
 }
 
 // ── ports/model-config.ts（D20，schema 见 model-config.md §3~§4）────
-export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama' | 'mock'
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama'
 export type Credential =
   | { mode: 'file'; value: string }               // 存 data/model-config.json（data/ 不入库）
   | { mode: 'env'; envName: string }              // 只存变量名
@@ -434,7 +434,7 @@ export async function buildContainer(env: Env): Promise<Container> {
 }
 ```
 
-测试用 `tests/mocks/composition-root.mock.ts`：同一批 Token，全部换成 InMemory 适配器 + 固定时钟 + 确定性 ID；**测试与生产装配只差一个函数**，这是可测性的关键。
+测试用 `tests/helpers-server.ts`：与生产同一条 `buildContainer` → `resolveDeps` 装配路径，只把 `gateway`/`broadcaster` 等换成替身并可注入 `envMap`；**测试与生产装配只差一个注入点**，这是可测性的关键。
 
 ### 5.5 动态配置：用户改实例工具/loop 为什么不重建容器
 
@@ -479,7 +479,7 @@ export async function buildContainer(env: Env): Promise<Container> {
 
 | 模式 | 用在哪 | 解决什么 | 落点 |
 | --- | --- | --- | --- |
-| Ports & Adapters（六边形） | 全部跨层交互 | 存储/模型/执行可替换、可 Mock | `ports/` + `infra/` |
+| Ports & Adapters（六边形） | 全部跨层交互 | 存储/模型/执行可替换、可替身 | `ports/` + `infra/` |
 | Composition Root + DI | 进程启动 | 依赖集中装配、启动期暴露缺失依赖 | `bootstrap/composition-root.ts` |
 | Strategy | loop 策略、产出物类型 diff、检索提供者 | 新增策略不改调度代码 | `LoopRegistry`、`ArtifactTypeRegistry`、`SearchProvider` |
 | Registry | 工具、工具包、**协议 kind**、loop、产出物类型、场景 | "注册即扩展"，避免 if/else | `infra/*/registry.ts` |
@@ -544,7 +544,7 @@ src/
     ├── composition-root.ts     # 唯一装配处
     └── self-check.ts           # 启动自检（注册表一致性/对账/临时文件）
 web/                        # 前端（独立工程，React 19 + antd 6；画布候选 React Flow）
-tests/{unit,integration,e2e,mocks}
+tests/{unit,integration,e2e}  # 含 helpers-*.ts 测试替身与装配助手
 scripts/                    # 工程脚本：dev 并行启动、依赖门禁 ratchet（ESLint Node API）
 tools/                      # 门禁基线等工具数据（import-ratchet.json）
 ```
@@ -561,9 +561,9 @@ tools/                      # 门禁基线等工具数据（import-ratchet.json�
 | --- | --- | --- |
 | `domain`（无 IO） | 状态机、规则、路径/委派/归属/可见性判定 | 无（纯函数） |
 | `application` | 用例编排、锁边界、事件投影顺序 | 全部 `*Store`/`Gateway` 换 InMemory + 固定 Clock/ID |
-| `infra` | 适配器契约（原子写、seq 单调、索引命中、模型流归一化） | 每端口一份**契约测试**，实现与 Mock 同套断言 |
+| `infra` | 适配器契约（原子写、seq 单调、索引命中、模型流归一化） | 每端口一份**契约测试**，实现与 InMemory 替身同套断言 |
 | `server` | 路由校验、错误映射、WS 事件形状 | supertest + fake socket |
-| E2E | prd §9 主路径 | Mock 模型剧本 + 临时项目目录 |
+| E2E | prd §9 主路径 | 脚本化网关（模型替身）剧本 + 临时项目目录 |
 
 **契约测试**是关键约定：`ports/*.ts` 的每个实现（真实适配器 + InMemory 替身）都要通过同一组断言，防止"测试替身与真实实现语义漂移"。
 

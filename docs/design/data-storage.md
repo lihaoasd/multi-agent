@@ -74,7 +74,8 @@ agent_haness/                    # 平台仓库
       "createdAt": "…",
       "snapshot": {                       // 创建时从模板捕获的**只读快照**（模板后续变更不影响本实例）
         "roleTemplateId": "pm", "templateName": "项目经理", "systemPrompt": "…",
-        "defaultModel": "mock", "defaultLoop": { "strategy": "plan-execute", "params": {} },
+        "defaultModel": null,               // 默认留空 = Agent 默认未配置模型
+        "defaultLoop": { "strategy": "plan-execute", "params": {} },
         "packages": ["fs","cmd","memory","session","artifact","approval","task"],
         "tools": ["task_assign"], "artifactTypes": ["doc"], "defaultApprovalRules": [],
         "capturedAt": "…"

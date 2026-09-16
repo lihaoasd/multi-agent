@@ -19,9 +19,9 @@
 | HTTP/WS 服务 | Fastify（REST + 静态托管 + @fastify/websocket 或 ws） |
 | 前端 | React 19 + Vite 8 + Ant Design 6（聊天/工作台组件；画布候选 React Flow）；构建产物 `web/dist`，由 Fastify 单端口托管 |
 | 实时通道 | WebSocket（事件推送 + 消息流式 chunk）；无 SSE 时退回轮询（不推荐） |
-| 模型 Provider | 五种协议适配器：`openai-compatible` / `anthropic` / `gemini` / `ollama` / `mock`（**自研轻量网关，不引重型 SDK 依赖**，便于换后端）；供应商与模型条目由用户在 UI 配置（D20 / [model-config.md](model-config.md)） |
+| 模型 Provider | 四种协议适配器：`openai-compatible` / `anthropic` / `gemini` / `ollama`（**自研轻量网关，不引重型 SDK 依赖**，便于换后端）；供应商与模型条目由用户在 UI 配置（D20 / [model-config.md](model-config.md)） |
 | 存储 | 纯文件系统 + 手写 JSONL/JSON/Markdown 读写层 + 自建关键词倒排索引 |
-| 测试 | Vitest（单元+集成，Mock 模型可重复） |
+| 测试 | Vitest（单元+集成，模型替身保证可重复） |
 | 配置 | `.env`（平台级引导与边界默认，2026-09-13 起替代 config.yaml；模板 `.env.example`）+ **`data/model-config.json`（平台模型配置，UI 可改、即时生效）** + project.json（项目级）+ role 模板文件 |
 
 ## 3. 进程与部署形态
@@ -69,7 +69,7 @@ src/
 ├── infra/
 │   ├── file-store/         # JSON/JSONL/MD 读写、原子写、path 边界校验、watch(工作目录变化)
 │   ├── indexer/            # 倒排索引构建/增量/查询
-│   ├── model/              # providers: openai-compatible/anthropic/gemini/ollama/mock + 流式归一化（D20）
+│   ├── model/              # providers: openai-compatible/anthropic/gemini/ollama + 流式归一化（D20）
 │   ├── tools/              # 工具注册表与执行器（注册/校验/白名单/审计；规范见 design/tools.md）
 │   ├── sandbox/            # 逻辑沙箱：路径边界/命令执行器/风险分级/审批桥（规范见 design/sandbox.md）
 │   └── util/               # 日志、id、时间、错误码
@@ -90,7 +90,7 @@ src/
 | `PolicyEngine` | allow/approval/deny 判定（D18-⑥） | domain/rules 纯函数 |
 | `PathResolver` | 虚拟路径解析与边界校验 | infra/sandbox |
 
-- 启动装载顺序：config → FileStore/SessionLogStore/MemoryStore → PolicyEngine/PathResolver → ModelGateway → 各注册表（tool/loop/artifact type）→ dispatcher 等服务；全部端口可注入 Mock（Vitest，M 系列单测基础）。
+- 启动装载顺序：config → FileStore/SessionLogStore/MemoryStore → PolicyEngine/PathResolver → ModelGateway → 各注册表（tool/loop/artifact type）→ dispatcher 等服务；全部端口可注入替身（Vitest，M 系列单测基础）。
 
 ## 5. 关键数据流
 

@@ -5,7 +5,7 @@ import type { WsRealtime } from '../src/ports/events'
 import type { ModelGateway } from '../src/ports/model'
 import { TOKENS } from '../src/ports/tokens'
 import { createServer } from '../src/server/app'
-import { DEFAULT_APP_CONFIG, type AppConfig } from '../src/shared/config'
+import { buildAppConfig, type AppConfig } from '../src/shared/config'
 import { createRecordingForwardingBroadcaster, createTestLogger } from './helpers'
 
 export interface TestContext {
@@ -30,7 +30,7 @@ export interface TestContextOptions {
   readonly root?: string
   /** cleanup 时是否删除数据根；复用他人创建的根时传 false */
   readonly cleanupRoot?: boolean
-  /** 模型网关替身（脚本化 Mock 剧本用；缺省取容器内的真实网关） */
+  /** 模型网关替身（脚本化替身剧本用；缺省取容器内的真实网关） */
   readonly gateway?: ModelGateway
 }
 
@@ -42,14 +42,17 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
   const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const root = options.root ?? `.test-tmp/${stamp}`
   const dataDir = `${root}/data`
+  const envMap = options.envMap ?? {}
+  // 与生产装配一致：先由环境映射合成平台配置（`MODELS__DEFAULT` 等键因此对测试同样生效），
+  // 再覆盖数据根相关项，保证每个用例的数据目录独占、互不污染。
+  const base = buildAppConfig(envMap)
   const config: AppConfig = {
-    ...DEFAULT_APP_CONFIG,
+    ...base,
     dataDir,
     roleDirs: ['src/shared/roles', `${dataDir}/roles`],
-    models: { ...DEFAULT_APP_CONFIG.models, configFile: `${dataDir}/model-config.json` },
+    models: { ...base.models, configFile: `${dataDir}/model-config.json` },
   }
 
-  const envMap = options.envMap ?? {}
   const container = buildContainer({ config, logger: createTestLogger(), envMap })
   // 真实 WS Hub 在容器里；录制广播器**转发**给它，既能断言事件、又能走通 WS 链路
   const realtime = container.resolve<WsRealtime>(TOKENS.Realtime)
@@ -60,7 +63,7 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
     ...(options.gateway === undefined ? {} : { gateway: options.gateway }),
   })
 
-  // 与生产启动路径一致：空配置时初始化（遗留导入 → 内置 Mock 兜底）
+  // 与生产启动路径一致：空配置时初始化（遗留 env 导入；S10 起**不再有任何假模型兜底**）
   const initialized = await deps.modelConfig.ensureInitialized()
   if (!initialized.ok) throw new Error(`测试上下文初始化模型配置失败：${initialized.error.message}`)
 

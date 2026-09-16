@@ -35,11 +35,11 @@ function snapshotWithProviders(): ModelConfigSnapshot {
       {
         id: 'prov-a',
         name: 'A',
-        kind: 'mock',
-        baseUrl: '',
-        credential: { mode: 'file', value: 'x' },
+        kind: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434',
+        credential: { mode: 'file', value: '' },
         enabled: true,
-        presetId: 'mock',
+        presetId: 'ollama',
         createdAt: '2026-09-15T00:00:00.000Z',
         updatedAt: '2026-09-15T00:00:00.000Z',
       },
@@ -149,8 +149,11 @@ describe('infra/model-config-store · 解析', () => {
     const parsed = parseModelConfigSnapshot({
       schemaVersion: 1,
       revision: 3,
-      providers: [{ id: 'p1', name: 'P1', kind: 'mock', baseUrl: '', credential: { mode: 'file', value: '' } }, { name: '缺 id' }],
-      models: [{ id: 'm1', providerId: 'p1', model: 'mock' }, { id: 'm2' }],
+      providers: [
+        { id: 'p1', name: 'P1', kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', credential: { mode: 'file', value: '' } },
+        { name: '缺 id' },
+      ],
+      models: [{ id: 'm1', providerId: 'p1', model: 'qwen3:8b' }, { id: 'm2' }],
       routing: { defaultModelId: 'm1', stepOverrides: { act: 'm1' } },
     })
     expect(parsed.ok).toBe(true)

@@ -143,7 +143,7 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
 ## 10. 测试与验收要点（落实进 testing/plan.md）
 
 - 单元：路径解析（../、盘符、symlink 链、scheme 混用）、危险规则表判定、超时杀进程、env 白名单/密钥不注入。
-- 集成：审批拒绝→回注→Agent 换方案（Mock 剧本）；越界调用被拒并审计；npm install 在 workdir 正常执行且留痕。
+- 集成：审批拒绝→回注→Agent 换方案（脚本化网关替身剧本）；越界调用被拒并审计；npm install 在 workdir 正常执行且留痕。
 - 验收脚本片段：让 dev Agent `cmd_run` 尝试删除 workdir 根目录 → 弹审批 → 拒绝 → 无任何删除且审计有记录；让另一角色尝试改 dev 归属的文件 → `ERR_FORBIDDEN`（点名 owner）；读他人文件正常放行（共享可读）。
 
 ## 9. 实现口径（2026-09-15，S4）

@@ -14,7 +14,7 @@ systemPrompt: |
   - 不修改被测代码；发现问题报告给开发与 PM，需要修就提出任务；
   - 测试数据与临时目录用完即清理，不污染项目工作目录；
   - 结论必须基于实际执行结果，禁止"应该没问题"式判断。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: plan-execute
   params:

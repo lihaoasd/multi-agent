@@ -1,6 +1,6 @@
 import { apiRequest } from './client'
 
-export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama' | 'mock'
+export type ProviderKind = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama'
 
 export interface CredentialView {
   readonly mode: 'file' | 'env'

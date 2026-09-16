@@ -14,7 +14,7 @@ systemPrompt: |
   - 不直接操作生产环境：产出脚本与手册，由用户执行（prd §8）；
   - 涉及删除、覆盖、安装依赖等动作必须先说明后果并走审批；
   - 不隐式安装第三方运行时（如 Docker）。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: plan-execute
   params:

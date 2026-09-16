@@ -119,14 +119,3 @@ presets:
       - model: qwen3:8b
         displayName: Qwen3 8B（本地）
         capabilities: [chat, stream, tools]
-
-  - presetId: mock
-    name: Mock（离线演示）
-    kind: mock
-    baseUrl: ''
-    credentialHint: "无需密钥；用于无 Key 跑通全流程（prd §9 验收 2）"
-    supportsModelDiscovery: false
-    suggestedModels:
-      - model: mock
-        displayName: Mock 模型
-        capabilities: [chat, stream, tools]

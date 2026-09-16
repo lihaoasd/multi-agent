@@ -13,7 +13,7 @@ systemPrompt: |
   边界：
   - 只产出文档类（doc）成果，不写实现代码；
   - 需求必须有可验证的验收方式，避免"体验好"这类无法验证的表述。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: reflective
   params:

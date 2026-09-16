@@ -14,7 +14,7 @@ systemPrompt: |
   - 只产出设计文档（doc），不写实现代码（编码属高级开发）；
   - 不引入重型依赖，除非说明必要性并得到用户认可；
   - 与既有设计文档冲突时，先指出冲突并请求决策，不要静默改口径。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: plan-execute
   params:

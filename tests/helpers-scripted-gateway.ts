@@ -3,9 +3,9 @@ import { ok, type Result } from '../src/shared/result'
 import { createIdGenerator } from '../src/infra/util/id'
 
 /**
- * 脚本化 Mock 模型（测试/验收用）：按"未消费的剧本步骤"逐次返回文本与工具调用，
+ * 脚本化网关替身（测试/验收用）：按"未消费的剧本步骤"逐次返回文本与工具调用，
  * 让 prd §9 验收 1 的"Agent 沿出边委派 / 调工具 / 提问 / 汇报"能真正**经过 agent loop**跑通
- * （默认 Mock 适配器只回声，不产生 tool-call）。
+ * （产品面已无任何假模型供应商，替身一律只存在于 tests/）。
  */
 
 export interface ScriptStep {
@@ -42,7 +42,7 @@ export function createScriptedGateway(steps: readonly ScriptStep[]): ScriptedGat
   }
 
   const models: readonly ModelInfo[] = [
-    { id: 'mock', providerId: 'mock', model: 'mock', displayName: 'Mock（脚本化）', capabilities: ['chat', 'stream', 'tools'], enabled: true },
+    { id: 'scripted', providerId: 'scripted', model: 'scripted', displayName: 'Scripted（替身）', capabilities: ['chat', 'stream', 'tools'], enabled: true },
   ]
 
   return {
@@ -51,7 +51,7 @@ export function createScriptedGateway(steps: readonly ScriptStep[]): ScriptedGat
       const step = pick(request)
       const chunks: ModelChunk[] = []
       if (step === undefined) {
-        const text: ChatMessage['content'] = `[scripted-mock] 收到：${lastUserText(request).slice(0, 80)}`
+        const text: ChatMessage['content'] = `[scripted] 收到：${lastUserText(request).slice(0, 80)}`
         chunks.push({ type: 'text-delta', text })
       } else {
         if (step.text !== undefined) chunks.push({ type: 'text-delta', text: step.text })
@@ -59,7 +59,7 @@ export function createScriptedGateway(steps: readonly ScriptStep[]): ScriptedGat
           chunks.push({ type: 'tool-call', callId: ids.next('call'), name: call.name, args: call.args })
         }
         if (step.text === undefined && (step.toolCalls ?? []).length === 0) {
-          chunks.push({ type: 'text-delta', text: '[scripted-mock] （空步骤）' })
+          chunks.push({ type: 'text-delta', text: '[scripted] （空步骤）' })
         }
       }
       return ok(

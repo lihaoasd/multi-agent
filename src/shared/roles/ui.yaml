@@ -14,7 +14,7 @@ systemPrompt: |
   - 只产出设计文档（doc），不写实现代码；
   - 复用既有设计体系，不随意引入新风格；
   - 与交互方案冲突时先提出，交由交互设计师与用户决策。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: reflective
   params:

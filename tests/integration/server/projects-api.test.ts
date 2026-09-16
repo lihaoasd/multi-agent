@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createTestServer, type TestContext } from '../../helpers-server'
+import { configureTestModel } from '../../helpers-model'
 
 interface InstanceBody {
   instanceId: string
@@ -25,6 +26,9 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
   beforeAll(async () => {
     context = await createTestServer()
     workdir = mkdtempSync(join(tmpdir(), 'ah-workdir-'))
+    // S10：出厂无任何供应商/模型（Agent 默认不配置模型）；本文件的模型引用用例显式登记一条，
+    // 但**不设平台默认**，以便同时覆盖"模板快照为空 → 生效模型为 null"的未配置路径。
+    await configureTestModel(context.deps, { providerId: 'proj-provider', modelId: 'proj-model', asPlatformDefault: false })
   })
 
   afterAll(async () => {
@@ -134,7 +138,7 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
         displayName: '后端开发',
         prompt: '你是定制版开发，改动最小化。',
         loop: { strategy: 'direct', params: { maxIterations: 2 } },
-        model: 'mock',
+        model: 'proj-model',
       },
     })
     expect(ok.statusCode).toBe(200)
@@ -143,7 +147,7 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
     expect(dev.configVersion).toBe(2)
     expect(dev.overrides).toEqual(['prompt', 'model', 'loop'])
     expect(dev.effective.systemPrompt).toBe('你是定制版开发，改动最小化。')
-    expect(dev.effective.model).toBe('mock')
+    expect(dev.effective.model).toBe('proj-model')
     expect(dev.effective.loop).toEqual({ strategy: 'direct', params: { maxIterations: 2 } })
 
     const badPrompt = await inject({
@@ -181,7 +185,9 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
     const dev = cleared.json<InstanceBody>()
     expect(dev.overrides).toEqual([])
     expect(dev.effective.systemPrompt).not.toBe('你是定制版开发，改动最小化。')
-    expect(dev.effective.model).toBe('mock') // 模板快照的默认模型（内置模板都是 mock）
+    // S10：内置模板快照的默认模型为空、平台默认也未设 → 生效模型为 null（未配置）
+    expect(dev.effective.model).toBeNull()
+    expect(dev.effectiveModelAvailable).toBe(false)
 
     const effective = await inject({
       method: 'GET',

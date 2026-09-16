@@ -407,7 +407,7 @@ export function resolveDeps(
     realtime?: WsRealtime
     /** 遗留键（MODELS__PROVIDERS）读取来源；默认进程环境 */
     envMap?: Readonly<Record<string, string | undefined>>
-    /** 模型网关替身（测试/验收的脚本化 Mock 用；缺省取容器内的真实网关） */
+    /** 模型网关替身（测试/验收的脚本化替身用；缺省取容器内的真实网关） */
     gateway?: ModelGateway
   } = {},
 ): AppDeps {

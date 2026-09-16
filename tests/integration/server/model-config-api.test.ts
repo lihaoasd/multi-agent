@@ -1,5 +1,5 @@
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createTestServer, type TestContext } from '../../helpers-server'
 
 interface ProviderBody {
@@ -19,26 +19,29 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     await context.cleanup()
   })
 
-  const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
-
-  it('内置 Mock 已在启动时初始化，可用于离线跑通', async () => {
-    const providers = await inject({ method: 'GET', url: '/api/model-providers' })
-    expect(providers.statusCode).toBe(200)
-    const list = providers.json<ProviderBody[]>()
-    expect(list.map((item) => item.id)).toContain('mock')
-
-    const models = await inject({ method: 'GET', url: '/api/models' })
-    expect(models.json<Array<{ id: string }>>().map((item) => item.id)).toContain('mock')
-
-    const routing = await inject({ method: 'GET', url: '/api/model-routing' })
-    expect(routing.json<{ defaultModelId: string }>().defaultModelId).toBe('mock')
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
-  it('预置目录包含 9 家供应商 + mock，且不含任何密钥', async () => {
+  const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
+
+  it('出厂状态：不含任何供应商/模型，平台默认模型为空（S10：Agent 默认不配置模型）', async () => {
+    const providers = await inject({ method: 'GET', url: '/api/model-providers' })
+    expect(providers.statusCode).toBe(200)
+    expect(providers.json<ProviderBody[]>()).toEqual([])
+
+    const models = await inject({ method: 'GET', url: '/api/models' })
+    expect(models.json<Array<{ id: string }>>()).toEqual([])
+
+    const routing = await inject({ method: 'GET', url: '/api/model-routing' })
+    expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
+  })
+
+  it('预置目录包含 9 家供应商（不含任何假模型），且不含任何密钥', async () => {
     const response = await inject({ method: 'GET', url: '/api/model-presets' })
     expect(response.statusCode).toBe(200)
     const presets = response.json<Array<{ presetId: string; suggestedModels: unknown[] }>>()
-    expect(presets).toHaveLength(10)
+    expect(presets).toHaveLength(9)
     expect(presets.map((item) => item.presetId)).toEqual(
       expect.arrayContaining([
         'deepseek',
@@ -50,9 +53,9 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
         'zhipu',
         'volcengine-ark',
         'ollama',
-        'mock',
       ]),
     )
+    expect(presets.map((item) => item.presetId)).not.toContain('mock')
     expect(response.body).not.toMatch(/sk-[A-Za-z0-9]/)
   })
 
@@ -63,13 +66,25 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     expect(provider.id).toBe('ollama')
     expect(provider.credential.hasValue).toBe(false)
 
-    const tested = await inject({ method: 'POST', url: '/api/model-providers/mock/test', payload: { mode: 'models' } })
-    expect(tested.statusCode).toBe(200)
-    expect(tested.json<{ models: string[] }>().models).toEqual(['mock'])
+    // Ollama 的测试/发现走 `/api/tags`：用替身 fetch 保证离线可跑（不依赖本机服务）
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ models: [{ name: 'qwen3:8b' }, { name: 'llama3.2:3b' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    )
 
-    const discovered = await inject({ method: 'GET', url: '/api/model-providers/mock/discover' })
+    const tested = await inject({ method: 'POST', url: '/api/model-providers/ollama/test', payload: { mode: 'models' } })
+    expect(tested.statusCode).toBe(200)
+    expect(tested.json<{ models: string[] }>().models).toEqual(['qwen3:8b', 'llama3.2:3b'])
+
+    const discovered = await inject({ method: 'GET', url: '/api/model-providers/ollama/discover' })
     expect(discovered.statusCode).toBe(200)
-    expect(discovered.json<{ models: string[] }>().models).toEqual(['mock'])
+    expect(discovered.json<{ models: string[] }>().models).toEqual(['qwen3:8b', 'llama3.2:3b'])
   })
 
   it('凭证永不明文外发（规则 28）', async () => {
@@ -100,7 +115,7 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     const badId = await inject({
       method: 'POST',
       url: '/api/model-providers',
-      payload: { id: 'BAD ID', name: 'x', kind: 'mock', baseUrl: '' },
+      payload: { id: 'BAD ID', name: 'x', kind: 'ollama', baseUrl: 'http://127.0.0.1:11434' },
     })
     expect(badId.statusCode).toBe(400)
     expect(badId.json<{ code: string }>().code).toBe('ERR_VALIDATION')
@@ -128,19 +143,19 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
   })
 
   it('模型条目：同供应商重名被拒，路由必须指向已启用模型', async () => {
-    const first = await inject({
-      method: 'POST',
-      url: '/api/models',
-      payload: { id: 'mock-alt', providerId: 'mock', model: 'mock', displayName: '重复模型名' },
-    })
-    expect(first.statusCode).toBe(409)
-
     const created = await inject({
       method: 'POST',
       url: '/api/models',
-      payload: { id: 'mock-2', providerId: 'mock', model: 'mock-2', displayName: 'Mock 2' },
+      payload: { id: 'ollama-a', providerId: 'ollama', model: 'dup-model', displayName: '首个模型' },
     })
     expect(created.statusCode).toBe(201)
+
+    const duplicated = await inject({
+      method: 'POST',
+      url: '/api/models',
+      payload: { id: 'ollama-alt', providerId: 'ollama', model: 'dup-model', displayName: '重复模型名' },
+    })
+    expect(duplicated.statusCode).toBe(409)
 
     const badRouting = await inject({
       method: 'PUT',
@@ -152,38 +167,45 @@ describe('API · 模型配置（FR-34 / 规则 27、28）', () => {
     const okRouting = await inject({
       method: 'PUT',
       url: '/api/model-routing',
-      payload: { defaultModelId: 'mock-2', stepOverrides: { critique: 'mock' } },
+      payload: { defaultModelId: 'ollama-a', stepOverrides: { critique: 'ollama-a' } },
     })
     expect(okRouting.statusCode).toBe(200)
-    expect(okRouting.json<{ stepOverrides: Record<string, string> }>().stepOverrides).toEqual({ critique: 'mock' })
+    expect(okRouting.json<{ stepOverrides: Record<string, string> }>().stepOverrides).toEqual({ critique: 'ollama-a' })
   })
 
   it('删除保护：有模型条目的供应商不可删（ERR_CONFLICT + referrers）', async () => {
-    const blocked = await inject({ method: 'DELETE', url: '/api/model-providers/mock' })
+    const blocked = await inject({ method: 'DELETE', url: '/api/model-providers/ollama' })
     expect(blocked.statusCode).toBe(409)
     const body = blocked.json<{ code: string; detail: { referrers: Array<{ id: string }> } }>()
     expect(body.code).toBe('ERR_CONFLICT')
-    expect(body.detail.referrers.map((item) => item.id)).toEqual(expect.arrayContaining(['mock', 'mock-2']))
+    expect(body.detail.referrers.map((item) => item.id)).toEqual(expect.arrayContaining(['ollama-a']))
   })
 
   it('停用与删除模型：无 Agent 引用时直接允许，删除后供应商可删', async () => {
     // 未被任何模板/实例引用 → 停用无需 confirm（规则 10）
-    const disabled = await inject({ method: 'PATCH', url: '/api/models/mock-2', payload: { enabled: false } })
+    const disabled = await inject({ method: 'PATCH', url: '/api/models/ollama-a', payload: { enabled: false } })
     expect(disabled.statusCode).toBe(200)
     expect(disabled.json<{ enabled: boolean }>().enabled).toBe(false)
 
-    const enabled = await inject({ method: 'PATCH', url: '/api/models/mock-2', payload: { enabled: true } })
+    const enabled = await inject({ method: 'PATCH', url: '/api/models/ollama-a', payload: { enabled: true } })
     expect(enabled.json<{ enabled: boolean }>().enabled).toBe(true)
 
-    // 路由切回 mock，再删掉 mock-2
-    await inject({ method: 'PUT', url: '/api/model-routing', payload: { defaultModelId: 'mock' } })
-    expect((await inject({ method: 'DELETE', url: '/api/models/mock-2' })).statusCode).toBe(200)
+    // 删除平台默认模型 → 路由默认随之置空（不静默换模型），条目本身可删
+    expect((await inject({ method: 'DELETE', url: '/api/models/ollama-a' })).statusCode).toBe(200)
+    const routing = await inject({ method: 'GET', url: '/api/model-routing' })
+    expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
 
-    // 新建一个空供应商，验证可删除
+    // 新建一个空供应商（无模型条目），验证可删除
     await inject({
       method: 'POST',
       url: '/api/model-providers',
-      payload: { id: 'empty-prov', name: '空供应商', kind: 'mock', baseUrl: '' },
+      payload: {
+        id: 'empty-prov',
+        name: '空供应商',
+        kind: 'openai-compatible',
+        baseUrl: 'https://empty.example.com/v1',
+        credential: { mode: 'file', value: 'sk-empty-prov-1234' },
+      },
     })
     expect((await inject({ method: 'DELETE', url: '/api/model-providers/empty-prov' })).statusCode).toBe(200)
   })

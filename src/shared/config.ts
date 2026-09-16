@@ -63,7 +63,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   server: { host: '127.0.0.1', port: 3000 },
   models: {
     configFile: 'data/model-config.json',
-    defaultModelId: 'mock',
+    /** 空字符串 = 未指定：出厂不预设任何默认模型（供应商/模型条目由用户在 UI 配置） */
+    defaultModelId: '',
     importFromEnv: true,
     requestTimeoutMs: 60_000,
     maxPromptChars: 20_000,

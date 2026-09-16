@@ -6,7 +6,7 @@ import type { ModelPreset, ModelPresetModel, ModelPresetProvider } from '../../p
 /** 内置预置目录（随仓库只读） */
 export const DEFAULT_PRESET_PATH = 'src/shared/model-presets.yaml'
 
-const KINDS: readonly ProviderKind[] = ['openai-compatible', 'anthropic', 'gemini', 'ollama', 'mock']
+const KINDS: readonly ProviderKind[] = ['openai-compatible', 'anthropic', 'gemini', 'ollama']
 const CAPABILITIES: readonly ModelCapability[] = ['chat', 'stream', 'tools', 'reasoning']
 
 function asString(value: unknown, fallback = ''): string {

@@ -92,7 +92,7 @@
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET | /api/model-presets | 预置供应商目录（9 家 + mock：kind/默认 baseUrl/凭证提示/建议模型/文档链接，**不含密钥**）|
+| GET | /api/model-presets | 预置供应商目录（9 家：kind/默认 baseUrl/凭证提示/建议模型/文档链接，**不含密钥**）|
 | GET | /api/model-providers | 供应商列表（`credential` 只回 `{mode, envName?, hasValue, masked}`）|
 | POST | /api/model-providers | 新建：`{presetId?}` 走预置模板，或 `{id, name, kind, baseUrl, credential, headers?, timeoutMs?}` 自定义 |
 | PATCH | /api/model-providers/:pid | 编辑（`credential` 省略=保持原值；`""`=清除）；改 `kind` 必须同时给 `baseUrl` |
@@ -109,7 +109,7 @@
 | POST | /api/model-config/import | 一次性导入遗留配置 `?source=env\|v0`（`.env` 的 `MODELS__PROVIDERS` / 旧 `data/model-config.json`）→ `{imported, skipped[]}` |
 
 > 校验与失败语义见 model-config.md §8：**不新增错误码**，沿用 `ERR_VALIDATION`/`ERR_CONFLICT`/`ERR_NOT_FOUND`/`ERR_FORBIDDEN`/`ERR_MODEL`；引用者列表放 `detail.referrers`。
-> 启动初始化（model-config.md §11）：空配置 → 先导入 `MODELS__PROVIDERS`，仍为空则自动创建内置 `mock` 供应商 + 模型（保证无 Key 可跑通）。
+> 启动初始化（model-config.md §11）：① **迁移**——剔除 `kind` 已不在注册表中的供应商及其模型条目，清理 `routing.defaultModelId` 与 `stepOverrides` 中指向它们的值并写 `config-audit`；② 空配置且允许时一次性导入遗留 `MODELS__PROVIDERS`；③ `MODELS__DEFAULT` **初始化阶段生效**（命中已启用模型条目则设为平台默认；命中不到不预设，不静默换模型）；④ **不自动创建任何供应商/模型**（未配置模型的 Agent 启动回合报 `ERR_MODEL` 并给出配置引导）。
 
 ### 首页库（工具包只读；Agent 模板已开放 提示词/loop/模型 三项提交）| 方法 | 路径 | 用途 |
 | --- | --- | --- |

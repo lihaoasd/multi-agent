@@ -127,7 +127,7 @@ loop 通用参数（**均为目标形态，当前无消费者**）：`maxIterati
   4. 平台默认 `routing.defaultModelId`。
 - **口径（D20-①，修订原 B8 "`model` 引用 provider id"）**：实例/模板的 `model` 字段值引用 **模型条目 id**（`data/model-config.json` 的 `models[].id`，如 `deepseek-chat`/`gpt-4o`/`ollama-qwen`），模型条目再指向供应商并携带真实模型名与默认参数；旧值（provider id）兼容解析见 model-config.md §11。
 - **失败语义（D20-⑥）**：目标模型不存在/未启用/凭证缺失/调用失败 → `ERR_MODEL`（`detail` 含 `providerId`/`modelId`/`status`，**已脱敏**），落 `kind=error` 事件并回注 Agent；**不自动改用其它模型**（避免"悄悄换模型"）。
-- **适配器与流式**：五种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`/`mock`）的差异在 `infra/model/providers/` 内归一化为统一 `ModelChunk`；`ModelGateway` 统一返回增量，chunk 落 log（合并为 message 事件）并推送；中断/超时重试策略见架构 §7（默认退避 ≤3 次，超时上限取 `MODELS__REQUEST_TIMEOUT_MS`）。
+- **适配器与流式**：四种 kind（`openai-compatible`/`anthropic`/`gemini`/`ollama`）的差异在 `infra/model/providers/` 内归一化为统一 `ModelChunk`；`ModelGateway` 统一返回增量，chunk 落 log（合并为 message 事件）并推送；中断/超时重试策略见架构 §7（默认退避 ≤3 次，超时上限取 `MODELS__REQUEST_TIMEOUT_MS`）。
 - **生效时机**：平台模型配置改动即时生效（下一次模型调用）；实例 `model` 改动在下一回合开始生效（运行中回合到可中断点），见 model-config.md §9。
 
 ## 6. 工具集与安全边界（概要）

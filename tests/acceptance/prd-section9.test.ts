@@ -2,8 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } fro
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createTestServer, type TestContext } from '../helpers-server'
+import { configureTestModel } from '../helpers-model'
 import { createScriptedGateway } from '../helpers-scripted-gateway'
 import type { ArtifactRecord } from '../../src/ports/artifact'
 import type { MemoryEntry } from '../../src/ports/memory'
@@ -14,12 +15,13 @@ import type { ToolCallContext, ToolOutcome } from '../../src/ports/tools'
 import type { RuntimeSnapshot } from '../../src/ports/runtime'
 
 /**
- * prd §9 验收脚本 1~8（S9 全量验收）。
+ * prd §9 验收脚本 1~8（S9 全量验收；S10 起按"无假模型 + Agent 默认不配置模型"的新口径）。
  *
- * 与设计口径的一处说明：**Mock 适配器默认只回显文本、不产生 tool-call**，
+ * 与设计口径的一处说明：**产品面不再提供任何假模型供应商**（S10 移除 mock），
  * 因此协作步骤（委派/领取/汇报/提问/高危命令）通过两大通道验证：
- * ① 真实 agent loop + **脚本化 Mock 网关**（`createScriptedGateway`）让模型真的发起 tool-call；
+ * ① 真实 agent loop + **脚本化网关替身**（`createScriptedGateway`，仅存在于 tests/）让模型真的发起 tool-call；
  * ② 直接调用与 loop 同一套工具处理函数（`toolRegistry.get(name).handler`），用于需要并发应答的步骤。
+ * 模型配置一律**显式登记**（`configureTestModel`），脚本 2 专门覆盖"未配置模型"的引导路径。
  */
 
 const PROJECT_NAME = 'prd §9 验收项目'
@@ -67,6 +69,8 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
       { text: '已完成登录模块初稿并记录进度。' },
     ])
     context = await createTestServer({ gateway })
+    // S10：出厂无任何供应商/模型，验收显式登记一个平台默认模型（网关为替身，不联网）
+    await configureTestModel(context.deps, { providerId: 'accept-provider', modelId: 'accept-model' })
 
     const created = await context.app.inject({
       method: 'POST',
@@ -88,6 +92,10 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
   afterAll(async () => {
     await context.cleanup()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
@@ -245,21 +253,69 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     }
   })
 
-  it('脚本 2：无任何 API Key 也可用 Mock 跑通（预置含 mock，全程无 ERR_MODEL）', async () => {
-    const presets = await inject({ method: 'GET', url: '/api/model-presets' })
-    const kinds = presets.json<Array<{ presetId: string; kind: string }>>()
-    expect(kinds.map((item) => item.kind)).toEqual(
-      expect.arrayContaining(['mock', 'openai-compatible', 'anthropic', 'gemini', 'ollama']),
-    )
-    const providers = await inject({ method: 'GET', url: '/api/model-providers' })
-    const list = providers.json<Array<{ id: string; kind: string; credential: { hasValue: boolean } }>>()
-    expect(list.some((item) => item.kind === 'mock')).toBe(true)
-    // 内置 Mock 无密钥也可用
-    const mock = list.find((item) => item.kind === 'mock')
-    expect(mock?.credential.hasValue).toBe(false)
+  it('脚本 2：出厂无假模型，未配置模型的 Agent 启动即明确引导（ERR_MODEL，不静默降级）', async () => {
+    const fresh = await createTestServer()
+    try {
+      // 2.1 预置目录只有真实供应商；出厂配置为空
+      const presets = await fresh.app.inject({ method: 'GET', url: '/api/model-presets' })
+      const kinds = presets.json<Array<{ presetId: string; kind: string }>>()
+      expect(kinds.map((item) => item.kind)).toEqual(
+        expect.arrayContaining(['openai-compatible', 'anthropic', 'gemini', 'ollama']),
+      )
+      expect(kinds.map((item) => item.kind)).not.toContain('mock')
+      expect(kinds.map((item) => item.presetId)).not.toContain('mock')
 
-    const errors = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_pm_1/log?kind=error` })
-    expect(errors.json<unknown[]>()).toEqual([])
+      const providers = await fresh.app.inject({ method: 'GET', url: '/api/model-providers' })
+      expect(providers.json<unknown[]>()).toEqual([])
+      const models = await fresh.app.inject({ method: 'GET', url: '/api/models' })
+      expect(models.json<unknown[]>()).toEqual([])
+      const routing = await fresh.app.inject({ method: 'GET', url: '/api/model-routing' })
+      expect(routing.json<{ defaultModelId: string | null }>().defaultModelId).toBeNull()
+
+      // 2.2 未注册任何 kind=mock 供应商（协议适配器已删除）
+      const rejected = await fresh.app.inject({
+        method: 'POST',
+        url: '/api/model-providers',
+        payload: { id: 'legacy-mock', name: 'legacy', kind: 'mock', baseUrl: '' },
+      })
+      expect(rejected.statusCode).toBe(400)
+      expect(rejected.json<{ code: string }>().code).toBe('ERR_VALIDATION')
+
+      // 2.3 新建项目的 Agent 生效模型为空（默认未配置）
+      const created = await fresh.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name: '未配置模型验收', workdir },
+      })
+      const freshProject = created.json<{ id: string }>().id
+      const instance = await fresh.app.inject({ method: 'GET', url: `/api/projects/${freshProject}/team/dev_1` })
+      expect(instance.json<{ effective: { model: string | null }; effectiveModelAvailable: boolean }>()).toMatchObject({
+        effective: { model: null },
+        effectiveModelAvailable: false,
+      })
+
+      // 2.4 启动回合 → 明确引导（ERR_MODEL + 配置指引），且不会静默换模型
+      const sent = await fresh.app.inject({
+        method: 'POST',
+        url: `/api/projects/${freshProject}/sessions/u_dev_1/messages`,
+        payload: { text: '开始' },
+      })
+      expect(sent.statusCode).toBe(202)
+
+      const events = await waitFor(async () => {
+        const log = await fresh.app.inject({
+          method: 'GET',
+          url: `/api/projects/${freshProject}/sessions/u_dev_1/log`,
+        })
+        const list = log.json<Array<{ kind: string; payload: Record<string, unknown> }>>()
+        return list.some((event) => event.kind === 'error') ? list : null
+      }, '未配置模型的回合给出错误')
+      const error = events.find((event) => event.kind === 'error')
+      expect(error?.payload['errorCode']).toBe('ERR_MODEL')
+      expect(String(error?.payload['message'])).toContain('模型')
+    } finally {
+      await fresh.cleanup()
+    }
   })
 
   it('脚本 3：单工与状态正确（忙/暂停时入队，恢复后补处理；状态与占用一致）', async () => {
@@ -302,6 +358,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     ])
     const danger = await createTestServer({ gateway, envMap: {}, root: `${context.root}-danger` })
     try {
+      await configureTestModel(danger.deps, { providerId: 'danger-provider', modelId: 'danger-model' })
       const created = await danger.app.inject({
         method: 'POST',
         url: '/api/projects',
@@ -369,7 +426,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
     const plans = readdirSync(join(process.cwd(), 'docs', 'plan'))
     const changes = readdirSync(join(process.cwd(), 'docs', 'changes'))
-    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9']) {
+    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10']) {
       expect(plans.some((file) => file.includes(`-${stage}-`)), `plan ${stage}`).toBe(true)
       expect(changes.some((file) => file.includes(`-${stage}-`)), `changes ${stage}`).toBe(true)
     }
@@ -441,6 +498,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     ])
     const asking = await createTestServer({ gateway, root: `${context.root}-asking` })
     try {
+      await configureTestModel(asking.deps, { providerId: 'asking-provider', modelId: 'asking-model' })
       const createdProject = await asking.app.inject({
         method: 'POST',
         url: '/api/projects',
@@ -489,19 +547,29 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
   })
 
   it('脚本 8：模型配置与 Agent 配置可用（预置/测试连接/默认模型/复制模板/实例覆盖/引用保护/密钥掩码）', async () => {
-    // 8.1 预置供应商目录 ≥10（9 家 + mock）并可新建 + 测试连接
+    // 8.1 预置供应商目录 9 家（无假模型）并可新建 + 测试连接（Ollama 走 `/api/tags`，用替身 fetch 保持离线可跑）
     const presets = await inject({ method: 'GET', url: '/api/model-presets' })
-    expect(presets.json<unknown[]>().length).toBeGreaterThanOrEqual(10)
+    expect(presets.json<unknown[]>().length).toBeGreaterThanOrEqual(9)
     const added = await inject({ method: 'POST', url: '/api/model-providers', payload: { presetId: 'ollama' } })
     expect(added.statusCode).toBeLessThan(300)
-    const tested = await inject({ method: 'POST', url: '/api/model-providers/mock/test', payload: { mode: 'models' } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ models: [{ name: 'qwen3:8b' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    )
+    const tested = await inject({ method: 'POST', url: '/api/model-providers/ollama/test', payload: { mode: 'models' } })
     expect(tested.statusCode).toBe(200)
 
     // 8.2 登记模型条目 + 设全局默认（无需重启即生效）
     const model = await inject({
       method: 'POST',
       url: '/api/models',
-      payload: { id: 'mock-2', providerId: 'mock', model: 'mock-2', displayName: 'Mock 二号' },
+      payload: { id: 'accept-extra', providerId: 'ollama', model: 'qwen3:8b', displayName: 'Qwen3 8B' },
     })
     expect(model.statusCode).toBeLessThan(300)
     const modelId = model.json<{ id: string }>().id

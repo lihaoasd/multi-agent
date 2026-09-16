@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { redactSecrets } from '../../../src/infra/model/redact'
-import { createMockAdapter } from '../../../src/infra/model/providers/mock'
 import { createOpenAiCompatibleAdapter } from '../../../src/infra/model/providers/openai-compatible'
+import { createInMemoryAdapter } from '../../helpers-in-memory-adapter'
 import type { ModelChunk, ModelRequest } from '../../../src/ports/model'
 import type { ResolvedModel } from '../../../src/ports/model-config'
 
@@ -67,10 +67,10 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('mock 适配器（规则 31：归一化基准实现）', () => {
+describe('in-memory 适配器替身（规则 31：归一化基准实现，位于 tests/）', () => {
   it('按片输出 text-delta，末尾给 usage，拼接结果等于回复全文', async () => {
-    const adapter = createMockAdapter({ chunkSize: 5, reply: () => '你好，这是 Mock 回复。' })
-    const streamed = await adapter.stream(resolved({ kind: 'mock' }), request())
+    const adapter = createInMemoryAdapter({ chunkSize: 5, reply: () => '你好，这是替身回复。' })
+    const streamed = await adapter.stream(resolved(), request())
     expect(streamed.ok).toBe(true)
     if (!streamed.ok) return
 
@@ -79,23 +79,23 @@ describe('mock 适配器（规则 31：归一化基准实现）', () => {
       .filter((chunk): chunk is { type: 'text-delta'; text: string } => chunk.type === 'text-delta')
       .map((chunk) => chunk.text)
       .join('')
-    expect(text).toBe('你好，这是 Mock 回复。')
+    expect(text).toBe('你好，这是替身回复。')
     expect(chunks.at(-1)?.type).toBe('usage')
   })
 
   it('默认剧本回声最后一条用户消息，并可由 listModels/test 提供能力', async () => {
-    const adapter = createMockAdapter()
-    const streamed = await adapter.stream(resolved({ kind: 'mock' }), request())
-    if (!streamed.ok) throw new Error('mock 流启动失败')
+    const adapter = createInMemoryAdapter()
+    const streamed = await adapter.stream(resolved(), request())
+    if (!streamed.ok) throw new Error('替身流启动失败')
     const text = (await collect(streamed.value))
       .filter((chunk): chunk is { type: 'text-delta'; text: string } => chunk.type === 'text-delta')
       .map((chunk) => chunk.text)
       .join('')
-    expect(text).toContain('[mock:demo-model]')
+    expect(text).toContain('[in-memory:p1-m]')
     expect(text).toContain('你好')
 
     const models = await adapter.listModels?.(resolved().provider, null)
-    expect(models?.ok && models.value).toEqual(['mock'])
+    expect(models?.ok && models.value).toEqual(['in-memory'])
     const tested = await adapter.test?.(resolved().provider, { mode: 'models', apiKey: null })
     expect(tested?.ok).toBe(true)
   })
@@ -103,9 +103,9 @@ describe('mock 适配器（规则 31：归一化基准实现）', () => {
   it('已取消的 signal：流中途抛错（供上层转 error 事件）', async () => {
     const controller = new AbortController()
     controller.abort()
-    const adapter = createMockAdapter()
-    const streamed = await adapter.stream(resolved({ kind: 'mock' }), request({ signal: controller.signal }))
-    if (!streamed.ok) throw new Error('mock 流启动失败')
+    const adapter = createInMemoryAdapter()
+    const streamed = await adapter.stream(resolved(), request({ signal: controller.signal }))
+    if (!streamed.ok) throw new Error('替身流启动失败')
     await expect(collect(streamed.value)).rejects.toThrow(/已取消/)
   })
 })

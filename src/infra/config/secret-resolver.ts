@@ -18,7 +18,7 @@ export function createSecretResolver(
   return {
     resolve(credential: Credential): Result<string | null> {
       if (credential.mode === 'file') {
-        // 空值允许：mock/ollama 等本地后端本就不需要密钥；
+        // 空值允许：ollama 等本地后端本就不需要密钥；
         // 真实供应商的"必须有密钥"由**创建/编辑时**的校验保证（validate.ts §8 #5）。
         return ok(credential.value.length > 0 ? credential.value : null)
       }

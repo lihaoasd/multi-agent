@@ -87,7 +87,7 @@
 
 ## 6. 适配器 kind 与预置供应商目录
 
-### 6.1 五种 kind
+### 6.1 四种 kind
 
 | kind | 调用端点 | 认证 | 流式形态 | 覆盖的供应商 |
 | --- | --- | --- | --- | --- |
@@ -95,12 +95,11 @@
 | `anthropic` | `POST {baseUrl}/messages` | `x-api-key` + `anthropic-version` | SSE 命名事件（`content_block_delta` 等） | Anthropic Claude |
 | `gemini` | `POST {baseUrl}/models/{model}:streamGenerateContent?alt=sse` | `x-goog-api-key` | SSE，`candidates[].content.parts[]`（`functionCall` 为工具调用） | Google Gemini |
 | `ollama` | `POST {baseUrl}/api/chat` | 无（可选 Bearer） | NDJSON 逐行 JSON | Ollama（本地） |
-| `mock` | 进程内 | — | 剧本化（可编程响应） | 离线演示与测试 |
 
 - 归一化目标：既有 `ModelChunk`（`text-delta` / `reasoning-delta` / `tool-call` / `usage`，abstraction §4.6）。**新增 kind 只实现适配器，不动 `ModelGateway` 及以上**（扩展步骤见 abstraction §7）。
 - 预留但本轮不实现：`bedrock`、`vertex`、`azure-openai`、通用 `openai-responses`。
 
-### 6.2 预置目录（9 家 + mock）
+### 6.2 预置目录（9 家）
 
 | presetId | 展示名 | kind | 默认 baseUrl | 凭证 | 模型发现 |
 | --- | --- | --- | --- | --- | --- |
@@ -113,11 +112,10 @@
 | `zhipu` | 智谱 GLM | openai-compatible | `https://open.bigmodel.cn/api/paas/v4` | Bearer | `GET /models` |
 | `volcengine-ark` | 火山方舟 豆包 | openai-compatible | `https://ark.cn-beijing.volces.com/api/v3` | Bearer | 不支持（模型名=推理接入点 id，手工填） |
 | `ollama` | Ollama（本地） | ollama | `http://127.0.0.1:11434` | 无 | `GET /api/tags` |
-| `mock` | Mock（离线演示） | mock | — | — | 内置固定模型 |
 
 - 预置目录随仓库（`src/shared/model-presets.yaml`，只读），**不含任何密钥**；条目内容为 `{presetId, name, kind, baseUrl, credentialHint, suggestedModels[], docsUrl}`。
 - `suggestedModels[]` 是**示例清单**（可编辑，随供应商版本变动）：新建供应商时可一键生成模型条目，也可留空后从"模型发现"拉取（§7）。文档不硬编码具体模型名清单，以供应商控制台为准。
-- 自定义供应商：kind 手选 + 名称/baseUrl 手填，`presetId: null`；等价于"预置目录之外的第六类"，无需额外机制。
+- 自定义供应商：kind 手选 + 名称/baseUrl 手填，`presetId: null`；等价于"预置目录之外的第五类"，无需额外机制。
 
 ## 7. 连通性测试与模型发现
 
@@ -136,9 +134,9 @@
 | --- | --- | --- |
 | 1 | `provider.id` / `model.id` 格式合法且全局唯一 | `ERR_VALIDATION` |
 | 2 | `kind` 必须是已注册适配器 | `ERR_VALIDATION`（点名可用 kind） |
-| 3 | `baseUrl` 为 http/https 且非空（`mock` 免） | `ERR_VALIDATION` |
+| 3 | `baseUrl` 为 http/https 且非空（所有 kind 必填） | `ERR_VALIDATION` |
 | 4 | `env` 模式：`envName` 合规且**当前环境存在该变量**（含 `.env` 文件：统一按"文件 + 进程环境"合并后的映射判定，`process.env` 优先） | `ERR_VALIDATION` |
-| 5 | `file` 模式：新增时 `value` 非空；编辑省略=保持 | `ERR_VALIDATION` |
+| 5 | `file` 模式：新增时 `value` 非空（仅 `ollama` 允许空值）；编辑省略=保持 | `ERR_VALIDATION` |
 | 6 | `model.providerId` 必须存在且 `enabled` | `ERR_VALIDATION` |
 | 7 | `model.model` 非空；同一供应商下 `model` 名不重复 | `ERR_VALIDATION` |
 | 8 | 删除供应商：其下**存在模型条目**即拒绝 | `ERR_CONFLICT` + `detail.referrers` |
@@ -187,19 +185,19 @@
 | 键 | 作用 |
 | --- | --- |
 | `MODELS__CONFIG_FILE` | 运行时模型配置文件路径（默认 `data/model-config.json`） |
-| `MODELS__DEFAULT` | 首次初始化时的默认模型 id（仅当配置文件不存在且无可导入条目） |
+| `MODELS__DEFAULT` | 初始化阶段生效：命中已启用的模型条目时设为平台默认模型；留空或命中不到则不预设 |
 | `MODELS__IMPORT_FROM_ENV` | 是否允许从遗留 `MODELS__PROVIDERS` 一次性导入（默认 `true`） |
 | `MODELS__REQUEST_TIMEOUT_MS` | 单次请求超时上限（供应商条目只能收紧，不能突破） |
 | `MODELS__MAX_PROMPT_CHARS` | 提示词长度上限（默认 20000，§8 #13） |
 
 迁移与兼容：
 
-1. **`.env` 的 `MODELS__PROVIDERS`**（现状形状 `{id, kind, baseUrl, apiKeyEnv, model}`）：配置文件不存在时一次性导入 → 每个条目生成 1 个供应商 + 1 个同名模型条目（`apiKeyEnv` → `credential:{mode:"env"}`）；`MODELS__DEFAULT` → `routing.defaultModelId`。导入后 `.env` 该键仅作历史留存，UI **不再读写**，审计记 `action:"import"`。
+1. **`.env` 的 `MODELS__PROVIDERS`**（现状形状 `{id, kind, baseUrl, apiKeyEnv, model}`）：配置文件不存在时一次性导入 → 每个条目生成 1 个供应商 + 1 个同名模型条目（`apiKeyEnv` → `credential:{mode:"env"}`）；导入时暂以第一条为默认，`MODELS__DEFAULT` 在初始化第 ③ 步按新口径生效（见下 #6）。导入后 `.env` 该键仅作历史留存，UI **不再读写**，审计记 `action:"import"`。
 2. **旧值兼容**：Agent/模板/实例的 `model` 字段若命中**供应商 id**（而非模型条目 id），且该供应商**只有一个启用模型**，则解析到该模型并在审计写一条告警（提示"该字段已按模型条目口径解析，建议改为显式模型 id"）；若该供应商有多个启用模型，则解析失败 `ERR_MODEL`，要求用户显式指定。**不静默改写配置文件**。
 3. **遗留 `data/model-config.json` 旧形状**（`{entries[], defaultModel}`，无 `schemaVersion`）：视为 v0 → 启动自检**不自动导入**，备份为 `model-config.v0.bak.json` 并在 UI 提示一次；用户点"导入"走 `POST /api/model-config/import?source=v0`。
 4. **遗留 `data/agent-models.json`**（旧 `roleId → 条目 id` 映射，已被本轮设计取代）：不再读取；提示用户其映射应写入角色模板 `defaultModel`（不自动改文件）。
 5. `schemaVersion` 当前为 `1`；未来不兼容变更递增版本并要求显式迁移（与 `data-storage.md` §9 一致）。
-6. **首次初始化兜底（2026-09-15 实现口径）**：启动时按序执行 —— ① 配置文件不存在 → 空配置；② 检测到 v0/坏文件 → 备份后空配置；③ 空配置且 `MODELS__IMPORT_FROM_ENV=true` → 从合并环境映射的 `MODELS__PROVIDERS` 导入；④ **仍为空 → 自动创建内置 `mock` 供应商 + `mock` 模型并设为默认**，保证"无任何 Key 也能跑通全流程"（prd §9 验收 2）。
+6. **首次初始化（2026-09-16 实现口径）**：启动时按序执行 —— ① **迁移**：剔除 `kind` 已不在注册表中的供应商及其模型条目，清理 `routing.defaultModelId` 与 `stepOverrides` 中指向它们的值，并写 `config-audit.jsonl`（`action:"migrate"`，`diff` 含 `removedProviders`/`removedModels`）；② **空配置且 `MODELS__IMPORT_FROM_ENV=true`** → 从合并环境映射的 `MODELS__PROVIDERS` 一次性导入；③ **`MODELS__DEFAULT` 真正生效**：命中**已启用**的模型条目时设为 `routing.defaultModelId`（初始化阶段以它为准，覆盖导入时"第一条即默认"的临时值；命中不到则保持不设，**不静默换模型**）；④ **不再自动创建任何供应商/模型**（原"内置兜底供应商 + 模型"已删除）。出厂状态即为空配置：需先配置（离线可用本地 Ollama，但需本机已启动 Ollama 服务）才能跑通回合；未配置模型的 Agent 启动回合报 `ERR_MODEL`（§2 解析链）。
 7. **`.env` 文件的读取口径**：`.env` 内容**不会**写回 `process.env`，因此 env 模式凭证与遗留导入统一读"**`.env` 文件 + 进程环境变量**"合并后的映射（后者优先）；`process.env` 优先于 `.env`。
 
 ## 12. 端口与代码落点（对齐 abstraction.md）
@@ -213,7 +211,7 @@
 | `ModelGateway` | 按 `ModelId` 路由到适配器，统一 `ModelChunk`，外挂脱敏装饰 | infra/model |
 | `ModelConfigService` | 供应商/模型/路由的增删改查 + 校验 + 测试/发现 + 迁移导入 | application/model-config |
 | `AgentConfigService` | 模板 CRUD（复制新建/编辑/停用）与实例覆盖写入 + 校验 + 快照 + 审计 | application/team |
-| 预置目录 | 9 家 + mock 的 kind/baseUrl/凭证提示/建议模型 | src/shared/model-presets.yaml（只读） |
+| 预置目录 | 9 家的 kind/baseUrl/凭证提示/建议模型 | src/shared/model-presets.yaml（只读） |
 
 - 关键约束：`ModelCatalog` **不缓存凭证到进程外**、不进日志；`AgentConfigService` 写实例配置后必须调用 `EffectiveAgentConfigResolver.invalidate(projectId, instanceId)`。
 

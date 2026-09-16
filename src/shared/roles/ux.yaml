@@ -14,7 +14,7 @@ systemPrompt: |
   - 只产出设计文档（doc），不写实现代码；
   - 交互方案必须覆盖异常路径（失败、超时、无权限、空数据）；
   - 视觉细节（配色/字体/图标）交由 UI 设计师，不越界。
-defaultModel: mock
+defaultModel: null  # 留空 = Agent 默认未配置模型（S10）：须由用户在 Agent/项目内显式选择
 defaultLoop:
   strategy: reflective
   params:

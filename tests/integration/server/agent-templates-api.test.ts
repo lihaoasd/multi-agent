@@ -26,7 +26,7 @@ describe('API · Agent 模板配置（FR-35 / 规则 29）', () => {
 
   const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
 
-  it('列出 8 个内置模板，默认模型指向已初始化的 mock', async () => {
+  it('列出 8 个内置模板，默认模型留空（S10：Agent 默认不配置模型）', async () => {
     const response = await inject({ method: 'GET', url: '/api/agent-templates' })
     expect(response.statusCode).toBe(200)
     const templates = response.json<TemplateBody[]>()
@@ -37,8 +37,8 @@ describe('API · Agent 模板配置（FR-35 / 规则 29）', () => {
     expect(templates.every((item) => item.source === 'builtin')).toBe(true)
     expect(templates.every((item) => item.editable === false)).toBe(true)
     const pm = templates.find((item) => item.roleId === 'pm')
-    expect(pm?.defaultModel).toBe('mock')
-    expect(pm?.defaultModelAvailable).toBe(true)
+    expect(pm?.defaultModel).toBeNull()
+    expect(pm?.defaultModelAvailable).toBe(false)
     expect(pm?.defaultLoop.strategy).toBe('plan-execute')
   })
 
@@ -146,37 +146,52 @@ describe('API · Agent 模板配置（FR-35 / 规则 29）', () => {
   })
 
   it('模板引用模型 → 停用该模型需 confirm，删除被引用模型被拒（规则 27/29）', async () => {
+    // S10：出厂无任何供应商/模型，本用例显式配置一个真实 kind 的供应商 + 模型条目
+    const provider = await inject({
+      method: 'POST',
+      url: '/api/model-providers',
+      payload: {
+        id: 'ref-provider',
+        name: '引用供应商',
+        kind: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434',
+        credential: { mode: 'file', value: '' },
+      },
+    })
+    expect(provider.statusCode).toBe(201)
+
     const model = await inject({
       method: 'POST',
       url: '/api/models',
-      payload: { id: 'mock-ref', providerId: 'mock', model: 'mock-ref', displayName: '被引用模型' },
+      payload: { id: 'ref-model', providerId: 'ref-provider', model: 'ref-model', displayName: '被引用模型' },
     })
     expect(model.statusCode).toBe(201)
 
     const referenced = await inject({
       method: 'PATCH',
       url: '/api/agent-templates/pm-x',
-      payload: { defaultModel: 'mock-ref' },
+      payload: { defaultModel: 'ref-model' },
     })
     expect(referenced.statusCode).toBe(200)
     expect(referenced.json<TemplateBody>().defaultModelAvailable).toBe(true)
 
     const disableWithoutConfirm = await inject({
       method: 'PATCH',
-      url: '/api/models/mock-ref',
+      url: '/api/models/ref-model',
       payload: { enabled: false },
     })
     expect(disableWithoutConfirm.statusCode).toBe(409)
+    expect(disableWithoutConfirm.json<{ code: string }>().code).toBe('ERR_CONFLICT')
     expect(
       disableWithoutConfirm.json<{ detail: { referrers: Array<{ kind: string; id: string }> } }>().detail.referrers,
     ).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'template', id: 'pm-x' })]))
 
-    const deleteBlocked = await inject({ method: 'DELETE', url: '/api/models/mock-ref' })
+    const deleteBlocked = await inject({ method: 'DELETE', url: '/api/models/ref-model' })
     expect(deleteBlocked.statusCode).toBe(409)
 
-    // 模板不再引用后可删
-    await inject({ method: 'PATCH', url: '/api/agent-templates/pm-x', payload: { defaultModel: 'mock' } })
-    expect((await inject({ method: 'DELETE', url: '/api/models/mock-ref' })).statusCode).toBe(200)
+    // 模板改为不引用（留空 = 未配置）后可删
+    await inject({ method: 'PATCH', url: '/api/agent-templates/pm-x', payload: { defaultModel: null } })
+    expect((await inject({ method: 'DELETE', url: '/api/models/ref-model' })).statusCode).toBe(200)
   })
 
   it('停用/启用模板（内置不可停用）与 WS 广播', async () => {
