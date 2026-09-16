@@ -12,7 +12,7 @@
 | `docs/api/` | 接口约定（REST + WS + 错误码） | [contract.md](api/contract.md) |
 | `docs/testing/` | 测试计划（分层、规则清单、门禁） | [plan.md](testing/plan.md) |
 | `docs/operations/` | 部署与运维（本机部署、配置、备份迁移） | [deploy.md](operations/deploy.md) |
-| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S10` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
+| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S12` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
 | `docs/changes/` | 修改记录（每次改动追加，与 diff 一一对应） | `YYYY-MM-DD-<topic>.md` |
 
 **阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md` → **`plan/development.md`（编码阶段执行顺序）**。
@@ -77,7 +77,7 @@
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
 
-### 3.4 阶段编号（`S0`~`S11`，`plan/development.md` §6）
+### 3.4 阶段编号（`S0`~`S12`，`plan/development.md` §6）
 
 | 阶段 | 主题 | 方案 / 记录 |
 | --- | --- | --- |
@@ -93,6 +93,7 @@
 | `S9` | 全量验收与文档收口 | [plan](plan/2026-09-15-s9-acceptance-closure.md) · [changes](changes/2026-09-15-s9-acceptance-closure.md) |
 | `S10` | 移除 mock 与 Agent 默认不配置模型（需求变更，prd D21） | [plan](plan/2026-09-16-s10-remove-mock.md) · [changes](changes/2026-09-16-s10-remove-mock.md) |
 | `S11` | 模板库删除/停用与一键配置模型（需求变更，prd D22） | [plan](plan/2026-09-16-s11-template-delete-bulk-model.md) · [changes](changes/2026-09-16-s11-template-delete-bulk-model.md) |
+| `S12` | 工具模块瘦身（工具包详情弹窗、去掉 loop 策略列表） | [plan](plan/2026-09-16-s12-tools-module-simplify.md) · [changes](changes/2026-09-16-s12-tools-module-simplify.md) |
 
 - **测试规则编号**（`testing/plan.md` §2，共 32 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
 - 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。
