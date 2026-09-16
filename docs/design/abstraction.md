@@ -133,7 +133,7 @@ domain/fsm/question.ts  pending → answered
 | --- | --- | --- |
 | `ToolRegistry` | 工具注册/查询（按 name、package、会话类型） | infra/tools |
 | `ToolExecutor` | 校验链 → 审批桥 → 执行 → 审计 → 归属校验 | infra/tools |
-| `ToolPackageRegistry` | 工具包元数据（7 个基础包）与挂载解析 | infra/tools |
+| `ToolPackageRegistry` | 工具包元数据（8 个基础包）与挂载解析 | infra/tools |
 | `CmdRunner` | 结构化 argv 子进程执行（超时/杀掉进程树/输出截断） | infra/sandbox |
 | `FileStore` | 原子读写、JSONL 追加、目录列举、watch | infra/file-store |
 | `LockManager` | KeyedLock（按项目/文件/会话串行化）+ 进程内互斥 | infra/lock |

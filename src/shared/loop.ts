@@ -25,4 +25,4 @@ export const DEFAULT_SUMMARY_TRIGGER_MESSAGES = 40
 export const SUMMARY_PROMPT_CHARS = 8_000
 
 /** 平台内置的 7 个基础工具包（全员必选，D19-②） */
-export const BASE_TOOL_PACKAGES = ['fs', 'cmd', 'memory', 'session', 'artifact', 'approval', 'task'] as const
+export const BASE_TOOL_PACKAGES = ['fs', 'cmd', 'memory', 'session', 'artifact', 'approval', 'task', 'interaction'] as const

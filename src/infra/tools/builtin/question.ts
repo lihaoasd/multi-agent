@@ -51,7 +51,7 @@ export function askUserTool(): { definition: ToolDefinition; handler: ToolHandle
   return {
     definition: {
       name: 'ask_user',
-      package: 'task',
+      package: 'interaction',
       description:
         '需要用户决策时向他提问并等待答复（本回合会阻塞在 waiting）。一次最多 6 个问题项；有选项时用户可直接点选。同一时刻只能有一个未答复的提问。',
       paramsSchema: {

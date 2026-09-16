@@ -103,7 +103,7 @@ export interface ToolRegistry {
   }[]
 }
 
-/** 工具包元数据（MVP 7 个基础包全员必选，D19-②） */
+/** 工具包元数据（8 个基础包全员必选，D19-② / S13；包不参与运行期授权，仅角色工具白名单 × 会话类型生效） */
 export interface ToolPackageInfo {
   readonly id: PackageId
   readonly name: string

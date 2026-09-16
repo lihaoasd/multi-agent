@@ -191,7 +191,7 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | 首页 · 项目模块（列表 + 创建向导：选工作目录 + 勾选角色） | project/team + fs/browse |
 | 首页 · Agent 模块（模板库：loop/提示词/工具/模型/场景；**提示词/loop/模型可提交**，工具只读） | team(模板) + model-config(模型条目) + tool-package |
 | 首页 · 模型模块（供应商/模型条目/默认路由/连通性测试） | model-config + ws |
-| 首页 · 工具模块（7 个基础包展示，只读） | tool-package |
+| 首页 · 工具模块（8 个基础包展示，只读；包内工具在详情弹窗查看） | tool-package |
 | 项目页 · 拓扑导航（**2 栏**：左画布 + 右三列表） | orchestration + agent.state + ws |
 | 项目页 · 对话导航（**3 栏**：左会话切换 + 中会话流含工作日志 + 右三列表） | session + ws |
 | 右栏三列表（任务 / 询问 / 审批） | task / question / approval |

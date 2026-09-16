@@ -1,9 +1,10 @@
 import type { ToolPackageInfo } from '../../ports/tools'
 
 /**
- * 内置工具包元数据（D19-②：7 个基础包全员必选）。
+ * 内置工具包元数据（D19-②，S13 起为 8 个基础包全员必选：`fs`/`cmd`/`memory`/`session`/`artifact`/`approval`/`task`/`interaction`）。
  * ⚠️ 这里是**声明**（展示态）；运行期是否可用取决于 `ToolRegistry` 里是否真的注册了对应工具
  * （S4 实现 fs/cmd/approval，S5 实现 memory/session，artifact/task 随 S6 落地，UI 按"挂载但运行期不可用"标注）。
+ * 归属口径：工具注册时的 `package` 字段与本表必须一致（`tests/integration/server/tool-packages-api.test.ts` 做一致性断言）。
  *
  * 位置说明：包元数据是**适配器数据**（要引用 ports 的 `ToolPackageInfo` 类型），因此放 infra 而非 shared
  * （shared 层不得依赖其它层，abstraction §2；由依赖门禁强制）。
@@ -72,9 +73,19 @@ export const BUILTIN_TOOL_PACKAGES: readonly ToolPackageInfo[] = [
   {
     id: 'task',
     name: '任务',
-    description: '任务查看/委派/领取/汇报（委派受编排图出边约束）+ 向用户提问（ask_user）',
-    tools: ['task_view', 'task_list', 'task_assign', 'task_claim', 'task_update', 'ask_user'],
+    description: '任务查看/委派/领取/汇报（委派受编排图出边约束）',
+    tools: ['task_view', 'task_list', 'task_assign', 'task_claim', 'task_update'],
     riskMax: 'low',
+    network: 'none',
+    required: true,
+    source: 'builtin',
+  },
+  {
+    id: 'interaction',
+    name: '交互',
+    description: '向用户提问并阻塞等待答复（Agent 唯一的人工决策通道）',
+    tools: ['ask_user'],
+    riskMax: 'none',
     network: 'none',
     required: true,
     source: 'builtin',

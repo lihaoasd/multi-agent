@@ -182,8 +182,8 @@ describe('API · 审批（规则 3 / 11）', () => {
   it('工具与 loop 的只读清单：注册态可区分（展示态 vs 生效态）', async () => {
     const packages = await inject({ method: 'GET', url: '/api/tool-packages' })
     const list = packages.json<Array<{ id: string; tools: Array<{ name: string; registered: boolean }> }>>()
-    expect(list).toHaveLength(7)
-    // S6 起 7 个基础包的工具全部真实注册（展示态 = 生效态）
+    expect(list).toHaveLength(8)
+    // S6 起基础包的工具全部真实注册（展示态 = 生效态）；S13 起 `ask_user` 独立为 `interaction` 包
     for (const item of list) {
       expect(item.tools.every((tool) => tool.registered)).toBe(true)
     }

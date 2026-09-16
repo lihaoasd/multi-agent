@@ -63,7 +63,7 @@
 说明：
 - `approval_request` 不列为模型工具：审批由执行器在工具命中 high/策略时自动产生（见 sandbox.md §5），Agent 无需也不能"替用户批准"。
 - **`ask_user` 是 Agent 向用户提问的唯一通道**：调用即 Agent `waiting`，右栏询问列表答复后继续；同一 Agent 至多 1 个待答（`ERR_QUESTION_PENDING`，D19-⑦）。
-- **工具包（D19-②）**：7 个基础包 `fs`/`cmd`/`memory`/`session`/`artifact`/`approval`/`task` **全员必选**；下表角色矩阵仍是**工具级授权真源**，包只是展示与未来挂载单位（见 tool-packages.md）。
+- **工具包（D19-② / S13）**：8 个基础包 `fs`/`cmd`/`memory`/`session`/`artifact`/`approval`/`task`/`interaction`（`interaction` 承载 `ask_user`）**全员必选**；下表角色矩阵仍是**工具级授权真源**，包只是展示与未来挂载单位（见 tool-packages.md）。
 - **可用根（B4 定稿）**：`fs_*` 的 allowedRoots=[workdir, ro://]；`workdir_edit`/`artifact_submit` allowedRoots=[workdir]。**所有产出都在项目工作目录内进行（无私有工作区）**：目录内容**全员可读**，写入一律经 `workdir_edit` 并按 `file-owners` 校验归属（只有归属自己的文件可改，详见 workspaces-artifacts.md §2）。loop runner 的工具可用性校验 = 角色白名单 × 会话类型 × allowedRoots，与 sandbox §3.2 的工具级可用根一致。
 - **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign/task_claim/task_update` 为**平台工具**，user 会话始终可用（不依赖角色模板快照）：`task_assign` 内部校验角色（仅 pm/product）→ 发布任务到任务栏（state=todo 待领取）+ 通知受派人；受派人 `task_claim` 领取（只能领自己的，槽位检查）→ in_progress；`task_update` 由受派人汇报，done/blocked/terminated 会通知委派人安排后续。状态变化同步推 WS `task.updated`。
 - 用户直接操作（右栏回退按钮、任务状态、停用实例等）不经工具注册表。
@@ -128,7 +128,7 @@ loop 步骤 → 模型输出 tool_call{callId, name, args}
 
 ## 实现口径（2026-09-15，S4/S5/S6/S9）
 
-- **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`（S4）；`memory_append`、`memory_search`、`session_search`（S5）；`workdir_edit`、`artifact_submit`、`artifact_rollback`、`task_view`、`task_list`、`task_assign`、`task_claim`、`task_update`、`ask_user`（S6）——**7 个基础包的工具已全部真实注册**（展示态 = 生效态）。
+- **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`（S4）；`memory_append`、`memory_search`、`session_search`（S5）；`workdir_edit`、`artifact_submit`、`artifact_rollback`、`task_view`、`task_list`、`task_assign`、`task_claim`、`task_update`、`ask_user`（S6）——**8 个基础包的工具已全部真实注册**（展示态 = 生效态）。
 - **S5 口径**：记忆写入只落**本人角色记忆**（全局记忆写入白名单在 `application/memory/memory-service.ts`，工具层不可越权）；检索可见性走 `domain/rules/visibility.ts`（D18-②，与 `GET /search` 同一份判定）。
 - **S6 口径**：`workdir_edit` 是唯一写通道（归属校验 `ERR_FORBIDDEN` + 署名 + 未结算改动暂存）；`artifact_submit` 的审批门由 `PolicyAction.kind='submit'` 按项目 `artifactPolicy` 判定（通过后 `approvalId` 写入 manifest）；`artifact_rollback` 风险 high（走审批），只允许回退自己提交的（用户经接口以提交者身份代行）；`ask_user` 经注入的询问桥落 `questions.jsonl` 并阻塞等待答复（同一 Agent 至多 1 个 pending）。`task_assign` 的**出边约束**（`ERR_ORCHESTRATION_EDGE`）随 S7 编排图落地。
 - **`ToolDefinition.policyAction`**（2026-09-15 新增）：把调用参数映射成策略输入；`cmd_run` 用它产出 `{kind:'command', program, args}`，使命令风险表生效。返回 `null` 表示参数非法（执行前直接 `ERR_VALIDATION`）。

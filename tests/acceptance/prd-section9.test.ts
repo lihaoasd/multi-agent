@@ -128,9 +128,9 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
   }
 
   it('脚本 1：可跑通全流程（工具包/模板 → 建项目 → 画布连线 → 对话启动 → 沿出边委派 → 领取 → 提问答复 → 汇报 → 产出物与记忆 → 重开恢复）', async () => {
-    // 1.1 首页可见：7 个基础工具包全部真实注册 + 8 个内置模板（含场景标签）
+    // 1.1 首页可见：8 个基础工具包全部真实注册（S13 起含独立 `interaction` 包）+ 8 个内置模板（含场景标签）
     const packages = await inject({ method: 'GET', url: '/api/tool-packages' })
-    expect(packages.json<Array<{ id: string; tools: Array<{ registered: boolean }> }>>()).toHaveLength(7)
+    expect(packages.json<Array<{ id: string; tools: Array<{ registered: boolean }> }>>()).toHaveLength(8)
     const templates = await inject({ method: 'GET', url: '/api/agent-templates' })
     const templateList = templates.json<Array<{ roleId: string; scenario?: string; source: string }>>()
     expect(templateList.filter((item) => item.source === 'builtin')).toHaveLength(8)
@@ -426,7 +426,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
     const plans = readdirSync(join(process.cwd(), 'docs', 'plan'))
     const changes = readdirSync(join(process.cwd(), 'docs', 'changes'))
-    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12']) {
+    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13']) {
       expect(plans.some((file) => file.includes(`-${stage}-`)), `plan ${stage}`).toBe(true)
       expect(changes.some((file) => file.includes(`-${stage}-`)), `changes ${stage}`).toBe(true)
     }
