@@ -9,6 +9,7 @@ import type {
   SegmentRef,
   SessionId,
   SessionLogStore,
+  SessionMeta,
   SessionMetaStore,
   StoredEvent,
 } from '../../ports/session'
@@ -226,6 +227,21 @@ export function createSessionLogStore(options: SessionLogStoreOptions): SessionL
           value: { ...value, segments: rotated.value },
         }))
         return updated.ok ? ok(rotated.value) : updated
+      })
+    },
+
+    async reset(projectId: ProjectId, sessionId: SessionId): Promise<Result<SessionMeta>> {
+      return lock.withLock(`session:${sessionId}`, async () => {
+        const meta = await metaStore.get(projectId, sessionId)
+        if (!meta.ok) return meta
+        for (const segment of meta.value.segments) {
+          await fileStore.remove(`${sessionsDir(projectId)}/${segment.file}`)
+        }
+        const updated = await metaStore.update(projectId, sessionId, (value) => ({
+          ok: true,
+          value: { ...value, lastSeq: 0, segments: [], updatedAt: clock.now().toISOString() },
+        }))
+        return updated.ok ? ok(updated.value) : updated
       })
     },
   }

@@ -332,14 +332,13 @@ export function registerBuiltinTools(
         readonly instanceId: string
       }) => Promise<Result<readonly { id: string; kind: string; status: string; summary: string }[]>>
     },
-): void {
-  const tools = [
+): void {  const tools = [
     fsReadFileTool(deps),
     fsListDirTool(deps),
     fsSearchTool(deps),
     cmdRunTool(deps),
     approvalQueryTool({ listOwn: deps.listOwnApprovals }),
-    ...memoryTools({ memory: deps.memory, search: deps.search }),
+    ...memoryTools({ memory: deps.memory, search: deps.search, sessionLog: deps.sessionLog }),
     ...artifactTools({ artifacts: deps.artifacts, paths: deps.paths, activeTaskId: deps.activeTaskId }),
     ...taskTools({ tasks: deps.tasks }),
     askUserTool(),

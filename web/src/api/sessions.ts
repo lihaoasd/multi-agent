@@ -75,6 +75,8 @@ export const sessionApi = {
     apiRequest('POST', `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/messages`, {
       text,
     }),
+  reset: (projectId: string, sessionId: string): Promise<unknown> =>
+    apiRequest('POST', `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/reset`, {}),
   status: (projectId: string): Promise<AgentStatus[]> =>
     apiRequest('GET', `/api/projects/${encodeURIComponent(projectId)}/agents`),
   pause: (projectId: string, instanceId: string): Promise<unknown> =>

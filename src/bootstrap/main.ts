@@ -24,14 +24,7 @@ async function main(): Promise<void> {
       if (reset.ok && reset.value > 0) {
         deps.logger.warn('清理了重启遗留的 Agent 占用', { projectId: summary.id, cleared: reset.value })
       }
-      // 未完成回合（缺 turn_end）：**不自动续跑**，只记录待用户三选（D16-③/D17-⑤）
-      const unfinished = await deps.recovery.listUnfinished(summary.id)
-      if (unfinished.ok && unfinished.value.length > 0) {
-        deps.logger.warn('存在未完成回合（等待用户选择：汇报中断点/继续执行/忽略）', {
-          projectId: summary.id,
-          turns: unfinished.value.map((item) => `${item.sessionId}#${item.turn}`),
-        })
-      }
+      // S21/D27：平台不再判定"未完成回合"——上一回合是否收尾由 Agent 自查会话事件（session_recent）判断。
     }
   }
 
@@ -57,7 +50,6 @@ async function main(): Promise<void> {
       questions: deps.questions,
       orchestration: deps.orchestration,
       runtime: deps.runtime,
-      recovery: deps.recovery,
       exporter: deps.exporter,
       toolRegistry: deps.toolRegistry,
       toolPackages: deps.toolPackages,

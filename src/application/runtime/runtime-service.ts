@@ -2,22 +2,22 @@ import type { Clock } from '../../ports/clock'
 import type { Dispatcher, DispatcherStateStore } from '../../ports/dispatcher'
 import type { Logger } from '../../ports/logger'
 import type { ProjectId, ProjectStore } from '../../ports/project'
-import type { RecoveryService, RuntimeAgentView, RuntimeService, RuntimeSnapshot } from '../../ports/runtime'
+import type { RuntimeAgentView, RuntimeService, RuntimeSnapshot } from '../../ports/runtime'
 import type { TaskService } from '../../ports/task'
 import type { SessionService } from '../session/session-service'
 import { ok, type Result } from '../../shared/result'
 
 /**
  * 运行控制（D17-⑥、orchestration.md §5）：
- * - `snapshot`：「n 个 Agent 正在工作」细条数据（占用者 + 当前任务 + 最近 plan 状态 + 未完成回合）；
+ * - `snapshot`：「n 个 Agent 正在工作」细条数据（占用者 + 当前任务 + 最近 plan 状态）；
  * - `stop`：`turn`=停当前回合输出（队列保留，任务继续）；`task`=终止当前任务（**先结算未结算改动**为 code artifact）。
+ * ⚠️ S21/D27：未完成回合的判定与恢复已从本服务移除（改由 Agent 自查 + `ask_user` 询问）。
  */
 
 export interface RuntimeServiceOptions {
   readonly projects: ProjectStore
   readonly sessions: SessionService
   readonly tasks: TaskService
-  readonly recovery: RecoveryService
   readonly dispatcher: Dispatcher
   readonly stateStore: DispatcherStateStore
   readonly clock: Clock
@@ -45,11 +45,6 @@ export function createRuntimeService(options: RuntimeServiceOptions): RuntimeSer
       if (!statuses.ok) return statuses
       const state = await options.stateStore.load(projectId)
       if (!state.ok) return state
-      const unfinished = await options.recovery.listUnfinished(projectId)
-      if (!unfinished.ok) return unfinished
-      const unfinishedByInstance = new Map(
-        unfinished.value.filter((turn) => turn.resolvedBy === null).map((turn) => [turn.instanceId, turn.turn]),
-      )
 
       const working: RuntimeAgentView[] = []
       let idle = 0
@@ -77,7 +72,6 @@ export function createRuntimeService(options: RuntimeServiceOptions): RuntimeSer
           startedAt: state.value.occupancy[status.instanceId]?.since ?? null,
           taskTitle: active.ok ? (active.value?.title ?? null) : null,
           planStatus: await planStatusOf(projectId, sessionId, turn),
-          unfinishedTurn: unfinishedByInstance.get(status.instanceId) ?? null,
         })
       }
       return ok({ projectId, working, idle, paused, queuedTotal })

@@ -172,6 +172,15 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
     const pmEvents = pmLog.json<Array<{ kind: string; payload: Record<string, unknown> }>>()
     expect(pmEvents.some((event) => event.kind === 'tool_call' && event.payload['tool'] === 'task_assign')).toBe(true)
 
+    // S24 回归钉子：**真实 loop 产出的事件**与消费者（session_recent / 前端展示映射）读同一批字段。
+    // 起因：S22 按 `name`/`args`/`text` 读取，界面把工具名显示成「工具」、参数与结果全空（fixture 曾与生产者不一致）。
+    const realCall = pmEvents.find((event) => event.kind === 'tool_call' && event.payload['tool'] === 'task_assign')
+    expect(typeof realCall?.payload['input']).toBe('string')
+    const recentPm = await callTool('session_recent', { limit: 50 }, 'pm_1')
+    expect(recentPm.ok).toBe(true)
+    expect(String(recentPm.ok ? recentPm.text : '')).toContain('工具调用 task_assign')
+    expect(String(recentPm.ok ? recentPm.text : '')).toContain(String(realCall?.payload['input']).slice(0, 30))
+
     const tasks = await inject({ method: 'GET', url: `/api/projects/${projectId}/tasks` })
     const task = tasks.json<TaskRecord[]>()[0]
     if (task === undefined) throw new Error('委派未产生任务')
@@ -431,7 +440,7 @@ describe('prd §9 验收脚本 1~8（S9 全量验收）', () => {
 
     const plans = readdirSync(join(process.cwd(), 'docs', 'plan'))
     const changes = readdirSync(join(process.cwd(), 'docs', 'changes'))
-    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20']) {
+    for (const stage of ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 's12', 's13', 's14', 's15', 's16', 's17', 's18', 's19', 's20', 's21', 's22', 's23', 's24', 's25', 's26', 's27', 's28', 's29']) {
       expect(plans.some((file) => file.includes(`-${stage}-`)), `plan ${stage}`).toBe(true)
       expect(changes.some((file) => file.includes(`-${stage}-`)), `changes ${stage}`).toBe(true)
     }

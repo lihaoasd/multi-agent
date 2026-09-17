@@ -1,10 +1,13 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createTestServer, type TestContext } from '../../helpers-server'
 import { configureTestModel } from '../../helpers-model'
+import { missingBasePackages } from '../../../src/domain/rules/tool-packages'
+import { BASE_TOOL_PACKAGES } from '../../../src/shared/loop'
 
 interface InstanceBody {
   instanceId: string
@@ -92,6 +95,30 @@ describe('API · 项目与团队（FR-01/FR-02、规则 8）', () => {
     // 快照必须落到实例里（D16-⑤：模板后续变更不影响既有实例）
     expect(dev?.snapshot.systemPrompt.length).toBeGreaterThan(0)
     expect(dev?.snapshot.capturedAt.length).toBeGreaterThan(0)
+
+    // S25：8 个基础包「全员必装」——每个实例快照都必须包含完整 8 个包
+    for (const member of project.team) {
+      const packages = (member.snapshot as { packages?: readonly string[] }).packages ?? []
+      expect(missingBasePackages(packages), `${member.instanceId} 缺少基础包`).toEqual([])
+    }
+  })
+
+  it('S25：基础包全员必装——旧实例快照缺包时，读取侧自动补齐（不改磁盘数据）', async () => {
+    // 模拟 S13 之前创建的实例：磁盘上的快照 packages 为空
+    const file = `${context.dataDir}/projects/${projectId}/project.json`
+    const raw = JSON.parse(await readFile(file, 'utf8')) as {
+      team: Array<{ instanceId: string; snapshot: Record<string, unknown> }>
+    }
+    for (const member of raw.team) member.snapshot['packages'] = []
+    await context.deps.fileStore.writeJsonAtomic(file, raw)
+
+    const team = await inject({ method: 'GET', url: `/api/projects/${projectId}/team` })
+    expect(team.statusCode).toBe(200)
+    const members = team.json<Array<{ instanceId: string; effective: { packages: readonly string[] } }>>()
+    expect(members).toHaveLength(8)
+    for (const member of members) {
+      expect(member.effective.packages, `${member.instanceId} 的有效配置缺基础包`).toEqual([...BASE_TOOL_PACKAGES])
+    }
   })
 
   it('列表与详情：memberCount/enabledCount 正确', async () => {

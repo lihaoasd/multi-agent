@@ -39,6 +39,8 @@ export interface SessionService {
     opts?: ReadWindowOptions,
   ): Promise<Result<readonly StoredEvent[]>>
   append(projectId: string, sessionId: SessionId, events: readonly NewEvent[]): Promise<Result<readonly StoredEvent[]>>
+  /** 新对话：清空该会话全部历史事件 */
+  reset(projectId: string, sessionId: SessionId): Promise<Result<SessionMeta>>
   /** 实例停用/启用时同步会话状态（停用 → archived 只读；启用 → active），D14-9 */
   syncInstanceState(projectId: string, instanceId: string, enabled: boolean): Promise<Result<SessionMeta>>
 }
@@ -150,6 +152,10 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         return err('ERR_CONFLICT', '该会话已归档（实例已停用），不能写入', { sessionId })
       }
       return pipeline.append(projectId, sessionId, events)
+    },
+
+    async reset(projectId: string, sessionId: SessionId): Promise<Result<SessionMeta>> {
+      return logStore.reset(projectId, sessionId)
     },
 
     async syncInstanceState(

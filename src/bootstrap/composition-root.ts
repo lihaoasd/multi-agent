@@ -10,7 +10,6 @@ import { createArtifactService } from '../application/artifact/artifact-service'
 import { createOrchestrationService } from '../application/orchestration/orchestration-service'
 import { createTaskService } from '../application/task/task-service'
 import { createQuestionService } from '../application/question/question-service'
-import { createRecoveryService } from '../application/recovery/recovery-service'
 import { createRuntimeService } from '../application/runtime/runtime-service'
 import { createProjectExporter } from '../application/runtime/exporter'
 import { createToolExecutor } from '../application/tools/tool-executor'
@@ -75,7 +74,7 @@ import type { DirectoryBrowser } from '../ports/fs-browse'
 import type { LockManager } from '../ports/lock'
 import type { ArtifactService, ArtifactStore } from '../ports/artifact'
 import type { OrchestrationService, OrchestrationStore } from '../ports/orchestration'
-import type { ProjectExporter, RecoveryService, RuntimeService } from '../ports/runtime'
+import type { ProjectExporter, RuntimeService } from '../ports/runtime'
 import type { QuestionService, QuestionStore } from '../ports/question'
 import type { TaskService, TaskStore } from '../ports/task'
 import type { WorkdirFs } from '../ports/workdir'
@@ -388,7 +387,6 @@ export interface AppDeps {
   readonly questions: QuestionService
   readonly orchestration: OrchestrationService
   readonly runtime: RuntimeService
-  readonly recovery: RecoveryService
   readonly exporter: ProjectExporter
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
@@ -569,6 +567,7 @@ export function resolveDeps(
     cmd: container.resolve<CmdRunner>(TOKENS.CmdRunner),
     memory,
     search,
+    sessionLog: container.resolve<SessionLogStore>(TOKENS.SessionLogStore),
     artifacts,
     tasks,
     activeTaskId: async ({ projectId, instanceId }) => {
@@ -663,24 +662,11 @@ export function resolveDeps(
     await dispatcher.drain(input.projectId, input.instanceId)
   }
 
-  // S8：未完成回合恢复 + 运行控制 + 项目导出
-  const recovery = createRecoveryService({
-    sessions,
-    clock,
-    wake,
-    projectSessions: async (projectId) => {
-      const listed = await sessions.list(projectId)
-      return listed.ok
-        ? { ok: true as const, value: listed.value.map((item) => ({ sessionId: item.sessionId, instanceId: item.instanceId })) }
-        : listed
-    },
-  })
-
+  // S8/S21：运行控制 + 项目导出（未完成回合的判定与恢复已在 S21/D27 移除，改由 Agent 自查 + ask_user）
   const runtime = createRuntimeService({
     projects: container.resolve(TOKENS.ProjectStore),
     sessions,
     tasks,
-    recovery,
     dispatcher,
     stateStore: container.resolve(TOKENS.DispatcherStateStore),
     clock,
@@ -729,7 +715,6 @@ export function resolveDeps(
     questions,
     orchestration,
     runtime,
-    recovery,
     exporter,
     toolRegistry,
     toolPackages,

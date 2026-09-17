@@ -4,6 +4,7 @@ import type { IdGenerator } from '../../ports/id'
 import type { ConfigAuditWriter, ModelCatalog } from '../../ports/model-config'
 import type { ProjectStore, RoleInstance } from '../../ports/project'
 import type { LoopConfig, RoleTemplateStore } from '../../ports/role-templates'
+import { normalizePackages } from '../../domain/rules/tool-packages'
 import { err, ok, type Result } from '../../shared/result'
 import {
   describeInstanceOverrides,
@@ -195,7 +196,7 @@ export function createTeamService(options: TeamServiceOptions): TeamService {
           systemPrompt: template.systemPrompt,
           defaultModel: template.defaultModel,
           defaultLoop: template.defaultLoop,
-          packages: template.packages,
+          packages: normalizePackages(template.packages),
           tools: template.tools,
           artifactTypes: template.artifactTypes,
           defaultApprovalRules: template.defaultApprovalRules,

@@ -1,11 +1,12 @@
-import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Space, Tag, Tooltip, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
 import { useRealtime } from '../hooks/useRealtime'
 import { RightColumn } from './RightColumn'
-import { RecoveryBanner } from './RecoveryBanner'
+import { Markdown } from '../components/Markdown'
+import { eventRow, isToolFailed, messageTextOf } from '../lib/event-display'
 import { runtimeApi } from '../api/runtime'
 
 interface SessionPanelProps {
@@ -51,30 +52,14 @@ function writeCollapsed(value: CollapsedState): void {
   }
 }
 
-function eventText(event: StoredEvent): string {
-  const payload = event.payload
-  if (event.kind === 'message') {
-    const text = typeof payload['text'] === 'string' ? payload['text'] : undefined
-    if (text !== undefined) return text
-    const content = payload['content']
-    if (typeof content === 'object' && content !== null) {
-      const value = (content as Record<string, unknown>)['text']
-      if (typeof value === 'string') return value
-    }
-    return '（空消息）'
-  }
-  if (typeof payload['text'] === 'string') return payload['text']
-  if (typeof payload['message'] === 'string') return payload['message']
-  return JSON.stringify(payload)
-}
-
-function isChatEvent(event: StoredEvent): boolean {
-  return event.kind === 'message'
-}
+/**
+ * 会话流展示的事件类别（S22）：对话 + 思考 + 工具调用（含结果）+ 错误；不再有筛选与"工作日志"折叠包装。
+ * 事件→文本的映射在 `lib/event-display.ts`（纯函数，带单测；S24 修复字段名不一致导致的"工具不显示"）。
+ */
+const VISIBLE_KINDS = ['message', 'thought', 'tool_call', 'tool_result', 'error'] as const
 
 /**
- * 会话面板（S3：会话 / 单工 / 队列 / WS 实时）。
- * 完整三栏工作台（工作日志折叠、右栏三列表）在 S7 交付；这里先把"能对话、能看见事件与状态"跑通。
+ * 会话面板（S3：会话 / 单工 / 队列 / WS 实时；S22：会话流只内联展示对话/思考/工具调用/错误）。
  */
 export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -84,8 +69,6 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  /** 事件 kind 过滤（ui.md §4：仅看对话 / 显示全部事件 / 指定 kind） */
-  const [kindFilter, setKindFilter] = useState<'message' | 'all' | string>('message')
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
   /** 已应用过的聚焦令牌（S17）：只在匹配到目标会话时记录，避免会话列表刷新时覆盖用户的手动选择 */
   const appliedFocusRef = useRef<number | null>(null)
@@ -241,45 +224,15 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   }
 
   const visibleEvents = useMemo(
-    () =>
-      kindFilter === 'all'
-        ? events
-        : events.filter((event) => (kindFilter === 'message' ? isChatEvent(event) : event.kind === kindFilter)),
-    [events, kindFilter],
+    () => events.filter((event) => (VISIBLE_KINDS as readonly string[]).includes(event.kind)),
+    [events],
   )
-
-  /** 工作日志折叠：把连续的"非对话事件"合成一张可展开卡片（默认折叠，ui.md §4） */
-  const stream = useMemo(() => {
-    const groups: (
-      | { readonly kind: 'message'; readonly event: StoredEvent }
-      | { readonly kind: 'log'; readonly key: string; readonly events: readonly StoredEvent[] }
-    )[] = []
-    let buffer: StoredEvent[] = []
-    const flush = (): void => {
-      if (buffer.length === 0) return
-      groups.push({ kind: 'log', key: `log-${buffer[0]?.seq ?? 0}`, events: buffer })
-      buffer = []
-    }
-    for (const event of visibleEvents) {
-      if (isChatEvent(event)) {
-        flush()
-        groups.push({ kind: 'message', event })
-      } else {
-        buffer.push(event)
-      }
-    }
-    flush()
-    return groups
-  }, [visibleEvents])
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       {error !== null && <Alert type="error" showIcon message={error} />}
       {/* 连接正常不提示（S16 用户口径）：只保留"坏消息"——断开/重连中才出现，避免常驻占版面 */}
       {!realtime.connected && <Alert type="warning" showIcon message="实时通道未连接，正在重试…" />}
-      {activeSessionId !== null && (
-        <RecoveryBanner projectId={projectId} sessionId={activeSessionId} onResolved={() => void loadEvents(activeSessionId)} />
-      )}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         {collapsed.left ? (
           <Tooltip title="展开会话列表" placement="right">
@@ -346,23 +299,23 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
           }
           extra={
             <Space>
-              <Select
-                size="small"
-                style={{ width: 150 }}
-                value={kindFilter}
-                onChange={(value: string) => setKindFilter(value)}
-                options={[
-                  { value: 'message', label: '仅看对话' },
-                  { value: 'all', label: '显示全部事件（折叠）' },
-                  { value: 'thought', label: '思考 thought' },
-                  { value: 'plan', label: '计划 plan' },
-                  { value: 'tool_call', label: '工具调用 tool_call' },
-                  { value: 'tool_result', label: '工具结果 tool_result' },
-                  { value: 'summary', label: '摘要 summary' },
-                  { value: 'turn_start', label: '回合边界' },
-                  { value: 'error', label: '错误 error' },
-                ]}
-              />
+              <Popconfirm
+                title="开启新对话？"
+                description="清空该 Agent 的全部历史消息，重新开始。"
+                onConfirm={async () => {
+                  if (activeSessionId === null) return
+                  try {
+                    await sessionApi.reset(projectId, activeSessionId)
+                    message.success('已开启新对话')
+                    setEvents([])
+                    await loadSessions()
+                  } catch (cause) {
+                    message.error(describeError(cause))
+                  }
+                }}
+              >
+                <Button size="small">新对话</Button>
+              </Popconfirm>
               <Button size="small" onClick={() => activeSessionId !== null && void loadEvents(activeSessionId)}>
                 刷新
               </Button>
@@ -392,55 +345,90 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
         >
           {/* 消息区高度自适应视口（S20）：原来写死 420px，1080p 屏上白白浪费约 500px */}
           <div style={{ maxHeight: 'calc(100vh - 350px)', minHeight: 300, overflowY: 'auto', paddingRight: 8 }}>
-            {visibleEvents.length === 0 && <Empty description="还没有消息：在下面输入框说点什么" />}
+            {visibleEvents.length === 0 && <Empty description="还没有内容：在下面输入框说点什么" />}
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {stream.map((item) => {
-                if (item.kind === 'log') {
+              {visibleEvents.map((event) => {
+                if (event.kind === 'message') {
+                  const role = String(event.payload['role'] ?? '')
+                  const align = role === 'user' ? 'flex-end' : 'flex-start'
+                  const background = role === 'user' ? '#e6f4ff' : '#f6ffed'
                   return (
-                    <Collapse
-                      key={item.key}
-                      size="small"
-                      items={[
-                        {
-                          key: item.key,
-                          label: `工作日志 · ${item.events.length} 条（${[...new Set(item.events.map((event) => event.kind))].join('/')}）`,
-                          children: (
-                            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                              {item.events.map((event) => (
-                                <div key={event.seq} style={{ background: '#fafafa', borderRadius: 6, padding: '4px 8px' }}>
-                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                    #{event.seq} · {event.kind} · turn {event.turn}
-                                  </Typography.Text>
-                                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{eventText(event)}</div>
-                                </div>
-                              ))}
-                            </Space>
-                          ),
-                        },
-                      ]}
-                    />
+                    <div key={event.seq} style={{ display: 'flex', justifyContent: align }}>
+                      <div
+                        style={{
+                          background,
+                          borderRadius: 6,
+                          padding: '6px 10px',
+                          maxWidth: '80%',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          #{event.seq} · {event.kind}
+                          {role.length > 0 ? ` · ${role}` : ''} · turn {event.turn}
+                        </Typography.Text>
+                        {/* S23：对话消息按 Markdown 渲染（自研零依赖，不注入 HTML） */}
+                        <Markdown text={messageTextOf(event)} />
+                      </div>
+                    </div>
                   )
                 }
-                const event = item.event
-                const role = String(event.payload['role'] ?? '')
-                const align = role === 'user' ? 'flex-end' : 'flex-start'
-                const background = role === 'user' ? '#e6f4ff' : '#f6ffed'
+                // S22：思考 / 工具调用 / 工具结果 / 错误直接内联展示（不再折叠成"工作日志"）
+                // S24：字段名与生产者 strategies.ts 对齐；S26：工具结果条目只显示工具名（正文与序号不显示）
+                const failed = isToolFailed(event)
+                const row = eventRow(event)
+                const tone =
+                  event.kind === 'error' || failed
+                    ? { background: '#fff2f0', border: '1px solid #ffccc7' }
+                    : event.kind === 'tool_call'
+                      ? { background: '#f0f5ff', border: '1px solid #d6e4ff' }
+                      : { background: '#fafafa', border: '1px solid #f0f0f0' }
                 return (
-                  <div key={event.seq} style={{ display: 'flex', justifyContent: align }}>
+                  <div key={event.seq} style={{ display: 'flex', justifyContent: 'flex-start' }}>
                     <div
                       style={{
-                        background,
+                        ...tone,
                         borderRadius: 6,
-                        padding: '6px 10px',
-                        maxWidth: '80%',
+                        padding: '4px 8px',
+                        maxWidth: '85%',
                         whiteSpace: 'pre-wrap',
+                        fontSize: 12,
                       }}
                     >
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        #{event.seq} · {event.kind}
-                        {role.length > 0 ? ` · ${role}` : ''} · turn {event.turn}
-                      </Typography.Text>
-                      <div>{eventText(event)}</div>
+                      {row.showMeta ? (
+                        row.bodyMode === 'collapsed' ? (
+                          // S28：工具调用参数默认折叠（点标题展开看参数结构）
+                          <Collapse
+                            ghost
+                            size="small"
+                            style={{ background: 'transparent' }}
+                            items={[
+                              {
+                                key: String(event.seq),
+                                label: (
+                                  <Typography.Text style={{ fontSize: 12 }}>
+                                    {row.label} · #{event.seq} · turn {event.turn}
+                                  </Typography.Text>
+                                ),
+                                children: (
+                                  <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                    {row.body}
+                                  </pre>
+                                ),
+                              },
+                            ]}
+                          />
+                        ) : (
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            {row.label} · #{event.seq} · turn {event.turn}
+                          </Typography.Text>
+                        )
+                      ) : (
+                        <span style={{ fontWeight: failed ? 600 : 400 }}>{row.label}</span>
+                      )}
+                      {row.body !== null && row.bodyMode === 'inline' && (
+                        <div style={{ whiteSpace: 'pre-wrap' }}>{row.body}</div>
+                      )}
                     </div>
                   </div>
                 )

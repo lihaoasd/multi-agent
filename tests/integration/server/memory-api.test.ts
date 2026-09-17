@@ -219,6 +219,64 @@ describe('API · 记忆与检索（规则 6 / 7 / 13）', () => {
     expect(crossSession.ok && crossSession.text).toContain('没有找到')
   })
 
+  it('工具：session_recent 给出本会话最近事件（含回合边界），由 Agent 自行判断是否收尾（S21/D27）', async () => {
+    const call = async (name: string, args: unknown, instanceId: string): Promise<ToolOutcome> => {
+      const entry = context.deps.toolRegistry.get(name)
+      expect(entry).toBeDefined()
+      if (entry === undefined) throw new Error(`工具未注册：${name}`)
+      const toolContext: ToolCallContext = {
+        projectId,
+        instanceId,
+        sessionId: `u_${instanceId}`,
+        sessionType: 'user',
+        turn: 3,
+        sourceSeq: 1,
+        roots: { workdir: process.cwd(), runtime: process.cwd(), readonly: [] },
+        requestApproval: async () => ({ ok: true, value: { decision: 'approved' as const, approvalId: null } }),
+        signal: new AbortController().signal,
+      }
+      return entry.handler(args, toolContext)
+    }
+
+    // 回合 3 只有 turn_start（被中断，没有 turn_end）
+    // ⚠️ payload 字段**照抄生产者**（application/agent-loop/strategies.ts）：tool_call={tool,callId,input}、tool_result={tool,callId,ok,summary}
+    await context.deps.sessions.append(projectId, 'u_dev_1', [
+      { kind: 'turn_start', turn: 3, payload: { turnId: 'turn_3', loopStep: 'plan-execute', steps: [{ id: 's1' }] } },
+      { kind: 'plan', turn: 3, payload: { steps: [{ id: 's1' }, { id: 's2' }], status: 'running' } },
+      { kind: 'tool_call', turn: 3, payload: { tool: 'fs_read_file', callId: 'call_1', input: '{"path":"src/a.ts"}' } },
+      { kind: 'tool_result', turn: 3, payload: { tool: 'fs_read_file', callId: 'call_1', ok: true, summary: '读到了文件' } },
+    ])
+
+    const recent = await call('session_recent', {}, 'dev_1')
+    expect(recent.ok).toBe(true)
+    // 事实层：seq / turn / 回合边界 / 摘要都在（不给"未完成"这种平台结论）
+    expect(recent.text).toContain('turn 3')
+    expect(recent.text).toMatch(/^#\d+ \[turn 3\][^\n]*【回合开始】/m)
+    expect(recent.text).toContain('loop=plan-execute')
+    expect(recent.text).toContain('计划（running）')
+    expect(recent.text).toContain('工具调用 fs_read_file')
+    expect(recent.text).toContain('"path":"src/a.ts"')
+    expect(recent.text).toContain('工具结果（成功 fs_read_file）')
+    expect(recent.text).toContain('读到了文件')
+    expect(recent.text).not.toContain('未完成回合')
+    expect(recent.data?.['events']).toBeGreaterThan(0)
+
+    // 尾窗：limit=1 只给最后一条事件（提示行不算事件行）
+    const tail = await call('session_recent', { limit: 1 }, 'dev_1')
+    expect(tail.text).toContain('最近 1 条事件')
+    expect(tail.text).toMatch(/^#\d+ \[turn 3\][^\n]*工具结果（成功 fs_read_file）/m)
+    expect(tail.text).not.toMatch(/^#\d+ [^\n]*【回合开始】/m)
+
+    // 只读自己的会话：参数里没有 sessionId（不存在越权读他人会话的入口）
+    const definition = context.deps.toolRegistry.get('session_recent')?.definition
+    expect(Object.keys((definition?.paramsSchema['properties'] ?? {}) as Record<string, unknown>)).toEqual(['limit'])
+
+    // 完整回合（含 turn_end）也照样如实呈现，判断权在 Agent
+    await context.deps.sessions.append(projectId, 'u_dev_1', [{ kind: 'turn_end', turn: 3, payload: { status: 'done' } }])
+    const closed = await call('session_recent', { limit: 1 }, 'dev_1')
+    expect(closed.text).toMatch(/^#\d+ \[turn 3\][^\n]*【回合结束】/m)
+  })
+
   it('系统提示词预览出现记忆块（与运行期同源；规则 6）', async () => {
     const preview = await inject({
       method: 'GET',
@@ -233,5 +291,11 @@ describe('API · 记忆与检索（规则 6 / 7 / 13）', () => {
     // 运行期同源：全局记忆与个人记忆分别进块
     expect(body.blocks.find((block) => block.id === 'global-memory')?.text).toContain('登录方案采用 JWT')
     expect(body.blocks.find((block) => block.id === 'role-memory')?.text).toContain('用户偏好中文注释')
+
+    // S21/D27：中断收尾的职责写进「平台角色定位」（平台不再判定，由 Agent 自查 + 询问）
+    const platformRole = body.blocks.find((block) => block.id === 'platform-role')?.text ?? ''
+    expect(platformRole).toContain('session_recent')
+    expect(platformRole).toContain('ask_user')
+    expect(platformRole).toContain('不要擅自续跑')
   })
 })

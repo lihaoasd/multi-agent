@@ -57,9 +57,9 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 > | 通用参数 `maxIterations` / `stepModelOverride` / `toolBudget` | 三者均有消费者（步数、步骤级模型覆盖、工具调用上限） |
 > | 可中断点 | 每步开始检查中断（暂停 → abort 回合）；`plan` 事件写 `status='interrupted'` 后正常收尾 |
 >
-> 仍未做：`plan` 事件的**跨重启消费**（恢复时读取计划续做）属 S8 的未完成回合恢复；本轮只保证事件与进度落盘。
+> 仍未做：`plan` 事件的**跨重启消费**（恢复时读取计划续做）已随 S21/D27 取消平台侧恢复，改由 Agent 自行读取 `session_recent` 与 plan 事件判断（§7）。
 >
-> **S8 实现口径（2026-09-15）**：未完成回合 = 事件流中**缺 `turn_end`** 的 `turn_start`（按事件顺序用栈配对，回合号复用也能认出来），`GET /api/projects/:pid/recovery` 给出 `loopStep/lastPlan{steps,status}/startedAt`；`POST .../sessions/:sid/recovery {turn,action}` 支持 `report`（汇报中断点）/`continue`（读最近 `plan` 继续）/`complete`（补全被截断回复）/`ignore`（静默忽略），前四者中前三者注入系统消息唤醒一轮、全部落 `state` 标记，**平台不自动续跑**（D16-③）；`stop(scope=turn)`=停当前回合输出且游标不推进（队列保留），`stop(scope=task)`=终止当前任务（未结算改动先结算为 code artifact）。
+> **S8 实现口径（2026-09-15；恢复部分已由 S21/D27 于 2026-09-16 更正）**：`stop(scope=turn)`=停当前回合输出且游标不推进（队列保留），`stop(scope=task)`=终止当前任务（未结算改动先结算为 code artifact）。原 `GET /api/projects/:pid/recovery` 与 `POST .../sessions/:sid/recovery`（三选 `report`/`continue`/`complete`/`ignore` + 平台预设提示词）**已删除**：平台不再判定未完成回合、也不给固定选项，改由 Agent 用 `session_recent` 自查后用 `ask_user` 询问用户（见 §7，prd D27）。
 
 loop = 一次"Agent 处理一条新输入"的执行编排。**目标形态**为策略注册表（strategy name → runner），用户只做选择与参数配置（不写代码，MVP）。
 
@@ -80,7 +80,7 @@ loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮�
 6. 回合结束触发记忆维护（memory.md §5 摘要引擎）；
 7. 回到 idle，处理队列中下一条（若存在）。
 
-> 长任务（D16-③/D17-①）：plan-execute 是**单回合多步长跑**——turn_start 开启后连续执行，到"向用户汇报/提交产出"的自然停顿点才写 turn_end；回合内暂停仅三类：命中审批（Agent waiting）、**等待用户答复询问（Agent waiting，D19-⑦）**、**用户终止任务**（D17-①：显式优先级指令，到当前可中断点打断并回注，停止该任务后续步骤）。恢复均由 dispatcher 在**同一会话内**续跑（plan 事件为断点依据，见下）；**用户普通消息在回合期间只入队、不打断**（可中断点是审批/用户终止使用的优先级闸门，不对普通消息开放）；**跨重启不自动续跑**：缺 turn_end=回合未完成，打开项目/重连时 UI 给出"汇报中断点/续做/忽略"入口（D17-⑤），或由用户下一条消息触发（agent-runtime §7、memory.md §6）。**排队消息恢复（D18-③，与"未完成回合不自动续跑"区分）**：重启后若某 Agent **无活动占用**且其 user 会话存在已入队未处理消息（按 dispatcher per-agent 游标 `lastHandledSeq` 判定），自动补一轮处理或由 UI 强提示，不要求用户再发消息唤醒——这里恢复的是**排队消息处理**，不续跑缺 turn_end 的未完成回合。
+> 长任务（D16-③/D17-①）：plan-execute 是**单回合多步长跑**——turn_start 开启后连续执行，到"向用户汇报/提交产出"的自然停顿点才写 turn_end；回合内暂停仅三类：命中审批（Agent waiting）、**等待用户答复询问（Agent waiting，D19-⑦）**、**用户终止任务**（D17-①：显式优先级指令，到当前可中断点打断并回注，停止该任务后续步骤）。恢复均由 dispatcher 在**同一会话内**续跑（plan 事件为断点依据，见下）；**用户普通消息在回合期间只入队、不打断**（可中断点是审批/用户终止使用的优先级闸门，不对普通消息开放）；**跨重启不自动续跑**：缺 `turn_end` 即回合未完成，平台**不判定也不提示**（S21/D27 修订 D17-⑤）——由 Agent 在被唤醒时用 `session_recent` 自查并 `ask_user` 询问用户（§7）。**排队消息恢复（D18-③，与"未完成回合不自动续跑"区分）**：重启后若某 Agent **无活动占用**且其 user 会话存在已入队未处理消息（按 dispatcher per-agent 游标 `lastHandledSeq` 判定），自动补一轮处理或由 UI 强提示，不要求用户再发消息唤醒——这里恢复的是**排队消息处理**，不续跑缺 turn_end 的未完成回合。
 
 ## 4. 上下文组装（每回合）
 
@@ -140,6 +140,7 @@ loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮�
 | fs_read_file / fs_list_dir / fs_search | workdir + ro:// 只读 | none | **工作目录内容全员可读**（角色间共享）；ro:// 为只读平台资源 |
 | memory_append / memory_search | 记忆 | none | 个人记忆写、项目全局只读(默认；全局写仅 pm 例外) |
 | session_search | 本项目会话 | none | 关键词检索 |
+| session_recent | 本会话 | none | **本会话最近事件流水（含【回合开始】/【回合结束】边界）**，只读自己的会话；供 Agent 自查"上一回合是否收尾"（S21/D27，只给事实不给结论） |
 | workdir_edit / artifact_submit | 工作目录 | low | 唯一写通道（归属校验 + 署名）与产出物登记（S6） |
 | task_* / ask_user | 任务与询问 | low/none | 任务闭环与向用户提问（S6） |
 | artifact_submit | →workdir | low（doc 类默认审批，D13②） | 静态产物提交（写工作目录通道②） |
@@ -158,8 +159,8 @@ loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮�
 - 模型/网络错误：指数退避重试 ≤3 次 → 仍失败则给用户可见错误消息并记录 error 事件。
 - 工具越界/拒绝：以结构化 tool_result 返回（含原因），Agent 调整方案继续。
 - 审批拒绝：tool_result 注明拒绝，Agent 需给替代方案或说明。
-- 进程重启：进行中的回合以"未完成"记录，恢复后按策略续跑或让 Agent 总结中断点（memory.md §7 恢复）。
-- **询问等待跨重启（D19-⑦）**：Agent 提问后 `waiting`，question 记录保持 `pending`（questions.jsonl）；重启后 Agent 不自动续跑（缺 `turn_end`），用户答复后由 dispatcher 唤醒其继续该任务是/或汇报中断点。
+- 进程重启（**2026-09-16 S21/D27 重写**）：平台**不再判定"未完成回合"、也不提供任何恢复选项**。回合被中断（缺 `turn_end`）这一事实留在会话日志里；Agent 在**下一次真正运行时**（用户消息 / 受派任务 / 排队补处理）由「平台角色定位」上下文里的职责提醒：先用 **`session_recent`** 查看本会话最近事件，自己判断上一回合是否收尾、自己的最后一条回复是否完整，然后**先用文字说明现状并用 `ask_user` 询问用户**如何处理——**不擅自续跑**（D16-③"平台不自动续跑"仍然成立，且现在连"平台代为判定"也没有了）。代价：若该 Agent 一直没被唤醒，中断不会被任何人发现（D27-⑥ 已记录）。
+- **询问等待跨重启（D19-⑦）**：Agent 提问后 `waiting`，question 记录保持 `pending`（questions.jsonl）；重启后 Agent 不自动续跑（缺 `turn_end`），用户答复后由 dispatcher 唤醒其继续该任务。
 - **审批等待跨重启（M1 定稿）**：进程内工具命中审批 → Agent `waiting`，用户批准后执行器**续跑原调用**；若等待期间进程重启，该回合视为未完成（缺 `turn_end`），approval 记录（approvals.jsonl）保持 `pending`——用户决定写入 approvals 与会话 log，但不自动执行原动作；Agent 下次被触发时读取决定并自行决定是否重试（重试动作再次命中审批则需重新审批）。
 
 ## 8. 审计

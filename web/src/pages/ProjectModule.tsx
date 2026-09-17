@@ -151,6 +151,41 @@ function DirectoryPicker(props: {
   )
 }
 
+/**
+ * 系统提示词预览弹窗（S29 抽成组件）。
+ * ⚠️ 它必须挂在**两个分支**里：详情页（`current !== null`）与项目列表页都有触发入口，
+ * 此前只挂在项目列表分支，导致详情页点「提示词预览」只改 state、弹窗没挂载 = "点击没反应"。
+ */
+function PromptPreviewModal({
+  preview,
+  onClose,
+}: {
+  readonly preview: PromptPreviewView | null
+  readonly onClose: () => void
+}) {
+  return (
+    <Modal
+      open={preview !== null}
+      title="系统提示词预览（与运行期同源，不落盘）"
+      width={760}
+      onCancel={onClose}
+      footer={null}
+    >
+      {preview !== null && (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {preview.blocks.map((block) => (
+            <Card key={block.id} size="small" title={`${block.title}（origin=${block.origin}）`}>
+              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
+                {block.text}
+              </Typography.Paragraph>
+            </Card>
+          ))}
+        </Space>
+      )}
+    </Modal>
+  )
+}
+
 export function ProjectModule() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [templates, setTemplates] = useState<AgentTemplateView[]>([])
@@ -501,6 +536,8 @@ export function ProjectModule() {
             </Space>
           )}
         </Drawer>
+        {/* S29：预览弹窗两个分支都要挂（此前只在项目列表分支 → 详情页点击无反应） */}
+        <PromptPreviewModal preview={preview} onClose={() => setPreview(null)} />
       </Space>
     )
   }
@@ -560,25 +597,7 @@ export function ProjectModule() {
         />
       </Card>
 
-      <Modal
-        open={preview !== null}
-        title="系统提示词预览（与运行期同源，不落盘）"
-        width={760}
-        onCancel={() => setPreview(null)}
-        footer={null}
-      >
-        {preview !== null && (
-          <Space direction="vertical" style={{ width: '100%' }}>
-            {preview.blocks.map((block) => (
-              <Card key={block.id} size="small" title={`${block.title}（origin=${block.origin}）`}>
-                <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
-                  {block.text}
-                </Typography.Paragraph>
-              </Card>
-            ))}
-          </Space>
-        )}
-      </Modal>
+      <PromptPreviewModal preview={preview} onClose={() => setPreview(null)} />
 
       <Modal
         open={wizardOpen}

@@ -143,6 +143,8 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
       `项目：${project.name}（id=${project.id}）。`,
       `用户是老板：需要决策时用 ask_user 提问并等待答复；不要假设用户的意图。`,
       `你的产出物只能落在项目工作目录内（当前工作目录：${project.workdir}）。`,
+      // S21/D27：中断收尾由 Agent 自己判断并发起询问（平台既不判定"未完成回合"，也不给固定选项）
+      `开工前若你怀疑上一个回合没有正常收尾（例如服务刚重启、你要接着做上次没做完的事），先用 session_recent 核对本会话最近事件：若最后一个【回合开始】之后没有对应的【回合结束】，或你的最后一条回复明显不完整，就先用文字说明现状，并用 ask_user 问我怎么处理——不要擅自续跑，也不要假装没发生。`,
     ].join('\n'),
   })
 

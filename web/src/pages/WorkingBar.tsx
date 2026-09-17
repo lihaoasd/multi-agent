@@ -72,7 +72,6 @@ export function WorkingBar({ projectId }: { readonly projectId: string }) {
             {agent.taskTitle !== null && <Tag>任务：{agent.taskTitle}</Tag>}
             {agent.planStatus !== null && <Tag color="geekblue">plan {agent.planStatus}</Tag>}
             {agent.queued > 0 && <Tag color="orange">队列 {agent.queued}</Tag>}
-            {agent.unfinishedTurn !== null && <Tag color="red">未完成回合 {agent.unfinishedTurn}</Tag>}
             <Tooltip title="停当前回合输出（队列保留，任务继续）">
               <Button size="small" onClick={() => void stop(agent.instanceId, 'turn')}>
                 停止生成

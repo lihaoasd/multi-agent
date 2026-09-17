@@ -12,7 +12,7 @@
 | `docs/api/` | 接口约定（REST + WS + 错误码） | [contract.md](api/contract.md) |
 | `docs/testing/` | 测试计划（分层、规则清单、门禁） | [plan.md](testing/plan.md) |
 | `docs/operations/` | 部署与运维（本机部署、配置、备份迁移） | [deploy.md](operations/deploy.md) |
-| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S20` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
+| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S29` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
 | `docs/changes/` | 修改记录（每次改动追加，与 diff 一一对应） | `YYYY-MM-DD-<topic>.md` |
 
 **阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md` → **`plan/development.md`（编码阶段执行顺序）**。
@@ -49,7 +49,7 @@
 | 协议 kind（适配器） | 与供应商对接的代码级协议实现：`openai-compatible` / `anthropic` / `gemini` / `ollama`（见 model-config.md §6） |
 | 配置审计（config-audit） | `data/config-audit.jsonl`：平台/模板/实例配置变更的 append-only 留痕（不含密钥明文与提示词全文，见 model-config.md §10） |
 
-| 未完成回合（unfinished turn） | 事件流中**缺 `turn_end`** 的回合；平台不自动续跑，由用户三选（汇报中断点/继续执行/忽略）或补全驱动恢复 |
+| 未完成回合（unfinished turn） | 事件流中**缺 `turn_end`** 的回合。**S21/D27 起平台不再判定、也不提示**：是否收尾由 Agent 自己查会话事件（工具 `session_recent`）判断，并用 `ask_user` 询问用户怎么处理（不做固定选项） |
 | 归属与署名（file-owners） | 工作目录文件的 owner 与 `ownerName`（署名）；非 owner 写入 → `ERR_FORBIDDEN`，无主文件首写即认领 |
 | 滚动摘要（L2） | 会话 log 的 `summary` 事件：`ofSeq/toSeq` 连续无重叠，替代更早的原文窗口（可重放派生视图） |
 | 长期条目（L3） | `memories/global.jsonl` 与 `memories/<instanceId>.jsonl` 的跨会话知识条目（active/superseded） |
@@ -66,9 +66,9 @@
 
 ### 3.2 决策编号（`prd` §7）
 
-- `D1`~`D25` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
+- `D1`~`D33` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
 - 空缺（如 `D2`、`D14-⑤/⑥/⑩`、`D16-①`、`D17-②/③`、`D18-①`）表示该决策已随会议功能移除被删除。
-- 2026-09-16 增补 `D21`（移除 mock / Agent 默认不配置模型）、`D22`（模板删除/停用与一键配置模型）、`D23`（`ask_user` 独立为 `interaction` 包）、`D24`（删除「默认路由」）、`D25`（项目详情页瘦身与运行细条归位）。
+- 2026-09-16 增补 `D21`（移除 mock / Agent 默认不配置模型）、`D22`（模板删除/停用与一键配置模型）、`D23`（`ask_user` 独立为 `interaction` 包）、`D24`（删除「默认路由」）、`D25`（项目详情页瘦身与运行细条归位）、`D26`（编排图双模式与点击缺陷修复）、`D27`（未完成回合改由 Agent 自查与询问）、`D28`（会话流去掉事件筛选与工作日志折叠）、`D29`（对话消息按 Markdown 渲染）、`D30`（基础工具包全员必装强制化）、`D31`（工具结果条目只显示工具名）、`D32`（改用 `react-markdown`+`remark-gfm` 框架渲染，支持 GFM 表格）、`D33`（工具调用参数默认折叠）。
 - `A1~A6`、`B1/B4/B5/B6/B8/B12`、`H2/H3/H4`、`M1~M14`、`R1~R6` 是历史评审/里程碑/重构轮次的编号，出处（原 `docs/changes/*`）已随重启提交删除；正文仅在需要追溯时引用，新增文档**不要**再引入这些编号。
 
 ### 3.3 未决清单（`prd` §10）
@@ -78,7 +78,7 @@
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
 
-### 3.4 阶段编号（`S0`~`S20`，`plan/development.md` §6）
+### 3.4 阶段编号（`S0`~`S29`，`plan/development.md` §6）
 
 | 阶段 | 主题 | 方案 / 记录 |
 | --- | --- | --- |
@@ -103,6 +103,15 @@
 | `S18` | 删除边可用性修复（14px 点击热区 + 「删除选中边」按钮） | [plan](plan/2026-09-16-s18-edge-delete-affordance.md) · [changes](changes/2026-09-16-s18-edge-delete-affordance.md) |
 | `S19` | 会话页 Agent 列表只保留名称与状态（去掉消息预览与排队数） | [plan](plan/2026-09-16-s19-session-list-name-status.md) · [changes](changes/2026-09-16-s19-session-list-name-status.md) |
 | `S20` | 会话页聊天区放大（消息区高度自适应视口 + 左右两栏可收起） | [plan](plan/2026-09-16-s20-session-chat-roomier.md) · [changes](changes/2026-09-16-s20-session-chat-roomier.md) |
+| `S21` | 未完成回合改由 Agent 自查与询问（删平台检测与固定三选；新增 `session_recent`，prd D27） | [plan](plan/2026-09-16-s21-agent-driven-recovery.md) · [changes](changes/2026-09-16-s21-agent-driven-recovery.md) |
+| `S22` | 会话流去掉事件筛选与「工作日志」折叠包装（prd D28；FR-30 修订） | [plan](plan/2026-09-16-s22-session-stream-inline.md) · [changes](changes/2026-09-16-s22-session-stream-inline.md) |
+| `S23` | 对话消息按 Markdown 渲染（自研零依赖解析器，prd D29） | [plan](plan/2026-09-16-s23-message-markdown.md) · [changes](changes/2026-09-16-s23-message-markdown.md) |
+| `S24` | 工具调用/结果不显示的缺陷修复（事件字段契约对齐，`lib/event-display.ts`） | [plan](plan/2026-09-16-s24-tool-event-fields.md) · [changes](changes/2026-09-16-s24-tool-event-fields.md) |
+| `S25` | 基础工具包「全员必装」强制化（读/写两侧归一，prd D30） | [plan](plan/2026-09-16-s25-packages-always-mounted.md) · [changes](changes/2026-09-16-s25-packages-always-mounted.md) |
+| `S26` | 工具结果条目只显示工具名（`eventRow` 行渲染规则，prd D31） | [plan](plan/2026-09-16-s26-tool-result-name-only.md) · [changes](changes/2026-09-16-s26-tool-result-name-only.md) |
+| `S27` | 改用成熟框架渲染 Markdown（`react-markdown`+`remark-gfm`，支持 GFM 表格，prd D32） | [plan](plan/2026-09-16-s27-markdown-framework.md) · [changes](changes/2026-09-16-s27-markdown-framework.md) |
+| `S28` | 工具调用参数默认折叠（`bodyMode: collapsed`，prd D33） | [plan](plan/2026-09-16-s28-tool-call-args-collapsed.md) · [changes](changes/2026-09-16-s28-tool-call-args-collapsed.md) |
+| `S29` | 「提示词预览」点击无反应的缺陷修复（预览弹窗挂到详情/列表两个分支） | [plan](plan/2026-09-16-s29-preview-modal-branch.md) · [changes](changes/2026-09-16-s29-preview-modal-branch.md) |
 
 - **测试规则编号**（`testing/plan.md` §2，共 33 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
 - 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。

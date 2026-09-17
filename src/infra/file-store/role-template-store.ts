@@ -9,7 +9,7 @@ import type {
   RoleTemplatePatch,
   RoleTemplateStore,
 } from '../../ports/role-templates'
-import { BASE_TOOL_PACKAGES } from '../../shared/loop'
+import { normalizePackages } from '../../domain/rules/tool-packages'
 import { err, ok, type Result } from '../../shared/result'
 
 export interface RoleTemplateStoreOptions {
@@ -68,7 +68,7 @@ export function parseRoleTemplate(raw: unknown): RoleTemplate | null {
     systemPrompt: asString(record['systemPrompt']),
     defaultModel: typeof record['defaultModel'] === 'string' ? record['defaultModel'] : null,
     defaultLoop: parseLoop(record['defaultLoop']),
-    packages: packages.length > 0 ? packages : [...BASE_TOOL_PACKAGES],
+    packages: normalizePackages(packages),
     tools: asStringArray(record['tools']),
     artifactTypes: asStringArray(record['artifactTypes']),
     defaultApprovalRules: asStringArray(record['defaultApprovalRules']),
@@ -88,7 +88,7 @@ function serialize(template: RoleTemplate): string {
     systemPrompt: template.systemPrompt,
     defaultModel: template.defaultModel,
     defaultLoop: { strategy: template.defaultLoop.strategy, params: template.defaultLoop.params },
-    packages: [...template.packages],
+    packages: [...normalizePackages(template.packages)],
     tools: [...template.tools],
     artifactTypes: [...template.artifactTypes],
     defaultApprovalRules: [...template.defaultApprovalRules],
@@ -207,6 +207,7 @@ export function createRoleTemplateStore(options: RoleTemplateStoreOptions): Role
     }
     const updated: RoleTemplate = {
       ...existing,
+      packages: normalizePackages(existing.packages),
       systemPrompt: patch.systemPrompt ?? existing.systemPrompt,
       defaultLoop: patch.defaultLoop ?? existing.defaultLoop,
       defaultModel: patch.defaultModel === undefined ? existing.defaultModel : patch.defaultModel,

@@ -124,6 +124,8 @@ export interface SessionLogStore {
     sessionId: SessionId,
     maxLinesPerSegment: number,
   ): Promise<Result<readonly SegmentRef[]>>
+  /** 新对话：删除该会话全部事件段，meta 归零（lastSeq=0、segments=[]） */
+  reset(projectId: ProjectId, sessionId: SessionId): Promise<Result<SessionMeta>>
 }
 
 /** 会话在 UI 上的摘要（左栏会话切换用） */

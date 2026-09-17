@@ -17,7 +17,7 @@
 | --- | --- |
 | 语言/运行时 | TypeScript + Node.js ≥ 20 |
 | HTTP/WS 服务 | Fastify（REST + 静态托管 + @fastify/websocket 或 ws） |
-| 前端 | React 19 + Vite 8 + Ant Design 6（聊天/工作台组件；画布候选 React Flow）；构建产物 `web/dist`，由 Fastify 单端口托管 |
+| 前端 | React 19 + Vite 8 + Ant Design 6（聊天/工作台组件；画布候选 React Flow）+ **`react-markdown`/`remark-gfm`**（消息 Markdown 渲染，S27/D32——"零重型依赖"原则的显式例外，见 abstraction.md §1）；构建产物 `web/dist`，由 Fastify 单端口托管 |
 | 实时通道 | WebSocket（事件推送 + 消息流式 chunk）；无 SSE 时退回轮询（不推荐） |
 | 模型 Provider | 四种协议适配器：`openai-compatible` / `anthropic` / `gemini` / `ollama`（**自研轻量网关，不引重型 SDK 依赖**，便于换后端）；供应商与模型条目由用户在 UI 配置（D20 / [model-config.md](model-config.md)） |
 | 存储 | 纯文件系统 + 手写 JSONL/JSON/Markdown 读写层 + 自建关键词倒排索引 |
@@ -193,6 +193,6 @@ Project ─┬─ Team ── RoleInstance(Agent) ─┬─ 配置: templateRef/
 | 首页 · 模型模块（供应商/模型条目/连通性测试/未配置 Agent 计数） | model-config + ws |
 | 首页 · 工具模块（8 个基础包展示，只读；包内工具在详情弹窗查看） | tool-package |
 | 项目页 · 拓扑导航（**2 栏**：左画布 + 右三列表） | orchestration + agent.state + ws |
-| 项目页 · 对话导航（**3 栏**：左会话切换 + 中会话流含工作日志 + 右三列表） | session + ws |
+| 项目页 · 对话导航（**3 栏**：左会话切换 + 中会话流（对话/思考/工具调用内联，S22）+ 右三列表） | session + ws |
 | 右栏三列表（任务 / 询问 / 审批） | task / question / approval |
 | 产出物/任务/审批面板 | artifact/task/approval |

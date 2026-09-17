@@ -35,7 +35,7 @@
 | `fs` | 文件读写 | `fs_read_file`、`fs_list_dir`、`fs_search` | 工作目录 + `ro://` 只读；工作目录内容全员可读 |
 | `cmd` | 命令执行 | `cmd_run` | 结构化 argv，cwd 锁定在 workdir；风险分级 + 审批 |
 | `memory` | 记忆 | `memory_search`、`memory_append`（own） | 角色记忆读写 + 全局记忆检索 |
-| `session` | 会话检索 | `session_search` | 本项目会话日志检索（受可见性规则约束） |
+| `session` | 会话检索 | `session_search`、`session_recent` | 本项目会话日志检索与**本会话最近事件自查**（受可见性规则约束；`session_recent` 只读自己的会话，S21） |
 | `artifact` | 产出物 | `workdir_edit`、`artifact_submit`、`artifact_rollback` | 工作目录唯一写通道 + 登记/回退 |
 | `approval` | 审批 | `approval_query` | 查看自己触发的审批状态 |
 | `task` | 任务 | `task_view`、`task_list`、`task_assign`、`task_claim`、`task_update` | 任务查看/委派/领取/汇报（`task_assign` 受编排图出边约束） |
@@ -47,6 +47,8 @@
 ## 4. 挂载与生效
 
 - **Agent 侧字段**（模板与实例）：`packages: ["fs","cmd",…]`（MVP 由模板快照写入，全部为基础包）。
+- **基础包全员必装（S25/D30）**：8 个基础包是**地板而不是可选项**。`domain/rules/tool-packages.ts` 的 `normalizePackages()` 在**读/写两侧**统一归一：模板读取/写入、复制新建、创建项目与新增成员的实例快照都补齐基础包（基础包恒在前、额外包去重保留在后、幂等）；旧数据（S13 前缺 `interaction`、或快照为空）**在读取侧自动补齐，不改磁盘文件**。
+  - ⚠️ **装载 ≠ 授权**：`packages` 只表达"挂载了什么"，实际能否调用仍由角色工具白名单 × 会话类型 × allowedRoots × 归属校验决定（例如 `pm` 挂载 `cmd` 包但没有 `cmd_run`）。
 - 生效链路保持单链：`实例配置（tools/packages 快照）` → `loop runner 的可用性校验` → `PolicyEngine` 审批判定 → `ToolExecutor` 执行。
 - 包的**展示态**与**生效态**必须可区分：UI 上"挂载但运行期不可用"的工具单独标注（例：白名单里有、注册表已无）。
 

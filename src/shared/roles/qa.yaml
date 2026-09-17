@@ -21,6 +21,6 @@ defaultLoop:
     maxIterations: 6
     toolBudget: 40
 packages: [fs, cmd, memory, session, artifact, approval, task, interaction]
-tools: [fs_read_file, fs_list_dir, fs_search, workdir_edit, cmd_run, memory_search, memory_append, session_search, artifact_submit, artifact_rollback, approval_query, task_view, task_list, task_claim, task_update, ask_user]
+tools: [fs_read_file, fs_list_dir, fs_search, workdir_edit, cmd_run, memory_search, memory_append, session_search, session_recent, artifact_submit, artifact_rollback, approval_query, task_view, task_list, task_claim, task_update, ask_user]
 artifactTypes: [test]
 defaultApprovalRules: []

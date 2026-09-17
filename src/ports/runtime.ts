@@ -1,43 +1,17 @@
 import type { Result } from '../shared/result'
 import type { AgentState } from './dispatcher'
 import type { InstanceId, ProjectId } from './project'
-import type { SessionId, StoredEvent } from './session'
+import type { SessionId } from './session'
 
 /**
- * 运行控制与恢复端口（真源：docs/design/agent-runtime.md §7、D14-⑦/D16-③/D17-⑤⑥）。
- * - **未完成回合**：以"缺 `turn_end`"为唯一判定依据（跨重启同样成立）；
- * - **不自动续跑**：恢复由用户三选驱动（汇报中断点 / 继续执行 / 忽略）+ 半截文本补全；
- * - **停止**：`turn`=停当前回合输出（队列保留）、`task`=终止当前任务（未结算改动先结算为 code artifact）。
+ * 运行控制与导出端口（真源：docs/design/agent-runtime.md §7、D14-⑦/D16-③/D17-⑤⑥）。
+ * - **停止**：`turn`=停当前回合输出（队列保留）、`task`=终止当前任务（未结算改动先结算为 code artifact）；
+ * - **细条**：`working` 只列非 idle 的 Agent（占用者 + 当前任务 + 最近 plan 状态 + 队列）。
+ *
+ * ⚠️ **2026-09-16（S21/D27）**：本端口**不再包含未完成回合的判定与恢复**——"上一回合是否收尾"
+ * 由 Agent 自己查会话事件（工具 `session_recent`）判断，并自行用 `ask_user` 询问用户；
+ * 平台既不检测也不给固定选项（原 `RecoveryAction`/`UnfinishedTurn`/`RecoveryService` 已删除）。
  */
-
-export type RecoveryAction = 'report' | 'continue' | 'ignore' | 'complete'
-
-export interface UnfinishedTurn {
-  readonly sessionId: SessionId
-  readonly instanceId: InstanceId
-  readonly turn: number
-  readonly turnId: string | null
-  readonly startedAt: string
-  readonly loopStep: string | null
-  /** 该回合最后一条 plan 事件的进度（S8 恢复剧本一致性用） */
-  readonly lastPlan: { readonly steps: number; readonly status: string | null } | null
-  /** 已恢复处理过的动作（null=尚未处理） */
-  readonly resolvedBy: RecoveryAction | null
-}
-
-export interface RecoveryService {
-  /** 某会话当前的未完成回合（无则 null） */
-  unfinished(projectId: ProjectId, sessionId: SessionId): Promise<Result<UnfinishedTurn | null>>
-  /** 项目内全部未完成回合（横幅与启动自检用） */
-  listUnfinished(projectId: ProjectId): Promise<Result<readonly UnfinishedTurn[]>>
-  /** 三选 + 补全：落恢复标记，并按动作向该 Agent 注入一条系统消息唤醒一轮 */
-  resolve(input: {
-    readonly projectId: ProjectId
-    readonly sessionId: SessionId
-    readonly turn: number
-    readonly action: RecoveryAction
-  }): Promise<Result<{ readonly resumed: boolean; readonly text: string }>>
-}
 
 export interface RuntimeAgentView {
   readonly instanceId: InstanceId
@@ -52,7 +26,6 @@ export interface RuntimeAgentView {
   readonly taskTitle: string | null
   /** 最近一条 plan 事件的状态（与 plan 事件一致） */
   readonly planStatus: string | null
-  readonly unfinishedTurn: number | null
 }
 
 export interface RuntimeSnapshot {
@@ -94,20 +67,4 @@ export interface ArchiveWriter {
 /** 项目数据导出（`GET /api/projects/:pid/export`）：把运行时项目文件夹打包为 zip */
 export interface ProjectExporter {
   export(projectId: ProjectId): Promise<Result<{ readonly fileName: string; readonly bytes: number; readonly content: Buffer }>>
-}
-
-/** 供恢复服务判定：事件是否属于"已恢复处理"的标记（`state` 事件） */
-export interface RecoveryMarker {
-  readonly turn: number
-  readonly action: RecoveryAction
-  readonly at: string
-}
-
-export function readRecoveryMarker(event: StoredEvent): RecoveryMarker | null {
-  if (event.kind !== 'state') return null
-  const turn = event.payload['unfinishedTurn']
-  const action = event.payload['recovery']
-  if (typeof turn !== 'number' || !Number.isFinite(turn)) return null
-  if (action !== 'report' && action !== 'continue' && action !== 'ignore' && action !== 'complete') return null
-  return { turn, action, at: event.ts }
 }

@@ -7,7 +7,7 @@ import type { ArtifactService } from '../ports/artifact'
 import type { TaskService } from '../ports/task'
 import type { QuestionService } from '../ports/question'
 import type { OrchestrationService } from '../ports/orchestration'
-import type { ProjectExporter, RecoveryService, RuntimeService } from '../ports/runtime'
+import type { ProjectExporter, RuntimeService } from '../ports/runtime'
 import type { PromptPreviewService } from '../application/agent-loop/preview'
 import type { LoopRegistry } from '../application/agent-loop/loop'
 import type { ToolPackageRegistry, ToolRegistry } from '../ports/tools'
@@ -58,7 +58,6 @@ export interface ServerServices {
   readonly questions: QuestionService
   readonly orchestration: OrchestrationService
   readonly runtime: RuntimeService
-  readonly recovery: RecoveryService
   readonly exporter: ProjectExporter
   readonly toolRegistry: ToolRegistry
   readonly toolPackages: ToolPackageRegistry
@@ -141,7 +140,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   registerOrchestrationRoutes(app, { orchestration: options.services.orchestration })
   registerRuntimeRoutes(app, {
     runtime: options.services.runtime,
-    recovery: options.services.recovery,
     exporter: options.services.exporter,
   })
   registerToolRoutes(app, {

@@ -1,19 +1,10 @@
 import { apiRequest } from './client'
 
-/** 运行控制与恢复（contract.md / agent-runtime.md §7；S8） */
-
-export type RecoveryAction = 'report' | 'continue' | 'ignore' | 'complete'
-
-export interface UnfinishedTurn {
-  readonly sessionId: string
-  readonly instanceId: string
-  readonly turn: number
-  readonly turnId: string | null
-  readonly startedAt: string
-  readonly loopStep: string | null
-  readonly lastPlan: { readonly steps: number; readonly status: string | null } | null
-  readonly resolvedBy: RecoveryAction | null
-}
+/**
+ * 运行控制与导出（contract.md / agent-runtime.md §7；S8）。
+ * ⚠️ S21/D27（2026-09-16）：`/recovery` 三条接口与「未完成回合」字段已删除——
+ * 未完成回合不再由平台判定，改由 Agent 自查会话事件（工具 `session_recent`）后自行用 `ask_user` 询问用户。
+ */
 
 export interface RuntimeAgentView {
   readonly instanceId: string
@@ -26,7 +17,6 @@ export interface RuntimeAgentView {
   readonly startedAt: string | null
   readonly taskTitle: string | null
   readonly planStatus: string | null
-  readonly unfinishedTurn: number | null
 }
 
 export interface RuntimeSnapshot {
@@ -51,23 +41,5 @@ export const runtimeApi = {
     apiRequest('POST', `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(instanceId)}/stop`, {
       scope,
     }),
-  unfinished: (projectId: string): Promise<UnfinishedTurn[]> =>
-    apiRequest('GET', `/api/projects/${encodeURIComponent(projectId)}/recovery`),
-  sessionUnfinished: (projectId: string, sessionId: string): Promise<UnfinishedTurn | null> =>
-    apiRequest(
-      'GET',
-      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/recovery`,
-    ),
-  resolve: (
-    projectId: string,
-    sessionId: string,
-    turn: number,
-    action: RecoveryAction,
-  ): Promise<{ resumed: boolean; text: string }> =>
-    apiRequest(
-      'POST',
-      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/recovery`,
-      { turn, action },
-    ),
   exportUrl: (projectId: string): string => `/api/projects/${encodeURIComponent(projectId)}/export`,
 }

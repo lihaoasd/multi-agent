@@ -4,11 +4,15 @@ import { join } from 'node:path'
 import type { InjectOptions, LightMyRequestResponse } from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createTestServer, type TestContext } from '../../helpers-server'
-import type { RuntimeSnapshot, UnfinishedTurn } from '../../../src/ports/runtime'
+import type { RuntimeSnapshot } from '../../../src/ports/runtime'
 import { EMPTY_DISPATCHER_STATE } from '../../../src/ports/dispatcher'
 
-/** 规则 14/19/20：未完成回合三选、可停止与运行细条、项目导出 */
-describe('API · 运行控制与恢复（规则 14/19/20）', () => {
+/**
+ * 规则 20：可停止与运行细条、项目导出。
+ * ⚠️ S21/D27（2026-09-16）：未完成回合的判定与恢复已从平台移除（改由 Agent 自查 + `ask_user`），
+ * 因此本文件不再有规则 19/14 的恢复用例，改为断言 `/recovery` 接口确实已下线。
+ */
+describe('API · 运行控制与导出（规则 20）', () => {
   let context: TestContext
   let projectId: string
 
@@ -17,7 +21,7 @@ describe('API · 运行控制与恢复（规则 14/19/20）', () => {
     const created = await context.app.inject({
       method: 'POST',
       url: '/api/projects',
-      payload: { name: '恢复与停止演示', workdir: mkdtempSync(join(tmpdir(), 'ah-runtime-api-')) },
+      payload: { name: '运行控制演示', workdir: mkdtempSync(join(tmpdir(), 'ah-runtime-api-')) },
     })
     projectId = created.json<{ id: string }>().id
   })
@@ -28,80 +32,22 @@ describe('API · 运行控制与恢复（规则 14/19/20）', () => {
 
   const inject = async (options: InjectOptions): Promise<LightMyRequestResponse> => context.app.inject(options)
 
-  it('规则 19：缺 turn_end → 横幅数据；三选 report 落标记 + 注入唤醒消息；重复处理 409', async () => {
-    await context.deps.sessions.append(projectId, 'u_dev_1', [
-      { kind: 'turn_start', turn: 1, payload: { turnId: 'turn_1', loopStep: 'plan-execute' } },
-      { kind: 'plan', turn: 1, payload: { steps: [{ id: 's1' }, { id: 's2' }], status: 'interrupted' } },
-    ])
+  it('S21/D27：恢复接口已下线（项目级与会话级均 404）', async () => {
+    const projectLevel = await inject({ method: 'GET', url: `/api/projects/${projectId}/recovery` })
+    expect(projectLevel.statusCode).toBe(404)
 
-    const listed = await inject({ method: 'GET', url: `/api/projects/${projectId}/recovery` })
-    expect(listed.statusCode).toBe(200)
-    const unfinished = listed.json<UnfinishedTurn[]>()
-    expect(unfinished).toHaveLength(1)
-    expect(unfinished[0]).toMatchObject({ sessionId: 'u_dev_1', turn: 1, loopStep: 'plan-execute', resolvedBy: null })
-    expect(unfinished[0]?.lastPlan).toEqual({ steps: 2, status: 'interrupted' })
+    const sessionLevel = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_dev_1/recovery` })
+    expect(sessionLevel.statusCode).toBe(404)
 
-    const session = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_dev_1/recovery` })
-    expect(session.json<UnfinishedTurn>().turn).toBe(1)
-
-    const resolved = await inject({
+    const resolve = await inject({
       method: 'POST',
       url: `/api/projects/${projectId}/sessions/u_dev_1/recovery`,
       payload: { turn: 1, action: 'report' },
     })
-    expect(resolved.statusCode).toBe(200)
-    expect(resolved.json<{ resumed: boolean; text: string }>().resumed).toBe(true)
-    expect(resolved.json<{ text: string }>().text).toContain('汇报')
-
-    // 标记落盘（state 事件）+ 唤醒消息（系统消息）
-    const log = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_dev_1/log` })
-    const events = log.json<Array<{ kind: string; payload: Record<string, unknown> }>>()
-    expect(events.some((event) => event.kind === 'state' && event.payload['recovery'] === 'report')).toBe(true)
-    expect(events.some((event) => event.kind === 'message' && event.payload['sender'] === 'system')).toBe(true)
-
-    // 横幅数据保留 resolvedBy（不再重复提示）
-    const afterReport = await inject({ method: 'GET', url: `/api/projects/${projectId}/recovery` })
-    expect(afterReport.json<UnfinishedTurn[]>()[0]?.resolvedBy).toBe('report')
-
-    const again = await inject({
-      method: 'POST',
-      url: `/api/projects/${projectId}/sessions/u_dev_1/recovery`,
-      payload: { turn: 1, action: 'ignore' },
-    })
-    expect(again.statusCode).toBe(409)
-
-    const badAction = await inject({
-      method: 'POST',
-      url: `/api/projects/${projectId}/sessions/u_dev_1/recovery`,
-      payload: { turn: 1, action: 'unknown' },
-    })
-    expect(badAction.statusCode).toBe(400)
+    expect(resolve.statusCode).toBe(404)
   })
 
-  it('规则 14：忽略不唤醒；完整回合不会被判定为未完成', async () => {
-    await context.deps.sessions.append(projectId, 'u_qa_1', [
-      { kind: 'turn_start', turn: 1, payload: { turnId: 'turn_1' } },
-      { kind: 'turn_end', turn: 1, payload: { ok: true } },
-    ])
-    const none = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_qa_1/recovery` })
-    expect(none.json<UnfinishedTurn | null>()).toBeNull()
-
-    await context.deps.sessions.append(projectId, 'u_qa_1', [{ kind: 'turn_start', turn: 2, payload: { turnId: 'turn_2' } }])
-    const ignored = await inject({
-      method: 'POST',
-      url: `/api/projects/${projectId}/sessions/u_qa_1/recovery`,
-      payload: { turn: 2, action: 'ignore' },
-    })
-    expect(ignored.json<{ resumed: boolean }>().resumed).toBe(false)
-    const log = await inject({ method: 'GET', url: `/api/projects/${projectId}/sessions/u_qa_1/log` })
-    expect(
-      log
-        .json<Array<{ kind: string; payload: Record<string, unknown> }>>()
-        .some((event) => event.kind === 'state' && event.payload['recovery'] === 'ignore'),
-    ).toBe(true)
-  })
-
-  it('规则 20：运行细条只列占用中的 Agent，并带回合/队列/任务；idle 单独计数', async () => {
+  it('规则 20：运行细条只列占用中的 Agent，并带回合/队列/任务；idle 单独计数；不再有未完成回合字段', async () => {
     // 直接写调度态（occupancy 是运行期占用的唯一真相）
     const saved = await context.deps.fileStore.writeJsonAtomic(
       `${context.dataDir}/projects/${projectId}/runtime.state.json`,
@@ -119,6 +65,7 @@ describe('API · 运行控制与恢复（规则 14/19/20）', () => {
     expect(body.working.map((item) => item.instanceId)).toEqual(['dev_1'])
     expect(body.working[0]).toMatchObject({ state: 'working', turn: 1, startedAt: '2026-09-15T00:00:00.000Z' })
     expect(body.idle).toBeGreaterThan(0)
+    expect(Object.keys(body.working[0] ?? {})).not.toContain('unfinishedTurn')
   })
 
   it('规则 20：停止当前回合（scope=turn）与终止当前任务（scope=task，先结算）', async () => {

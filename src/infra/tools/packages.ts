@@ -43,8 +43,8 @@ export const BUILTIN_TOOL_PACKAGES: readonly ToolPackageInfo[] = [
   {
     id: 'session',
     name: '会话检索',
-    description: '本项目会话日志检索（受可见性规则约束）',
-    tools: ['session_search'],
+    description: '本项目会话日志检索与最近事件自查（受可见性规则约束）',
+    tools: ['session_search', 'session_recent'],
     riskMax: 'none',
     network: 'none',
     required: true,

@@ -54,6 +54,11 @@ describe('API · 工具包归属（S13：ask_user → interaction）', () => {
     expect(task?.tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining(['task_view', 'task_list', 'task_assign', 'task_claim', 'task_update']),
     )
+
+    // S21/D27：session 包新增 session_recent（Agent 自查本会话事件，用于判断上一回合是否收尾）
+    const session = packages.find((item) => item.id === 'session')
+    expect(session?.tools.map((tool) => tool.name)).toEqual(['session_search', 'session_recent'])
+    expect(session?.tools.every((tool) => tool.registered)).toBe(true)
   })
 
   it('声明与注册元数据一致：每个被声明的工具，其 `package` 字段等于声明它的包', async () => {
@@ -85,6 +90,12 @@ describe('API · 工具包归属（S13：ask_user → interaction）', () => {
     for (const template of builtin) {
       expect(template.packages, `${template.roleId} 未挂载 interaction`).toContain('interaction')
       expect(template.tools, `${template.roleId} 白名单缺少 ask_user`).toContain('ask_user')
+      // S21/D27：每个角色都要能自查中断（否则平台不再判定后，中断就没人能发现）
+      expect(template.tools, `${template.roleId} 白名单缺少 session_recent`).toContain('session_recent')
+      // S25：8 个基础包「全员必装」——每个内置模板的挂载清单必须完整覆盖
+      for (const packageId of EXPECTED_PACKAGES) {
+        expect(template.packages, `${template.roleId} 未挂载基础包 ${packageId}`).toContain(packageId)
+      }
     }
   })
 })

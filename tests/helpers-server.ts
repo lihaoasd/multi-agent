@@ -90,7 +90,6 @@ export async function createTestServer(options: TestContextOptions = {}): Promis
       questions: deps.questions,
       orchestration: deps.orchestration,
       runtime: deps.runtime,
-      recovery: deps.recovery,
       exporter: deps.exporter,
       toolRegistry: deps.toolRegistry,
       toolPackages: deps.toolPackages,

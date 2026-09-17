@@ -82,11 +82,11 @@
 ### 运行控制与恢复（2026-09-15，S8）
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| GET | /api/projects/:pid/runtime | 运行细条：`{working[{instanceId,displayName,state,paused,queued,sessionId,turn,startedAt,taskTitle,planStatus,unfinishedTurn}],idle,paused,queuedTotal}`（占用来自 `runtime.state.json`，只列非 idle） |
+| GET | /api/projects/:pid/runtime | 运行细条：`{working[{instanceId,displayName,state,paused,queued,sessionId,turn,startedAt,taskTitle,planStatus}],idle,paused,queuedTotal}`（占用来自 `runtime.state.json`，只列非 idle；**S21 起不再有 `unfinishedTurn`**） |
 | POST | /api/projects/:pid/agents/:iid/stop | `{scope:'turn'\|'task'}`：`turn`=停当前回合输出（队列保留）；`task`=终止当前任务（**先结算未结算改动**为 code artifact）→ `{aborted,taskId,settledArtifactId,queued}`；非法 scope → `ERR_VALIDATION` |
-| GET | /api/projects/:pid/recovery | 项目内未完成回合列表（缺 `turn_end`）：`[{sessionId,instanceId,turn,turnId,startedAt,loopStep,lastPlan{steps,status},resolvedBy}]` |
-| GET | /api/projects/:pid/sessions/:sid/recovery | 该会话的未完成回合（无则 `null`） |
-| POST | /api/projects/:pid/sessions/:sid/recovery | 三选 + 补全 `{turn, action:'report'\|'continue'\|'ignore'\|'complete'}` → `{resumed,text}`；`report/continue/complete` 落 `state` 标记并注入系统消息唤醒一轮，`ignore` 只落标记；重复处理 → `ERR_CONFLICT`；`turn` 不匹配 → `ERR_CONFLICT`；非法 action → `ERR_VALIDATION` |
+
+> **S21/D27（2026-09-16）删除的接口**：`GET /api/projects/:pid/recovery`、`GET /api/projects/:pid/sessions/:sid/recovery`、`POST /api/projects/:pid/sessions/:sid/recovery`（原"三选 + 补全"）。
+> 未完成回合不再由平台判定，改由 Agent 自查会话事件（工具 `session_recent`）后用 `ask_user` 询问用户；旧的 `state` 恢复标记不再被消费。三条路径现在返回 **404**。
 
 ### 系统
 | GET | /api/config | 运行期只读总览：存储根/`roleDirs`、`server`、`models`（配置文件/遗留导入开关/提示词上限/超时）、`approval`、`sandbox`、`search`、`context` 上限与备份口径；**模型与供应商部分已迁出**（见「模型配置」组），**永不含密钥**（S9 落地）；**S14/D24 起 `models` 不再含 `defaultModelId`** |

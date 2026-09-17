@@ -92,6 +92,12 @@ export function registerSessionRoutes(app: FastifyInstance, context: SessionRout
     },
   )
 
+  app.post<{ Params: { pid: string; sid: string } }>(
+    '/api/projects/:pid/sessions/:sid/reset',
+    async (request, reply) =>
+      replyFromResult(reply, await sessions.reset(request.params.pid, request.params.sid)),
+  )
+
   app.post<{ Params: { pid: string; iid: string } }>('/api/projects/:pid/agents/:iid/pause', async (request, reply) =>
     replyFromResult(reply, await dispatcher.setPaused(request.params.pid, request.params.iid, true)),
   )

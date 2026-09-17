@@ -53,6 +53,7 @@
 | `memory_search` | 检索记忆（角色+全局，按权限） | readonly-global / none | ✅ | user |
 | `memory_append` | 追加长期记忆条目（scope=own 默认） | platform(记忆) / none | ✅ | user(仅 own) |
 | `session_search` | 关键词检索本项目会话日志（受 Agent 可检索集约束，D18-②） | readonly-global / none | ✅ | user |
+| `session_recent` | 本会话最近事件流水（含 `turn_start`/`turn_end` 边界）；只读自己的会话，供 Agent 自查中断（S21/D27） | platform / none | ✅ | user |
 | `approval_query` | 查看自己触发的审批状态 | platform / none | ✅ | user only |
 | `ask_user` | 向用户提问（question/options）并阻塞等待答复（Agent 转 waiting） | platform / none | ❌ | user only |
 | `task_view`/`task_list` | 查看任务（本人/项目） | platform / none | ✅ | user（平台常驻） |
@@ -74,7 +75,7 @@
 
 | 能力组 | pm | product | architect | ux | ui | dev | qa | ops |
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| 调研读取（fs_read/fs_list/fs_search/session_search） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 调研读取（fs_read/fs_list/fs_search/session_search/session_recent） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 记忆（memory_search/memory_append-own） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 工作目录编辑（workdir_edit，**唯一写通道**） | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅¹ | ✅ |
 | 命令执行（cmd_run，按 sandbox 风险审批） | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅¹ | ✅ |
@@ -128,9 +129,9 @@ loop 步骤 → 模型输出 tool_call{callId, name, args}
 
 ## 实现口径（2026-09-15，S4/S5/S6/S9）
 
-- **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`（S4）；`memory_append`、`memory_search`、`session_search`（S5）；`workdir_edit`、`artifact_submit`、`artifact_rollback`、`task_view`、`task_list`、`task_assign`、`task_claim`、`task_update`、`ask_user`（S6）——**8 个基础包的工具已全部真实注册**（展示态 = 生效态）。
+- **已注册**：`fs_read_file`、`fs_list_dir`、`fs_search`（只读，含 `ro://`）、`cmd_run`（走命令风险表与审批）、`approval_query`（S4）；`memory_append`、`memory_search`、`session_search`、**`session_recent`**（S5/S21）；`workdir_edit`、`artifact_submit`、`artifact_rollback`、`task_view`、`task_list`、`task_assign`、`task_claim`、`task_update`、`ask_user`（S6）——**8 个基础包的工具已全部真实注册**（展示态 = 生效态）。
 - **S5 口径**：记忆写入只落**本人角色记忆**（全局记忆写入白名单在 `application/memory/memory-service.ts`，工具层不可越权）；检索可见性走 `domain/rules/visibility.ts`（D18-②，与 `GET /search` 同一份判定）。
 - **S6 口径**：`workdir_edit` 是唯一写通道（归属校验 `ERR_FORBIDDEN` + 署名 + 未结算改动暂存）；`artifact_submit` 的审批门由 `PolicyAction.kind='submit'` 按项目 `artifactPolicy` 判定（通过后 `approvalId` 写入 manifest）；`artifact_rollback` 风险 high（走审批），只允许回退自己提交的（用户经接口以提交者身份代行）；`ask_user` 经注入的询问桥落 `questions.jsonl` 并阻塞等待答复（同一 Agent 至多 1 个 pending）。`task_assign` 的**出边约束**（`ERR_ORCHESTRATION_EDGE`）随 S7 编排图落地。
 - **`ToolDefinition.policyAction`**（2026-09-15 新增）：把调用参数映射成策略输入；`cmd_run` 用它产出 `{kind:'command', program, args}`，使命令风险表生效。返回 `null` 表示参数非法（执行前直接 `ERR_VALIDATION`）。
 - **执行链实现**：注册 → 会话类型 → 策略（deny/approval）→ 审批桥 → 工具处理（内部做路径边界与归属校验）→ 输出兜底截断；`tool_call`/`tool_result` 事件由 loop 落盘（审计投影）。
-- **S9 口径（模板工具白名单）**：8 个内置角色模板的 `tools:` 补齐**基础协作工具**（`task_view`/`task_list`/`task_claim`/`task_update`、`memory_append`、`session_search`、`approval_query`、`artifact_rollback`）——否则真实模型拿不到"领取/汇报"的 function schema，prd §9 脚本 1 的闭环会断（S9 验收实测发现）；productive 角色（product/architect/ui/ux）按 2026-09-12 决定补 `workdir_edit`；`pm` 仍**只协调不产出**（无 `workdir_edit`/`cmd_run`），`cmd_run` 仍只给 dev/ops/qa。
+- **S9 口径（模板工具白名单）**：8 个内置角色模板的 `tools:` 补齐**基础协作工具**（`task_view`/`task_list`/`task_claim`/`task_update`、`memory_append`、`session_search`、**`session_recent`（S21 起）**、`approval_query`、`artifact_rollback`）——否则真实模型拿不到"领取/汇报"的 function schema，prd §9 脚本 1 的闭环会断（S9 验收实测发现）；productive 角色（product/architect/ui/ux）按 2026-09-12 决定补 `workdir_edit`；`pm` 仍**只协调不产出**（无 `workdir_edit`/`cmd_run`），`cmd_run` 仍只给 dev/ops/qa。

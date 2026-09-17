@@ -1,11 +1,13 @@
 import type { ModelId } from '../../ports/model'
 import type { RoleInstance } from '../../ports/project'
 import type { LoopConfig } from '../../ports/role-templates'
+import { normalizePackages } from '../../domain/rules/tool-packages'
 
 /**
  * 有效配置解析（abstraction.md §4.4/§5.5）：
  * `实例覆盖 → 模板快照`；两级都没有模型即 `null`（回合报 `ERR_MODEL`）。
  * ⚠️ S14 起**不再有平台默认模型**（原 `routing.defaultModelId` 已随「默认路由」功能删除）。
+ * ⚠️ S25 起 `packages` 在读侧归一化：**基础 8 包是地板**——旧实例快照缺包也会补齐（不改磁盘数据）。
  * ⚠️ 结果作为**参数**传给回合执行（TurnContext.config），不进容器。
  */
 export interface EffectiveAgentConfig {
@@ -32,7 +34,7 @@ export function resolveEffectiveAgentConfig(instance: RoleInstance): EffectiveAg
     systemPrompt: instance.prompt ?? instance.snapshot.systemPrompt,
     model: instance.model ?? instance.snapshot.defaultModel ?? null,
     loop: instance.loop ?? instance.snapshot.defaultLoop,
-    packages: instance.snapshot.packages,
+    packages: normalizePackages(instance.snapshot.packages),
     tools: instance.snapshot.tools,
     artifactTypes: instance.snapshot.artifactTypes,
     approvalRules: instance.snapshot.defaultApprovalRules,

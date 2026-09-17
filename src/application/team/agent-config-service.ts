@@ -11,6 +11,7 @@ import type {
 } from '../../ports/role-templates'
 import { err, ok, type Result } from '../../shared/result'
 import { validateTemplateCreate, validateTemplatePatch, type AgentConfigValidationContext } from './validate-agent-config'
+import { normalizePackages } from '../../domain/rules/tool-packages'
 import type { TemplateReferenceQuery } from './template-references'
 
 export interface AgentConfigServiceOptions {
@@ -108,7 +109,7 @@ export function createAgentConfigService(options: AgentConfigServiceOptions): Ag
       defaultModelLabel: model?.displayName ?? null,
       defaultModelAvailable: model !== undefined && model.enabled,
       defaultLoop: template.defaultLoop,
-      packages: template.packages,
+      packages: normalizePackages(template.packages),
       tools: template.tools,
       artifactTypes: template.artifactTypes,
       defaultApprovalRules: template.defaultApprovalRules,
