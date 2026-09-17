@@ -473,7 +473,11 @@ export function TopologyPanel({ projectId, onOpenSession }: TopologyPanelProps) 
       </Card>
 
       <div style={{ width: 340, flex: '0 0 340px' }}>
-        <RightColumn projectId={projectId} />
+        <RightColumn
+          projectId={projectId}
+          // 右栏"到会话里答复"（S32）：会话 id 约定为 `u_<instanceId>`，转实例 id 后走既有的开会话回调
+          onOpenSession={(sessionId) => onOpenSession?.(sessionId.replace(/^u_/, ''))}
+        />
       </div>
     </div>
   )

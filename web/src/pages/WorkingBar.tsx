@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { describeError } from '../api/client'
 import { runtimeApi, type RuntimeSnapshot } from '../api/runtime'
 import { useRealtime } from '../hooks/useRealtime'
+import { stopTaskFeedback, stopTurnFeedback } from '../lib/stop-feedback'
 
 /**
  * 运行细条（S15 起挂在「拓扑」页的编排图顶部，不再横跨项目页两个导航）：显示占用中的 Agent、当前任务与最近 plan 状态；
@@ -39,13 +40,9 @@ export function WorkingBar({ projectId }: { readonly projectId: string }) {
   const stop = async (instanceId: string, scope: 'turn' | 'task'): Promise<void> => {
     try {
       const result = await runtimeApi.stop(projectId, instanceId, scope)
-      message.success(
-        scope === 'turn'
-          ? `已停止生成（队列保留 ${result.queued} 条）`
-          : result.taskId === null
-            ? '没有进行中的任务'
-            : `已终止任务 ${result.taskId}${result.settledArtifactId === null ? '' : `，已结算快照 ${result.settledArtifactId}`}`,
-      )
+      // S37：如实反馈（空闲时"停止生成"没停到东西要说清楚，而不是报成功）
+      const feedback = scope === 'turn' ? stopTurnFeedback(result) : stopTaskFeedback(result)
+      message[feedback.kind](feedback.text)
       await load()
     } catch (cause) {
       setError(describeError(cause))

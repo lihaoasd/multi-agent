@@ -487,7 +487,16 @@ export function ProjectModule() {
             {
               key: 'work',
               label: '任务与产出物',
-              children: <WorkPanel projectId={current.id} />,
+              children: (
+                <WorkPanel
+                  projectId={current.id}
+                  // S32：询问答复在会话窗口进行；这里把"到会话里答复"接到会话标签并聚焦该 Agent
+                  onOpenSession={(sessionId) => {
+                    setSessionFocus({ instanceId: sessionId.replace(/^u_/, ''), at: Date.now() })
+                    setActiveTab('session')
+                  }}
+                />
+              ),
             },
           ]}
         />

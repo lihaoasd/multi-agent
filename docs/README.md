@@ -12,7 +12,7 @@
 | `docs/api/` | 接口约定（REST + WS + 错误码） | [contract.md](api/contract.md) |
 | `docs/testing/` | 测试计划（分层、规则清单、门禁） | [plan.md](testing/plan.md) |
 | `docs/operations/` | 部署与运维（本机部署、配置、备份迁移） | [deploy.md](operations/deploy.md) |
-| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S29` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
+| `docs/plan/` | 开发方案（改动前必写，按日期命名）；**总计划** [development.md](plan/development.md)（`S0`~`S37` 阶段划分、依赖、验收、风险） | `development.md`、`YYYY-MM-DD-<topic>.md` |
 | `docs/changes/` | 修改记录（每次改动追加，与 diff 一一对应） | `YYYY-MM-DD-<topic>.md` |
 
 **阅读顺序建议**：`prd.md` → `architecture.md` → `abstraction.md`（抽象/端口/DI）→ `agent-runtime.md` / `sessions.md` → `orchestration.md` / `tools.md` / `tool-packages.md` / `agent-templates.md` / `model-config.md`（模型与 Agent 配置）→ `data-storage.md` / `memory.md` → `ui.md` / `contract.md` → `testing/plan.md` / `operations/deploy.md` → **`plan/development.md`（编码阶段执行顺序）**。
@@ -66,9 +66,9 @@
 
 ### 3.2 决策编号（`prd` §7）
 
-- `D1`~`D33` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
+- `D1`~`D40` 为需求/设计决策记录；条内子项写作 `D14-③`、`D20-⑧` 形式。
 - 空缺（如 `D2`、`D14-⑤/⑥/⑩`、`D16-①`、`D17-②/③`、`D18-①`）表示该决策已随会议功能移除被删除。
-- 2026-09-16 增补 `D21`（移除 mock / Agent 默认不配置模型）、`D22`（模板删除/停用与一键配置模型）、`D23`（`ask_user` 独立为 `interaction` 包）、`D24`（删除「默认路由」）、`D25`（项目详情页瘦身与运行细条归位）、`D26`（编排图双模式与点击缺陷修复）、`D27`（未完成回合改由 Agent 自查与询问）、`D28`（会话流去掉事件筛选与工作日志折叠）、`D29`（对话消息按 Markdown 渲染）、`D30`（基础工具包全员必装强制化）、`D31`（工具结果条目只显示工具名）、`D32`（改用 `react-markdown`+`remark-gfm` 框架渲染，支持 GFM 表格）、`D33`（工具调用参数默认折叠）。
+- 2026-09-16 增补 `D21`（移除 mock / Agent 默认不配置模型）、`D22`（模板删除/停用与一键配置模型）、`D23`（`ask_user` 独立为 `interaction` 包）、`D24`（删除「默认路由」）、`D25`（项目详情页瘦身与运行细条归位）、`D26`（编排图双模式与点击缺陷修复）、`D27`（未完成回合改由 Agent 自查与询问）、`D28`（会话流去掉事件筛选与工作日志折叠）、`D29`（对话消息按 Markdown 渲染）、`D30`（基础工具包全员必装强制化）、`D31`（工具结果条目只显示工具名）、`D32`（改用 `react-markdown`+`remark-gfm` 框架渲染，支持 GFM 表格）、`D33`（工具调用参数默认折叠）、`D34`（工具调用文本化/DSML 根因修复与兼容）、`D35`（询问答复入口归位：会话窗口答复，右栏/任务页只提示）、`D36`（询问改为逐题作答 + 卡片左右滑动、攒齐一次提交）、`D37`（会话窗口铺满屏幕并跟随最新消息 + 工具报错显示报错内容）、`D38`（会话窗口新增「详细日志（trace）」视图）、`D39`（任务汇报闭环：汇报通知改为「事实 + 据此继续」+ 委派人上下文注入「我委派出去的任务」）、`D40`（暂停/停止的回合中断语义修复：暂停当场中断且挂起不推进游标、中断落 `state` 事实、停止生成如实反馈）。
 - `A1~A6`、`B1/B4/B5/B6/B8/B12`、`H2/H3/H4`、`M1~M14`、`R1~R6` 是历史评审/里程碑/重构轮次的编号，出处（原 `docs/changes/*`）已随重启提交删除；正文仅在需要追溯时引用，新增文档**不要**再引入这些编号。
 
 ### 3.3 未决清单（`prd` §10）
@@ -78,7 +78,7 @@
 - 2026-09-15 新增：`U13` 模型用量与费用统计；`U14` 密钥加密与系统钥匙串；`U15` 配置版本回滚；`U16` 网络代理与自签证书。
 - 历史 `U2~U7` 已定案或随会议功能移除；编号不复用。
 
-### 3.4 阶段编号（`S0`~`S29`，`plan/development.md` §6）
+### 3.4 阶段编号（`S0`~`S37`，`plan/development.md` §6）
 
 | 阶段 | 主题 | 方案 / 记录 |
 | --- | --- | --- |
@@ -112,6 +112,14 @@
 | `S27` | 改用成熟框架渲染 Markdown（`react-markdown`+`remark-gfm`，支持 GFM 表格，prd D32） | [plan](plan/2026-09-16-s27-markdown-framework.md) · [changes](changes/2026-09-16-s27-markdown-framework.md) |
 | `S28` | 工具调用参数默认折叠（`bodyMode: collapsed`，prd D33） | [plan](plan/2026-09-16-s28-tool-call-args-collapsed.md) · [changes](changes/2026-09-16-s28-tool-call-args-collapsed.md) |
 | `S29` | 「提示词预览」点击无反应的缺陷修复（预览弹窗挂到详情/列表两个分支） | [plan](plan/2026-09-16-s29-preview-modal-branch.md) · [changes](changes/2026-09-16-s29-preview-modal-branch.md) |
+| `S30` | 工具调用文本化（DSML）根因修复 + 兼容层（追问轮带 tools，prd D34） | [plan](plan/2026-09-16-s30-dsml-tool-calls.md) · [changes](changes/2026-09-16-s30-dsml-tool-calls.md) |
+| `S31` | 发送消息后输入框残留文字（乐观清空） | [plan](plan/2026-09-16-s31-input-clear.md) · [changes](changes/2026-09-16-s31-input-clear.md) |
+| `S32` | 询问答复入口归位（会话窗口输入框上方答复，右栏/任务页只提示，prd D35） | [plan](plan/2026-09-16-s32-question-in-session.md) · [changes](changes/2026-09-16-s32-question-in-session.md) |
+| `S33` | 询问改为逐题作答 + 卡片左右滑动（攒齐一次提交，prd D36） | [plan](plan/2026-09-16-s33-question-carousel.md) · [changes](changes/2026-09-16-s33-question-carousel.md) |
+| `S34` | 会话窗口铺满屏幕 + 自动跟随最新消息；工具报错显示报错内容（prd D37） | [plan](plan/2026-09-16-s34-scroll-and-tool-errors.md) · [changes](changes/2026-09-16-s34-scroll-and-tool-errors.md) |
+| `S35` | 会话窗口新增「详细日志（trace）」视图（原始事件全量 + 可展开 payload，prd D38） | [plan](plan/2026-09-16-s35-trace-view.md) · [changes](changes/2026-09-16-s35-trace-view.md) |
+| `S36` | 任务汇报闭环：汇报通知「事实 + 据此继续」+ 委派人上下文新增「我委派出去的任务」（prd D39） | [plan](plan/2026-09-16-s36-task-report-loop.md) · [changes](changes/2026-09-16-s36-task-report-loop.md) |
+| `S37` | 暂停/停止的回合中断语义修复（用户报告"暂停无效"；prd D40） | [plan](plan/2026-09-16-s37-pause-interrupt.md) · [changes](changes/2026-09-16-s37-pause-interrupt.md) |
 
 - **测试规则编号**（`testing/plan.md` §2，共 33 条）与**规则→用例映射**（§5）配套使用；验收脚本 1~8 见 `prd` §9，可执行套件在 `tests/acceptance/prd-section9.test.ts`。
 - 覆盖率门禁：`npm run coverage`（文件级触达；口径见 `testing/plan.md` §4）。

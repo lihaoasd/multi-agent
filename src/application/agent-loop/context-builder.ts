@@ -52,6 +52,11 @@ export interface BuildContextInput {
   readonly snippets?: readonly SearchHit[]
   /** 当前激活任务（只注入 `in_progress`；todo 不入上下文，规则 15） */
   readonly task?: TaskRecord
+  /**
+   * 我委派出去的任务（S36/D39）：`updatedAt` 倒序，注入为 `[委派任务]` 块，
+   * 让委派人"接收到回报后继续执行"不依赖单条聊天消息。
+   */
+  readonly delegatedTasks?: readonly TaskRecord[]
   /** 产出物署名（`file-owners`）：我的（可改）/ 他人的（只读）（workspaces-artifacts §2.2） */
   readonly ownership?: { readonly mine: readonly FileOwnerRecord[]; readonly others: readonly FileOwnerRecord[] }
   /** 项目产出物索引（名称/版本/文件数，内容按需读） */
@@ -120,6 +125,15 @@ function memoryLines(entries: readonly MemoryEntry[]): string {
   return entries
     .map((entry) => `- [${entry.type}] ${entry.content}（source=${entry.source.sessionId}#${entry.source.seq}）`)
     .join('\n')
+}
+
+/** `[委派任务]` 块最多列出的条数（超出只给一行提示，防止提示词随项目变长无界膨胀） */
+export const MAX_DELEGATED_TASKS_IN_PROMPT = 8
+
+/** 委派任务摘要行：`- t_1 → dev_1：《标题》：done（备注）` */
+export function delegatedTaskLine(task: TaskRecord): string {
+  const note = task.note?.trim() ?? ''
+  return `- ${task.id} → ${task.assignee}：《${task.title}》：${task.state}${note === '' ? '' : `（${note}）`}`
 }
 
 export function buildAgentContext(input: BuildContextInput): BuiltContext {
@@ -202,6 +216,25 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
         `任务 ${input.task.id}：${input.task.title}（${input.task.state}｜发起：${input.task.creator}）`,
         ...(input.task.desc.length === 0 ? [] : [`说明：${input.task.desc}`]),
         '你的代码改动会计入这条任务；完成后用 task_update 汇报 done（平台会结算为可回退的产出物）。',
+      ].join('\n'),
+    })
+  }
+
+  // 我派出去的活干到哪了（S36/D39）：委派人靠这块"接收到回报并继续"，而不是靠翻聊天记录
+  const delegated = input.delegatedTasks ?? []
+  if (delegated.length > 0) {
+    const shown = delegated.slice(0, MAX_DELEGATED_TASKS_IN_PROMPT)
+    blocks.push({
+      id: 'delegated-tasks',
+      origin: 'task-context',
+      title: '我委派出去的任务',
+      text: [
+        '以下是**你派给其他角色**的任务（最近更新在前）：',
+        ...shown.map((task) => delegatedTaskLine(task)),
+        ...(delegated.length > shown.length
+          ? [`（另有 ${delegated.length - shown.length} 条，需要时用 task_list 查看全部）`]
+          : []),
+        '回报到达后请据此继续你自己的计划：已完成的结果直接用起来推进下一步；受阻或终止的，决定调整方案、重新派单还是自己接手。',
       ].join('\n'),
     })
   }

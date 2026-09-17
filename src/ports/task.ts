@@ -63,4 +63,9 @@ export interface TaskService {
   get(projectId: ProjectId, taskId: string): Promise<Result<TaskRecord>>
   /** 上下文注入用：该 Agent 当前 `in_progress` 任务（todo 不入上下文，规则 15） */
   activeFor(projectId: ProjectId, instanceId: InstanceId): Promise<Result<TaskRecord | null>>
+  /**
+   * 上下文注入用（S36/D39）：**该 Agent 委派给别人**的任务（`creator = 我 && assignee ≠ 我`），
+   * `updatedAt` 倒序——委派人据此看到自己派出去的活干到哪了，从而"接收到回报后继续执行"。
+   */
+  delegatedFor(projectId: ProjectId, instanceId: InstanceId): Promise<Result<readonly TaskRecord[]>>
 }

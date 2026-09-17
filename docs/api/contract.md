@@ -48,7 +48,7 @@
 | GET | /api/projects/:pid/sessions/:sid | meta + 事件窗口（`?limit=` 尾窗语义，默认 200）|
 | POST | /api/projects/:pid/sessions/:sid/messages | 发送用户消息（body:`{text}`）→ **202** `{seq, queued}`；`queued=true` 表示该 Agent 忙或已暂停、消息已入队（队列 = 日志中未处理消息）；实例停用 → `ERR_CONFLICT` |
 | GET | /api/projects/:pid/sessions/:sid/log?fromSeq=&kind=&limit= | 增量拉日志（重连恢复）；`kind=` 逗号分隔过滤（原始事件时间线视图）|
-| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务（当前回合到可中断点）；重复暂停 → `ERR_CONFLICT` |
+| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务，**并当场中断在途回合**（S37/D40：中断不排队等 `drain` 锁；被中断回合**游标不推进**→消息留队列，`resume` 补处理）；重复暂停 → `ERR_CONFLICT` |
 | POST | /api/projects/:pid/agents/:iid/resume | 恢复并**立刻补处理排队消息** → `{...status, handled}` |
 | POST | /api/projects/:pid/dispatcher/resume-queued | 项目级恢复入口：给"队列非空且无占用"的 Agent 各补一轮（D18-③）→ `{resumed:[instanceId]}` |
 | POST | /api/projects/:pid/sessions/:sid/hangup | user 会话：暂停 Agent（P1）|
@@ -139,9 +139,9 @@
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务，当前回合到可中断点挂起 |
+| POST | /api/projects/:pid/agents/:iid/pause | **暂停**：不再领新任务；在途回合当场在可中断点收尾且游标不推进（恢复后补处理队列）|
 | POST | /api/projects/:pid/agents/:iid/resume | 恢复：继续处理队列 |
-| POST | /api/projects/:pid/agents/:iid/stop | **停止**当前任务（带确认；存在未结算改动先结算为 code artifact 快照）|
+| POST | /api/projects/:pid/agents/:iid/stop | `scope:'turn'`＝**停止生成**：本条消息作废、剩余队列不自动续跑；`scope:'task'`＝**停止任务**（带确认；存在未结算改动先结算为 code artifact 快照）。返回 `{aborted, taskId, settledArtifactId, queued}`，无在途回合时 `aborted=false` |
 
 ## 3. WS 协议
 

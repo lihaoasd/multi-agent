@@ -1,13 +1,16 @@
-import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Segmented, Space, Switch, Tag, Tooltip, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
+import { workApi, type QuestionRecord } from '../api/work'
 import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } from '../api/sessions'
 import { useRealtime } from '../hooks/useRealtime'
 import { RightColumn } from './RightColumn'
+import { QuestionCarousel } from '../components/QuestionCarousel'
 import { Markdown } from '../components/Markdown'
-import { eventRow, isToolFailed, messageTextOf } from '../lib/event-display'
+import { eventRow, isToolFailed, messageTextOf, traceLine } from '../lib/event-display'
 import { runtimeApi } from '../api/runtime'
+import { stopTurnFeedback } from '../lib/stop-feedback'
 
 interface SessionPanelProps {
   readonly projectId: string
@@ -70,6 +73,12 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
+  /** 会话窗口视图（S35）：`chat` = 对话视图；`trace` = 详细日志（原始事件全量） */
+  const [viewMode, setViewMode] = useState<'chat' | 'trace'>('chat')
+  /** 详细日志里是否展开原始 payload JSON */
+  const [showRawPayload, setShowRawPayload] = useState(false)
+  /** 待答复询问（S32）：在本会话窗口（输入框上方）答复；逐题作答的草稿由 `QuestionCarousel` 自己管（S33） */
+  const [questions, setQuestions] = useState<QuestionRecord[]>([])
   /** 已应用过的聚焦令牌（S17）：只在匹配到目标会话时记录，避免会话列表刷新时覆盖用户的手动选择 */
   const appliedFocusRef = useRef<number | null>(null)
   /** 左右两栏收起状态（S20）：收起后把宽度让给聊天区 */
@@ -90,6 +99,30 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
       setError(describeError(cause))
     }
   }, [projectId])
+
+  /** 待答复询问（S32）：**在输入框上方就地答复**；右栏只做提示 */
+  const refreshQuestions = useCallback(async () => {
+    try {
+      setQuestions(await workApi.questions(projectId, 'pending'))
+    } catch (cause) {
+      setError(describeError(cause))
+    }
+  }, [projectId])
+
+  const answerQuestion = async (
+    question: QuestionRecord,
+    answers: readonly { readonly itemId: string; readonly choice?: string | null; readonly text?: string | null }[],
+  ): Promise<void> => {
+    try {
+      await workApi.answer(projectId, question.id, answers)
+      message.success('已答复，Agent 将继续')
+      await refreshQuestions()
+      if (activeSessionId !== null) await loadEvents(activeSessionId)
+      await refreshStatuses()
+    } catch (cause) {
+      message.error(describeError(cause))
+    }
+  }
 
   const decide = async (approval: ApprovalView, decision: 'approved' | 'rejected'): Promise<void> => {
     try {
@@ -136,7 +169,8 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     void loadSessions()
     void refreshStatuses()
     void refreshApprovals()
-  }, [loadSessions, refreshStatuses, refreshApprovals])
+    void refreshQuestions()
+  }, [loadSessions, refreshStatuses, refreshApprovals, refreshQuestions])
 
   useEffect(() => {
     if (activeSessionId !== null) void loadEvents(activeSessionId)
@@ -172,8 +206,9 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
         }
         if (frame.type === 'agent.state' || frame.type === 'team.updated') void refreshStatuses()
         if (frame.type === 'approval.requested' || frame.type === 'approval.decided') void refreshApprovals()
+        if (frame.type === 'question.asked' || frame.type === 'question.answered') void refreshQuestions()
       },
-      [activeSessionId, projectId, refreshStatuses, refreshApprovals],
+      [activeSessionId, projectId, refreshStatuses, refreshApprovals, refreshQuestions],
     ),
   )
 
@@ -187,20 +222,47 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     [sessions, activeSessionId],
   )
 
+  /** 只显示**当前会话**的待答询问（S32：答复入口在会话窗口内） */
+  const sessionQuestions = useMemo(
+    () => questions.filter((question) => question.sessionId === activeSessionId),
+    [questions, activeSessionId],
+  )
+
+  /**
+   * 消息区滚动跟随（S34）：默认**跟住最后一条消息**；用户手动往上翻时不打扰，
+   * 一旦回到底部附近就恢复跟随（阈值 40px）。
+   */
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [stickToBottom, setStickToBottom] = useState(true)
+
+  const onScroll = useCallback(() => {
+    const node = scrollRef.current
+    if (node === null) return
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight
+    setStickToBottom(distance < 40)
+  }, [])
+
   const send = async (): Promise<void> => {
     if (activeSessionId === null) return
     const text = draft.trim()
     if (text.length === 0) return
+
+    // S31：**立刻清空输入框**（乐观）。
+    // 为什么不能等接口返回再清：`POST /messages` 在服务端会 `await drain(...)`，
+    // 即**整个回合跑完才响应**（模型调用 + 工具，可能几十秒）——等它返回再清空，
+    // 输入框会在整轮期间一直留着刚发出去的文字，发送按钮也一直转圈。
+    setDraft('')
     setBusy(true)
     try {
       const result = await sessionApi.send(projectId, activeSessionId, text)
-      setDraft('')
       if (result.queued) {
         message.info('该 Agent 正在工作或已暂停，消息已排队，稍后处理')
       }
       await loadEvents(activeSessionId)
       await refreshStatuses()
     } catch (cause) {
+      // 只有发送失败才把文字放回去；期间用户若已重新输入，则不覆盖他的新内容
+      setDraft((current) => (current.length === 0 ? text : current))
       message.error(describeError(cause))
     } finally {
       setBusy(false)
@@ -227,6 +289,13 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     () => events.filter((event) => (VISIBLE_KINDS as readonly string[]).includes(event.kind)),
     [events],
   )
+
+  /** S34：新内容到达时**跟住最后一条消息**；S35：切换视图/展开 payload 时也要跟随 */
+  useEffect(() => {
+    const node = scrollRef.current
+    if (node === null || !stickToBottom) return
+    node.scrollTop = node.scrollHeight
+  }, [events, visibleEvents, viewMode, showRawPayload, stickToBottom])
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -293,12 +362,29 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
 
         <Card
           size="small"
-          style={{ flex: 1 }}
+          // S34：会话卡片**占满视口剩余高度**（自己成为 flex 列），消息区随屏幕伸缩、输入框钉在底部
+          style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 270px)', minHeight: 360 }}
+          styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
           title={
             activeSession === undefined ? '会话' : `${activeSession.displayName}｜${activeSession.sessionId}`
           }
           extra={
             <Space>
+              {/* S35：对话 / 详细日志（trace）切换；详细日志可再展开原始 payload */}
+              <Segmented
+                size="small"
+                value={viewMode}
+                onChange={(value) => setViewMode(value as 'chat' | 'trace')}
+                options={[
+                  { label: '对话', value: 'chat' },
+                  { label: '详细日志', value: 'trace' },
+                ]}
+              />
+              {viewMode === 'trace' && (
+                <Tooltip title="每行附加完整 payload（原始 JSON）">
+                  <Switch size="small" checked={showRawPayload} onChange={setShowRawPayload} />
+                </Tooltip>
+              )}
               <Popconfirm
                 title="开启新对话？"
                 description="清空该 Agent 的全部历史消息，重新开始。"
@@ -334,7 +420,11 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
                 onConfirm={() =>
                   void runtimeApi
                     .stop(projectId, activeSession?.instanceId ?? '', 'turn')
-                    .then(() => message.success('已请求停止当前回合'))
+                    .then((result) => {
+                      // S37：如实反馈——空闲时"没停到东西"不能报成功
+                      const feedback = stopTurnFeedback(result)
+                      message[feedback.kind](feedback.text)
+                    })
                     .catch((cause: unknown) => message.error(describeError(cause)))
                 }
               >
@@ -343,9 +433,39 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
             </Space>
           }
         >
-          {/* 消息区高度自适应视口（S20）：原来写死 420px，1080p 屏上白白浪费约 500px */}
-          <div style={{ maxHeight: 'calc(100vh - 350px)', minHeight: 300, overflowY: 'auto', paddingRight: 8 }}>
-            {visibleEvents.length === 0 && <Empty description="还没有内容：在下面输入框说点什么" />}
+          {/* S20：消息区随视口自适应；S34：改为 flex 撑满卡片剩余高度 + **自动跟随最后一条消息** */}
+          <div
+            ref={scrollRef}
+            onScroll={onScroll}
+            style={{ flex: 1, minHeight: 200, overflowY: 'auto', paddingRight: 8 }}
+          >
+            {/* S35：详细日志视图——原始事件全量（含 plan/turn/state/summary/artifact/approval），可展开 payload */}
+            {viewMode === 'trace' ? (
+              events.length === 0 ? (
+                <Empty description="该会话还没有事件" />
+              ) : (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {events.map((event) => {
+                    const line = traceLine(event)
+                    return (
+                      <div key={event.seq} style={{ border: '1px solid #f0f0f0', background: '#fafafa', borderRadius: 6, padding: '4px 8px' }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {line.head}
+                        </Typography.Text>
+                        <div style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{line.text}</div>
+                        {showRawPayload && (
+                          <pre style={{ margin: '4px 0 0', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                            {JSON.stringify(event.payload, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+                    )
+                  })}
+                </Space>
+              )
+            ) : visibleEvents.length === 0 ? (
+              <Empty description="还没有内容：在下面输入框说点什么" />
+            ) : (
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               {visibleEvents.map((event) => {
                 if (event.kind === 'message') {
@@ -434,6 +554,7 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
                 )
               })}
             </Space>
+            )}
           </div>
           {approvals.length > 0 && (
             <Card size="small" title={`待审批（${approvals.length}）`} style={{ marginTop: 12 }}>
@@ -455,6 +576,20 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
                       </Button>
                     </Space>
                   </div>
+                ))}
+              </Space>
+            </Card>
+          )}
+          {/* S32：询问卡在**输入框上方**就地答复；S33：一次一题、卡片左右滑动、攒齐提交；右栏只做提示 */}
+          {sessionQuestions.length > 0 && (
+            <Card size="small" title={`待答复询问（${sessionQuestions.length}）`} style={{ marginTop: 12 }}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {sessionQuestions.map((question) => (
+                  <QuestionCarousel
+                    key={question.id}
+                    question={question}
+                    onSubmit={(answers) => answerQuestion(question, answers)}
+                  />
                 ))}
               </Space>
             </Card>
@@ -505,7 +640,7 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
                 </Button>
               </Tooltip>
             </div>
-            <RightColumn projectId={projectId} />
+            <RightColumn projectId={projectId} onOpenSession={(sessionId) => setActiveSessionId(sessionId)} />
           </div>
         )}
       </div>

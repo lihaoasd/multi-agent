@@ -49,6 +49,7 @@ export function createPromptPreviewService(options: PromptPreviewServiceOptions)
       const toolSchemas = options.tools.schemasFor(toolNames, sessionType)
       const memories = await options.memory.activeFor(projectId, instanceId)
       const activeTask = await options.tasks.activeFor(projectId, instanceId)
+      const delegatedTasks = await options.tasks.delegatedFor(projectId, instanceId)
       const owners = await options.artifacts.listOwners(projectId)
       const artifacts = await options.artifacts.list(projectId, { limit: 10 })
 
@@ -61,6 +62,7 @@ export function createPromptPreviewService(options: PromptPreviewServiceOptions)
         // 检索片段依赖"本次用户消息"，预览无消息故不注入（运行期才可能出现 retrieval 块）
         snippets: [],
         ...(activeTask.ok && activeTask.value !== null ? { task: activeTask.value } : {}),
+        ...(delegatedTasks.ok && delegatedTasks.value.length > 0 ? { delegatedTasks: delegatedTasks.value } : {}),
         ownership: {
           mine: owners.ok ? owners.value.filter((item) => item.owner === instanceId) : [],
           others: owners.ok ? owners.value.filter((item) => item.owner !== instanceId) : [],

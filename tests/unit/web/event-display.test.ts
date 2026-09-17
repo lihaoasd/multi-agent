@@ -7,6 +7,7 @@ import {
   messageTextOf,
   toolInputOf,
   toolNameOf,
+  traceLine,
 } from '../../../web/src/lib/event-display'
 
 /**
@@ -49,13 +50,18 @@ describe('web/lib/event-display · 会话事件展示映射', () => {
     expect(eventBody(toolCall('{"path":"src/a.ts","content":"很长…'))).toBe('{"path":"src/a.ts","content":"很长…')
   })
 
-  it('工具结果：条目**只显示工具名**（S26）；失败标记可判定（供整行标红）', () => {
+  it('工具结果：成功时**只显示工具名**（S26）；失败时**显示报错内容**（S34）', () => {
     const ok = toolResult(true, '读到了文件（1 行）')
     expect(eventRow(ok)).toEqual({ label: 'fs_read_file', body: null, showMeta: false, bodyMode: 'none' })
     expect(isToolFailed(ok)).toBe(false)
 
-    const failed = toolResult(false, '[ERR_FORBIDDEN] 归属校验失败')
-    expect(eventRow(failed)).toEqual({ label: 'fs_read_file', body: null, showMeta: false, bodyMode: 'none' })
+    const failed = toolResult(false, '[ERR_FORBIDDEN] 归属校验失败：该文件属于 dev_1')
+    expect(eventRow(failed)).toEqual({
+      label: 'fs_read_file',
+      body: '[ERR_FORBIDDEN] 归属校验失败：该文件属于 dev_1',
+      showMeta: false,
+      bodyMode: 'inline',
+    })
     expect(isToolFailed(failed)).toBe(true)
   })
 
@@ -101,6 +107,35 @@ describe('web/lib/event-display · 会话事件展示映射', () => {
       messageTextOf({ kind: 'message', seq: 2, turn: 1, payload: { role: 'agent', content: { text: '收到' } } }),
     ).toBe('收到')
     expect(messageTextOf({ kind: 'message', seq: 3, turn: 1, payload: { role: 'agent' } })).toBe('（空消息）')
+  })
+
+  it('详细日志（trace）行：头部含序号/时间/turn/kind，摘要覆盖全部 kind（S35）', () => {
+    const at = '2026-09-17T11:52:29.007Z'
+    expect(traceLine({ kind: 'message', seq: 42, turn: 1, ts: at, payload: { role: 'agent', text: '开工' } })).toEqual({
+      head: '#42 · 11:52:29.007 · turn 1 · message',
+      text: 'Agent：开工',
+    })
+    // 对话视图里被隐藏的 plan / turn 边界 / state 在详细日志里都要有可读摘要
+    expect(
+      traceLine({ kind: 'plan', seq: 3, turn: 1, ts: at, payload: { status: 'running', steps: [{}, {}], stepIndex: 0 } }).text,
+    ).toBe('计划 running（2 步） · 当前第 0 步')
+    expect(traceLine({ kind: 'turn_start', seq: 2, turn: 1, ts: at, payload: { loopStep: 'plan-execute', steps: [{}] } }).text).toBe(
+      'loop=plan-execute · plan 1 步',
+    )
+    expect(traceLine({ kind: 'turn_end', seq: 43, turn: 1, ts: at, payload: { status: 'done' } }).text).toBe('done')
+    expect(traceLine({ kind: 'state', seq: 9, turn: 1, ts: at, payload: { dsmlUnparsed: 1 } }).text).toBe('{"dsmlUnparsed":1}')
+    // 工具结果：成功/失败都在摘要里说清
+    expect(traceLine({ kind: 'tool_result', seq: 5, turn: 1, ts: at, payload: { tool: 'fs_list_dir', ok: true, summary: '/' } }).text).toBe(
+      '成功 · fs_list_dir：/',
+    )
+    expect(traceLine({ kind: 'tool_result', seq: 6, turn: 1, ts: at, payload: { tool: 'fs_read_file', ok: false, summary: '[ERR_FORBIDDEN] 拒改' } }).text).toBe(
+      '失败 · fs_read_file：[ERR_FORBIDDEN] 拒改',
+    )
+    // 时间戳缺失时不崩（历史事件可能没有）
+    expect(traceLine({ kind: 'error', seq: 7, turn: 1, payload: { text: 'ERR_MODEL' } })).toEqual({
+      head: '#7 ·  · turn 1 · error',
+      text: 'ERR_MODEL',
+    })
   })
 
   it('工具调用无参数：正文为空字符串（标题已带工具名，不会显示 `undefined`）', () => {

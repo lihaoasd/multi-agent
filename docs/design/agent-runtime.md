@@ -39,7 +39,7 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 状态持久化：**occupancy 为运行期占用唯一真相（D18-④）**——dispatcher 把 agentId→活动{type,sessionId} 落盘 runtime.state.json，启动时由 session meta/回合重建基线，此后以其为准；user 会话 `suspended` 等会话 meta 标志为**派生投影**（可留缓存、不单独作为真相，显示/恢复统一按 occupancy 重算）；log 事件（kind=`state`）为审计真相。重启重建见 §7 与 memory.md §6。
 
 > **两级状态映射**：Agent 状态（idle/working/waiting **三态**，D16-②）由 dispatcher 维护，表示"该 Agent 能否领活"；会话状态（user: active/suspended/archived，D16-②）见 sessions.md。审批等待或**询问等待**（等用户答复提问）= Agent `waiting`，其 user 会话**仍为 active**（用户随时可继续发消息入队），不引入会话级 wait_user 状态（D14 评审定稿）；user 会话 `suspended` 一律由 dispatcher occupancy 派生（D18-④），不单独持久化为真相。
-> **停用 / 暂停 / 停止的区别**：`enabled=false`（停用）是管理动作，实例长期退出调度、数据全保留（D14-9）；**暂停**（D19-⑥）是临时运行控制——不再领新任务、当前回合到可中断点挂起，可秒级恢复；**停止**终止该 Agent 当前任务（存在未结算改动先结算为 code artifact 快照，D17-①）。三者都不影响其它 Agent。
+> **停用 / 暂停 / 停止的区别**：`enabled=false`（停用）是管理动作，实例长期退出调度、数据全保留（D14-9）；**暂停**（D19-⑥；**S37/D40 修复**：暂停请求**当场**中断在途回合——中断信号不排队等 `drain` 的锁，被中断的回合在可中断点收尾且**游标不推进**，消息留在队列、恢复后补处理；中断后不再自动续跑队列）是临时运行控制——不再领新任务，可秒级恢复；**停止**终止该 Agent 当前任务（存在未结算改动先结算为 code artifact 快照，D17-①）。三者都不影响其它 Agent。
 > **停用实例**：enabled=false 仅是调度开关（不进入上述状态机流转），实例的会话/记忆全部保留（D14-9）；**忙碌实例停用边界（D16/B6）**：working 中的实例，停用请求进入"待停用"——dispatcher 不再领新活，当前回合到可中断点或自然结束后生效；waiting（审批等待）中的实例需用户先处理/取消对应审批后再停用。
 
 ## 3. 内置 agent loop（执行模板，D4）
@@ -55,7 +55,7 @@ MVP 每项目每模板**至多 1 个实例**（D14-3）：instanceId 唯一（�
 > | `reflective` = 生成 → 自查 → 修订 | **真 critique 调用** + 修订调用；轮数由 `maxIterations`（1~2）控制 |
 > | `plan-execute` = 显式计划 → 逐步执行 → 验证 | **计划由模型产出**（要求 JSON `{"steps":[…]}`，解析失败退化为单步）→ 落 `plan` 事件 → 逐步执行并回写 `plan.stepIndex/status` → 汇总 `message`；步数受 `maxIterations`、工具调用受 `toolBudget` 限制 |
 > | 通用参数 `maxIterations` / `stepModelOverride` / `toolBudget` | 三者均有消费者（步数、步骤级模型覆盖、工具调用上限） |
-> | 可中断点 | 每步开始检查中断（暂停 → abort 回合）；`plan` 事件写 `status='interrupted'` 后正常收尾 |
+> | 可中断点 | 每步开始检查中断（暂停 / 停止生成 → abort 回合）；`plan` 事件写 `status='interrupted'`，平台再补一条 `state{turnAborted:true, reason, note}` 后正常收尾（S37/D40：中断事实必须留痕，Agent 靠它自查）|
 >
 > 仍未做：`plan` 事件的**跨重启消费**（恢复时读取计划续做）已随 S21/D27 取消平台侧恢复，改由 Agent 自行读取 `session_recent` 与 plan 事件判断（§7）。
 >
@@ -99,10 +99,10 @@ loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮�
 
 组装顺序固定，可配置 `contextLimits`。检索到的旧会话片段按需注入（tag 为引用片段）。
 
-> **实现口径（2026-09-15，S5/S6）**：块顺序落地为 `role-config → platform-role → global-memory → role-memory → session-window → retrieval? → task-context? → artifact-index? → tools`（`tools` 按本节口径排在最后；此前 S4 的 `tools` 在 `session-window` 之前已修正）。
+> **实现口径（2026-09-15，S5/S6）**：块顺序落地为 `role-config → platform-role → global-memory → role-memory → session-window → retrieval? → task-context? → delegated-tasks? → artifact-index? → tools`（`tools` 按本节口径排在最后；此前 S4 的 `tools` 在 `session-window` 之前已修正）。
 > `global-memory`/`role-memory` 取 `memory.activeFor`（global 与本人角色分别限量、时间倒序）；`session-window` 先给**最近一条 `summary` 事件的 digest**（`【历史摘要（至 seq N）】`），再列该摘要覆盖范围之后的最近 `rawWindow` 条原文；
 > `retrieval` 块仅在检索到"不在本次窗口内"的片段时出现（上限 `context.search.maxSnippets`，每条 ≤600 字），检索词取本次用户消息，可见性同 D18-②（Agent 只可能命中本人会话与可见记忆）；
-> `task-context` 只在存在 `in_progress` 任务时出现（todo 不入上下文，规则 15）；`artifact-index` 汇总"我的产出物（可改）/他人产出物（只读）"（`file-owners` 署名，workspaces-artifacts §2.2）与最近 10 条产出物摘要，供 Agent 判断"能改谁的、改过什么"。
+> `task-context` 只在存在 `in_progress` 任务时出现（todo 不入上下文，规则 15）；`delegated-tasks`（**S36/D39**）只在"我派出去的任务"非空时出现，列出 `creator=我 && assignee≠我` 的任务及状态（`updatedAt` 倒序、最多 8 条），让委派人在收到回报后**继续执行**而不是翻聊天记录；`artifact-index` 汇总"我的产出物（可改）/他人产出物（只读）"（`file-owners` 署名，workspaces-artifacts §2.2）与最近 10 条产出物摘要，供 Agent 判断"能改谁的、改过什么"。
 
 **contextLimits MVP 默认值**（`.env` 集中配置，键名如 `CONTEXT__SESSION__RAW_WINDOW`，可全局/实例覆盖，M11 定稿）：
 
@@ -149,7 +149,7 @@ loop 通用参数（**S4 起均有消费者**）：`maxIterations`（步数/轮�
 | approval_query | 审批状态 | none | 查看自己触发的审批（审批请求由执行器自动产生，不由模型触发） |
 | ask_user | platform | none | 向用户提问（question/options）并**阻塞等待**答复：Agent 转 `waiting`，右栏询问列表原地答复后继续（D19-⑦；同一 Agent 至多 1 个待答） |
 
-> **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign`/`task_claim`/`task_update` 作为**平台工具在 user 会话始终可用**（`PLATFORM_USER_TOOLS`）：`task_assign` 对所有角色开放，但**目标必须是自己在本项目编排图中的出边节点**（D19-④；越权返回 `ERR_ORCHESTRATION_EDGE`；用户经 UI 手动派单不受此限），把任务**发布到任务栏**（`todo`=已发布·待领取）并通知受派人；受派人用 `task_claim` **领取**（只能领自己的、受单工槽位约束）后转 `in_progress`；`task_update` 汇报完成/受阻/终止，平台据此**通知委派人安排后续**。系统提示相应注入 `[待领取任务]`（引导 claim）、`[当前任务]`（要求 done 上报）与 `[任务栏]`（上游 Agent 依出边发布指引）。**Agent 委派已是默认行为**（D19-⑤），原 `task.assignByAgent` 开关废弃；用户仍可经 API/UI 手动发布与干预。
+> **任务工具（D15 → 2026-09-12 任务栏）**：`task_assign`/`task_claim`/`task_update` 作为**平台工具在 user 会话始终可用**（`PLATFORM_USER_TOOLS`）：`task_assign` 对所有角色开放，但**目标必须是自己在本项目编排图中的出边节点**（D19-④；越权返回 `ERR_ORCHESTRATION_EDGE`；用户经 UI 手动派单不受此限），把任务**发布到任务栏**（`todo`=已发布·待领取）并通知受派人；受派人用 `task_claim` **领取**（只能领自己的、受单工槽位约束）后转 `in_progress`；`task_update` 汇报完成/受阻/终止，平台据此**通知委派人安排后续**。系统提示注入 `[当前任务]`（要求 done 上报）与 `[委派任务]`（**S36/D39**：自己派出去的任务及状态，供委派人在收到回报后继续执行）；"待领取"由发布时的唤醒消息传递（无 `[待领取任务]` 块），`[任务栏]` 未实现——对应能力是 `task_list`/`task_view` 工具。`task_update` 汇报后，平台唤醒委派人并注入**"事实 + 据此继续"**的通知（`taskReportNotice()`，不再是纯事实），见 prd D39。**Agent 委派已是默认行为**（D19-⑤），原 `task.assignByAgent` 开关废弃；用户仍可经 API/UI 手动发布与干预。
 
 **审批默认（D13②）**：doc 提交需审批；code 提交（workdir_edit 聚合）无需审批留痕即可；高危命令需审批。`cmd_run` 风险判定、cwd 锁定、危险清单与审批桥规则见 [sandbox.md](sandbox.md) §5（本节不再重复）。
 **路径边界**：任何文件工具目标解析后必须落在**项目工作目录**内（虚拟路径机制见 sandbox.md §3），否则拒绝并记 audit 事件（错误回注 agent 调整）；平台内置只读资源经 ro:// 显式开放。文件**读取全员开放**（工作目录共享）；写入另受归属约束——仅可写归属自己或无归属的文件，他人产出物拒改（`ERR_FORBIDDEN`，见 workspaces-artifacts §2）。

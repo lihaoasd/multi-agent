@@ -16,8 +16,17 @@ const TASK_STATE_LABEL: Record<string, string> = {
 /**
  * 右栏三列表（ui.md §5）：任务 / 询问（待答）/ 审批（pending）。
  * 三者都是"当前需要用户或 Agent 动作"的入口；WS 事件到达即刷新。
+ *
+ * ⚠️ **S32 起「询问」只做提示**：答复入口统一在**会话窗口（输入框上方）**，
+ * 这里只显示"谁在问什么 + 到会话里答复"；`onOpenSession` 缺省时退化为一句提示文字。
  */
-export function RightColumn({ projectId }: { readonly projectId: string }) {
+export function RightColumn({
+  projectId,
+  onOpenSession,
+}: {
+  readonly projectId: string
+  readonly onOpenSession?: (sessionId: string) => void
+}) {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [questions, setQuestions] = useState<QuestionRecord[]>([])
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
@@ -68,15 +77,6 @@ export function RightColumn({ projectId }: { readonly projectId: string }) {
     }
   }
 
-  const answer = async (question: QuestionRecord, itemId: string, choice: string): Promise<void> => {
-    try {
-      await workApi.answer(projectId, question.id, [{ itemId, choice }])
-      await load()
-    } catch (cause) {
-      setError(describeError(cause))
-    }
-  }
-
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {error !== null && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
@@ -113,23 +113,13 @@ export function RightColumn({ projectId }: { readonly projectId: string }) {
         ) : (
           questions.map((question) => (
             <Card key={question.id} size="small" type="inner" title={`${question.asker}：${question.title}`}>
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                {question.items.map((item) => (
-                  <Space key={item.id} size={4} wrap>
-                    <Typography.Text>{item.text}</Typography.Text>
-                    {item.options.length > 0 ? (
-                      item.options.map((option) => (
-                        <Button key={option} size="small" onClick={() => void answer(question, item.id, option)}>
-                          {option}
-                        </Button>
-                      ))
-                    ) : (
-                      <Button size="small" onClick={() => void answer(question, item.id, '同意')}>
-                        同意
-                      </Button>
-                    )}
-                  </Space>
-                ))}
+              <Space size={6} wrap>
+                <Typography.Text type="secondary">答复请到会话窗口（输入框上方）</Typography.Text>
+                {onOpenSession !== undefined && (
+                  <Button size="small" onClick={() => onOpenSession(question.sessionId)}>
+                    到会话里答复
+                  </Button>
+                )}
               </Space>
             </Card>
           ))

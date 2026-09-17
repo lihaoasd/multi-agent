@@ -37,11 +37,31 @@ export interface DispatcherOptions {
  *
  * 单工不变式：任一 Agent 同一时刻至多一个活动会话；忙时新消息只落盘排队，不打断当前回合。
  * 游标在**回合结束后**推进（至少一次语义：崩溃时宁可重放，也不丢消息）。
+ * 中断口径（S37）：**暂停**＝挂起（游标不推进，消息留在队列，恢复后补处理）；**停止生成**＝本条作废
+ * （游标照常推进，不再重放），两者都**不再续跑剩余队列**。
  */
 export function createDispatcher(options: DispatcherOptions): Dispatcher {
   const { stateStore, projectStore, sessions, runner, approvals, broadcaster, lock, clock, logger } = options
-  /** 运行中回合的中断句柄：暂停/停止时 abort，回合在可中断点挂起（D19-⑥） */
-  const activeTurns = new Map<string, AbortController>()
+  /**
+   * 运行中回合的中断句柄：暂停/停止时 abort，回合在可中断点收尾（D19-⑥）。
+   * `reason` 决定收尾口径（S37）：`pause`=挂起（游标不推进，消息留在队列、恢复后补处理）；
+   * `stop`=停止生成（本条作废不重放，剩余队列留给用户下次触发）。
+   */
+  const activeTurns = new Map<string, { readonly controller: AbortController; reason: 'pause' | 'stop' | null }>()
+  /**
+   * 暂停意图（内存即时可见，S37 修复）：`drain` 持同一把 keyed lock **跑完整个队列**，
+   * 因此 `setPaused` 只能等锁释放才落盘——那时 Agent 已经把队列干完了，"暂停"等于没停。
+   * 意图在取锁**之前**登记，drain 的循环据此立即收敛；持久标记仍由 `stateStore` 负责。
+   */
+  const pauseIntent = new Set<string>()
+
+  const abortActiveTurn = (instanceId: string, reason: 'pause' | 'stop'): boolean => {
+    const active = activeTurns.get(instanceId)
+    if (active === undefined) return false
+    active.reason = reason
+    active.controller.abort()
+    return true
+  }
 
   const loadState = async (projectId: string): Promise<Result<DispatcherState>> => stateStore.load(projectId)
 
@@ -87,7 +107,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
     let state = await loadState(projectId)
     if (!state.ok) return state
-    if (state.value.paused[instanceId] === true) {
+    if (state.value.paused[instanceId] === true || pauseIntent.has(instanceId)) {
       return ok({ handled: 0 })
     }
     if (state.value.occupancy[instanceId] !== undefined) {
@@ -98,6 +118,8 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
     let handled = 0
 
     for (;;) {
+      // 暂停可能落在"上一回合刚收尾、下一回合还没起"的缝里：意图在内存里即时可见（S37）
+      if (pauseIntent.has(instanceId)) break
       const cursor = state.value.lastHandledSeq[instanceId] ?? 0
       const pending = await pendingMessages(projectId, instanceId, cursor)
       if (!pending.ok) return pending
@@ -128,8 +150,11 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }
 
       const text = typeof next.payload['text'] === 'string' ? (next.payload['text'] as string) : ''
-      const controller = new AbortController()
-      activeTurns.set(instanceId, controller)
+      const handle: { readonly controller: AbortController; reason: 'pause' | 'stop' | null } = {
+        controller: new AbortController(),
+        reason: null,
+      }
+      activeTurns.set(instanceId, handle)
       let turnResult: Result<void>
       try {
         turnResult = await runner.runTurn({
@@ -139,7 +164,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
           sessionType: 'user',
           turn,
           userText: text,
-          signal: controller.signal,
+          signal: handle.controller.signal,
           emit,
         })
       } catch (cause) {
@@ -162,16 +187,36 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
         })
       }
 
+      // 被用户中断：把"事实"落进会话日志（S21/D27：平台不再判定未完成回合，Agent 靠日志自查）
+      if (handle.reason !== null) {
+        await emit({
+          kind: 'state',
+          turn,
+          payload: {
+            turnAborted: true,
+            reason: handle.reason,
+            note:
+              handle.reason === 'pause'
+                ? '用户暂停，回合在可中断点收尾；本条消息保留在队列，恢复后补处理'
+                : '用户停止生成，回合在可中断点收尾；本条不再重放',
+          },
+        })
+      }
+
       // 释放占用 + 推进游标（回合结束后推进：崩溃宁可重放不丢消息）
+      // 暂停=挂起：**游标不推进**（消息留在队列，恢复后补处理，规则 26）；停止生成=本条作废，游标照常推进
+      const holdCursor = handle.reason === 'pause'
       const savedIdle = await updateState(projectId, (current) => ({
         ...current,
         occupancy: Object.fromEntries(Object.entries(current.occupancy).filter(([key]) => key !== instanceId)),
-        lastHandledSeq: { ...current.lastHandledSeq, [instanceId]: next.seq },
+        ...(holdCursor ? {} : { lastHandledSeq: { ...current.lastHandledSeq, [instanceId]: next.seq } }),
       }))
       if (!savedIdle.ok) return savedIdle
       state = savedIdle
       publishState(projectId, instanceId, 'idle', sessionId)
       handled += 1
+      // 中断后不再续跑队列：暂停等恢复；停止生成把剩余消息留给用户下次触发
+      if (handle.reason !== null) break
     }
 
     return ok({ handled })
@@ -199,7 +244,8 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
         instanceId: instance.instanceId,
         enabled: instance.enabled,
         state: occupancy === undefined ? 'idle' : waiting ? 'waiting' : 'working',
-        paused: state.value.paused[instance.instanceId] === true,
+        // 暂停意图（内存）即时可见：drain 已收敛但标记还没落盘的窗口里，投影也要说"已暂停"（S37）
+        paused: state.value.paused[instance.instanceId] === true || pauseIntent.has(instance.instanceId),
         sessionId: occupancy?.sessionId ?? null,
         queued: pending.ok ? pending.value.length : 0,
       })
@@ -256,13 +302,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
     status: statusOf,
 
-    /** 中断当前回合（可中断点收尾；游标不推进 → 消息留在队列） */
+    /** 中断当前回合（停止生成）：回合在可中断点收尾；本条消息作废，剩余队列留待下次触发 */
     abortTurn(projectId: string, instanceId: string): boolean {
       void projectId
-      const controller = activeTurns.get(instanceId)
-      if (controller === undefined) return false
-      controller.abort()
-      return true
+      return abortActiveTurn(instanceId, 'stop')
     },
 
     async resetStaleOccupancy(projectId: string): Promise<Result<number>> {
@@ -296,6 +339,14 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       if (!project.value.team.some((item) => item.instanceId === instanceId)) {
         return err('ERR_NOT_FOUND', `实例不存在：${instanceId}`, { projectId, instanceId })
       }
+      // **必须在取锁之前**（S37 修复）：`drain` 持同一把锁跑完整个队列，
+      // 等锁释放时 Agent 早已把活干完，"暂停"名存实亡。
+      if (paused) {
+        pauseIntent.add(instanceId)
+        abortActiveTurn(instanceId, 'pause')
+      } else {
+        pauseIntent.delete(instanceId)
+      }
       return lock.withLock(`agent:${instanceId}`, async () => {
         const state = await loadState(projectId)
         if (!state.ok) return state
@@ -306,10 +357,6 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
           ...current,
           paused: { ...current.paused, [instanceId]: paused },
         }))
-        if (paused) {
-          // 暂停：中断当前回合（回合在可中断点挂起，游标不推进 → 消息仍在队列）
-          activeTurns.get(instanceId)?.abort()
-        }
         if (!saved.ok) return saved
         publishState(projectId, instanceId, 'idle', null)
         const statuses = await statusOf(projectId)

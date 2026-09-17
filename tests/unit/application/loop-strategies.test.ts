@@ -13,12 +13,15 @@ interface Harness {
   readonly events: NewEvent[]
   readonly toolCalls: { name: string; args: unknown }[]
   readonly modelCalls: string[]
+  /** 每次模型调用时请求里带的 tool schema 数量（S30 回归用：0 = 没给模型工具通道） */
+  readonly callToolSchemaCounts: number[]
 }
 
 function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
   const events: NewEvent[] = []
   const toolCalls: { name: string; args: unknown }[] = []
   const modelCalls: string[] = []
+  const callToolSchemaCounts: number[] = []
   let index = 0
 
   const env: LoopRunEnv = {
@@ -42,6 +45,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
     notify: () => undefined,
     callModel: async (request): Promise<Result<ModelTurnResult>> => {
       modelCalls.push(request.purpose)
+      callToolSchemaCounts.push(request.tools?.length ?? 0)
       const reply = replies[Math.min(index, replies.length - 1)] ?? {}
       index += 1
       return ok({
@@ -62,7 +66,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
     shouldInterrupt: () => false,
   }
 
-  return { env, events, toolCalls, modelCalls }
+  return { env, events, toolCalls, modelCalls, callToolSchemaCounts }
 }
 
 describe('application/agent-loop · direct 策略', () => {
@@ -86,6 +90,8 @@ describe('application/agent-loop · direct 策略', () => {
     expect(h.events.map((event) => event.kind)).toEqual(['tool_call', 'tool_result', 'message'])
     expect(h.events[1]?.payload['ok']).toBe(true)
     expect(h.events.at(-1)?.payload['text']).toBe('汇总结论')
+    // S30：汇总调用也必须带 tools（此前漏传 → 模型想再调工具时只能用文本协议写出来）
+    expect(h.callToolSchemaCounts).toEqual([1, 1])
   })
 })
 
@@ -152,10 +158,34 @@ describe('application/agent-loop · plan-execute 策略', () => {
     expect(result.ok).toBe(true)
     expect(h.events.some((event) => event.kind === 'plan' && event.payload['status'] === 'interrupted')).toBe(true)
   })
+
+  it('S30 回归：步骤结论的追问**带 tools**，模型在追问里仍能继续调工具', async () => {
+    const h = harness([
+      // 1) 制定计划（无工具，正常）
+      { text: '{"steps":[{"title":"读代码"}]}' },
+      // 2) 第 1 步：先调一个工具
+      { text: '先看目录', toolCalls: [{ callId: 'c1', name: 'fs_read_file', args: { path: 'workdir://' } }] },
+      // 3) 拿到结果后的追问：**必须带 tools**，否则这一步再也调不到工具
+      { text: '再看看任务', toolCalls: [{ callId: 'c2', name: 'fs_read_file', args: { path: 'workdir://src' } }] },
+      // 4) 第二轮追问给出结论
+      { text: '第 1 步结论：结构清晰' },
+    ])
+    const result = await createPlanExecuteStrategy().run({ ...h.env, maxIterations: 1 })
+    expect(result.ok).toBe(true)
+
+    // 计划调用不带工具；从第 1 步开始，**每一轮都带 tools**（含追问）
+    expect(h.callToolSchemaCounts[0]).toBe(0)
+    expect(h.callToolSchemaCounts.slice(1).every((count) => count === 1)).toBe(true)
+
+    // 追问里发出的工具调用被真正执行（两次 tool_call 事件），而不是退化成文本
+    const toolCallEvents = h.events.filter((event) => event.kind === 'tool_call')
+    expect(toolCallEvents).toHaveLength(2)
+    expect(h.toolCalls.map((call) => call.name)).toEqual(['fs_read_file', 'fs_read_file'])
+    expect(String(h.events.at(-1)?.payload['text'])).toContain('第 1 步结论')
+  })
 })
 
-describe('application/agent-loop · 工具预算', () => {
-  it('toolBudget 用尽后不再执行工具（事件里明确说明）', async () => {
+describe('application/agent-loop · 工具预算', () => {  it('toolBudget 用尽后不再执行工具（事件里明确说明）', async () => {
     const h = harness([
       {
         text: '读两个文件',

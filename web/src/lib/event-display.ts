@@ -14,6 +14,8 @@ export interface EventLike {
   readonly kind: string
   readonly seq: number
   readonly turn: number
+  /** 事件时间戳（详细日志视图用；历史事件可能没有，故可选） */
+  readonly ts?: string
   readonly payload: Record<string, unknown>
 }
 
@@ -108,13 +110,13 @@ export function eventLabel(event: EventLike): string {
 export interface EventRow {
   /** 行标题 */
   readonly label: string
-  /** 行正文；`null` = 该条目没有正文（工具结果：只显示工具名） */
+  /** 行正文；`null` = 该条目没有正文（工具结果成功时只有工具名） */
   readonly body: string | null
   /** 是否显示 `#seq · turn N` 次要信息（工具结果不显示） */
   readonly showMeta: boolean
   /**
    * 正文呈现方式：
-   * - `inline` 直接展示；
+   * - `inline` 直接展示（含**工具报错内容**，S34）；
    * - `collapsed` **默认折叠**、点击展开（S28：工具调用参数）；
    * - `none` 没有正文。
    */
@@ -125,11 +127,21 @@ export interface EventRow {
  * **一行怎么渲染**（唯一真相）：
  * - 思考 / 错误：标题 + 正文 + `#seq · turn N`（`inline`）；
  * - **工具调用：标题 + 参数默认折叠**（S28，点击展开看参数结构）；
- * - **工具结果：只有工具名**（S26，失败时由调用方标红，不加任何文字）；
+ * - **工具结果：成功时只有工具名**（S26）；**失败时必须显示报错内容**（S34，见 `isToolFailed`）；
  * - 其它 kind：标题 = kind 名 + 正文（`inline`）。
  */
 export function eventRow(event: EventLike): EventRow {
   if (event.kind === 'tool_result') {
+    // S34 用户口径：工具报错要能看到**报错内容**（此前失败只是把名字标红，用户不知道错在哪）
+    if (isToolFailed(event)) {
+      const detail = eventBody(event)
+      return {
+        label: eventLabel(event),
+        body: detail.length > 0 ? detail : null,
+        showMeta: false,
+        bodyMode: detail.length > 0 ? 'inline' : 'none',
+      }
+    }
     return { label: eventLabel(event), body: null, showMeta: false, bodyMode: 'none' }
   }
   const body = eventBody(event)
@@ -138,4 +150,70 @@ export function eventRow(event: EventLike): EventRow {
     return { label: eventLabel(event), body: body.length > 0 ? body : null, showMeta: true, bodyMode: body.length > 0 ? 'collapsed' : 'none' }
   }
   return { label: eventLabel(event), body: body.length > 0 ? body : null, showMeta: true, bodyMode: body.length > 0 ? 'inline' : 'none' }
+}
+
+/** 时间戳 → `HH:MM:SS.mmm`（详细日志视图用；缺失或异常时原样返回） */
+export function shortTime(ts: string | undefined): string {
+  if (ts === undefined || ts.length < 23) return ts ?? ''
+  return ts.slice(11, 23)
+}
+
+/**
+ * **详细日志（trace）视图的一行**（S35）：头部 + 摘要，**覆盖全部 kind**（不像对话视图只挑四类）。
+ * 用于"切换窗口看完整原始日志"：头部给 `#seq · 时间 · turn · kind`，摘要把 payload 说清。
+ */
+export function traceLine(event: EventLike): { readonly head: string; readonly text: string } {
+  const head = `#${event.seq} · ${shortTime(event.ts)} · turn ${event.turn} · ${event.kind}`
+  const payload = event.payload
+
+  switch (event.kind) {
+    case 'message': {
+      const role = asText(payload['role']) ?? '?'
+      return { head, text: `${role === 'user' ? '用户' : 'Agent'}：${messageTextOf(event)}` }
+    }
+    case 'thought':
+      return { head, text: asText(payload['text']) ?? '' }
+    case 'tool_call': {
+      const input = toolInputOf(event)
+      return { head, text: input.length === 0 ? toolNameOf(event) : `${toolNameOf(event)} ${input}` }
+    }
+    case 'tool_result': {
+      const status = isToolFailed(event) ? '失败' : '成功'
+      return { head, text: `${status} · ${toolNameOf(event)}：${eventBody(event)}` }
+    }
+    case 'turn_start': {
+      const loopStep = asText(payload['loopStep']) ?? '—'
+      const steps = payload['steps']
+      return { head, text: `loop=${loopStep}${Array.isArray(steps) ? ` · plan ${steps.length} 步` : ''}` }
+    }
+    case 'turn_end': {
+      const parts = [asText(payload['status']), asText(payload['reason'])].filter((part) => part !== null)
+      return { head, text: parts.length === 0 ? '回合结束' : parts.join(' · ') }
+    }
+    case 'plan': {
+      const status = asText(payload['status']) ?? '?'
+      const steps = payload['steps']
+      const index = typeof payload['stepIndex'] === 'number' ? payload['stepIndex'] : null
+      return {
+        head,
+        text: `计划 ${status}${Array.isArray(steps) ? `（${steps.length} 步）` : ''}${index === null ? '' : ` · 当前第 ${index} 步`}`,
+      }
+    }
+    case 'summary': {
+      const range = [payload['ofSeq'], payload['toSeq']].filter((value) => typeof value === 'number')
+      return { head, text: `${range.length === 2 ? `覆盖 seq ${range[0]}~${range[1]}：` : ''}${asText(payload['text']) ?? ''}` }
+    }
+    case 'artifact':
+      return { head, text: `${asText(payload['title']) ?? asText(payload['artifactId']) ?? ''} v${payload['version'] ?? '?'}` }
+    case 'approval_request':
+      return { head, text: `${asText(payload['kind']) ?? ''} · ${asText(payload['summary']) ?? ''}` }
+    case 'approval_result':
+      return { head, text: `${asText(payload['decision']) ?? ''}${asText(payload['reason']) === null ? '' : ` · ${asText(payload['reason'])}`}` }
+    case 'state':
+      return { head, text: JSON.stringify(payload) }
+    case 'error':
+      return { head, text: asText(payload['text']) ?? asText(payload['message']) ?? JSON.stringify(payload) }
+    default:
+      return { head, text: asText(payload['text']) ?? asText(payload['message']) ?? JSON.stringify(payload) }
+  }
 }

@@ -73,9 +73,15 @@ export interface Dispatcher {
   status(projectId: ProjectId): Promise<Result<readonly AgentStatus[]>>
   /** 恢复：重启后对"队列非空且无占用"的 Agent 补一轮（D18-③；不续跑缺 turn_end 的回合） */
   resumeQueued(projectId: ProjectId): Promise<Result<{ readonly resumed: readonly InstanceId[] }>>
+  /**
+   * 暂停/恢复（D19-⑥、S37 修复）：暂停=不再领新活，并**立即中断**当前回合（可中断点收尾）。
+   * 语义要点：中断信号在**取锁之前**送达（`drain` 持锁跑完整个队列，等锁释放再中断等于没停）；
+   * 被中断的回合**游标不推进** → 该消息留在队列，恢复后补处理。
+   */
   setPaused(projectId: ProjectId, instanceId: InstanceId, paused: boolean): Promise<Result<AgentStatus>>
   /**
-   * 中断当前回合（"停止生成"与"停止任务"共用）：回合在可中断点结束、**游标不推进**（消息仍在队列）。
+   * 中断当前回合（"停止生成"与"停止任务"共用）：回合在可中断点收尾、**本条消息作废**（游标照常推进，
+   * 不重放），剩余队列消息**不再自动续跑**（留给用户下次触发）。
    * 返回是否真的中断了一个活动回合。
    */
   abortTurn(projectId: ProjectId, instanceId: InstanceId): boolean

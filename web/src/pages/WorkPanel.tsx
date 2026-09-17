@@ -33,7 +33,14 @@ const ARTIFACT_TYPE_LABEL: Record<string, string> = {
  * - 询问：Agent 待答项就地答复（答复后该 Agent 继续其回合）；
  * - 产出物：版本列表 + 回退（回退即产生 state=reverted 的新版本）+ 署名归属表。
  */
-export function WorkPanel({ projectId }: { readonly projectId: string }) {
+export function WorkPanel({
+  projectId,
+  onOpenSession,
+}: {
+  readonly projectId: string
+  /** 「到会话里答复」回调（S32）；缺省时只显示提示文字 */
+  readonly onOpenSession?: (sessionId: string) => void
+}) {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [questions, setQuestions] = useState<QuestionRecord[]>([])
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([])
@@ -78,10 +85,6 @@ export function WorkPanel({ projectId }: { readonly projectId: string }) {
     } finally {
       setBusy(false)
     }
-  }
-
-  const answer = async (question: QuestionRecord, itemId: string, choice: string): Promise<void> => {
-    await run(() => workApi.answer(projectId, question.id, [{ itemId, choice }]))
   }
 
   return (
@@ -158,6 +161,7 @@ export function WorkPanel({ projectId }: { readonly projectId: string }) {
         />
       </Card>
 
+      {/* S32：询问只做提示——答复入口统一在**会话窗口（输入框上方）** */}
       <Card size="small" title={`待答复询问（${questions.filter((item) => item.status === 'pending').length}）`}>
         {questions.filter((item) => item.status === 'pending').length === 0 ? (
           <Typography.Text type="secondary">没有待答复的提问。</Typography.Text>
@@ -166,32 +170,13 @@ export function WorkPanel({ projectId }: { readonly projectId: string }) {
             .filter((item) => item.status === 'pending')
             .map((question) => (
               <Card key={question.id} size="small" type="inner" title={`${question.asker}：${question.title}`}>
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {question.items.map((item) => (
-                    <Space key={item.id} size={6} wrap>
-                      <Typography.Text>{item.text}</Typography.Text>
-                      {item.options.length > 0 ? (
-                        item.options.map((option) => (
-                          <Button
-                            key={option}
-                            size="small"
-                            disabled={busy}
-                            onClick={() => void answer(question, item.id, option)}
-                          >
-                            {option}
-                          </Button>
-                        ))
-                      ) : (
-                        <Button
-                          size="small"
-                          disabled={busy}
-                          onClick={() => void answer(question, item.id, '同意')}
-                        >
-                          同意
-                        </Button>
-                      )}
-                    </Space>
-                  ))}
+                <Space size={6} wrap>
+                  <Typography.Text type="secondary">答复请到会话窗口（输入框上方）</Typography.Text>
+                  {onOpenSession !== undefined && (
+                    <Button size="small" onClick={() => onOpenSession(question.sessionId)}>
+                      到会话里答复
+                    </Button>
+                  )}
                 </Space>
               </Card>
             ))

@@ -84,6 +84,58 @@ function withToolResults(messages: readonly ChatMessage[], draft: string, toolRe
   ]
 }
 
+/** 单轮里"调用工具 → 回注结果 → 再问"的最大轮数（防止模型无限要工具；工具预算另有上限） */
+const MAX_TOOL_ROUNDS = 4
+
+/**
+ * 「模型 → 工具 → 回注 → 再问」的**有上限循环**（S30 根因修复）。
+ *
+ * ⚠️ 原实现只在第一轮传 `tools`，拿到工具结果后的追问**没带 tools**。后果有两个：
+ * ① 模型在这一轮想再调工具时**永远调不到**（"先读再写"这类链条断掉）；
+ * ② 模型仍想调用工具却无通道，只能把它"写"进正文——DeepSeek 的原生写法就是 DSML 文本，
+ *    于是脏标记落进会话，而那一次调用从未执行（用户看到 `<||DSML|| invoke name="ask_user">` 就是这个）。
+ *
+ * 现在：每一轮都带同一批 `toolSchemas`；模型不再要工具、或工具预算用尽即停止（用尽时明确告知
+ * 模型"本轮不能再调用工具，请直接给结论"，避免它再次改用文本方言）。
+ */
+async function runToolLoop(
+  env: LoopRunEnv,
+  input: { readonly messages: readonly ChatMessage[]; readonly purpose: string; readonly modelOverride?: string },
+): Promise<Result<{ readonly text: string; readonly modelId: string | null }>> {
+  let messages = input.messages
+  let text = ''
+  let modelId: string | null = null
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    if (env.shouldInterrupt()) break
+    const exhausted = env.budget.used() >= env.toolBudget
+    const request = {
+      messages: exhausted
+        ? [
+            ...messages,
+            {
+              role: 'user' as const,
+              content: `（工具预算 ${env.toolBudget} 已用尽，本轮不能再调用工具；需要我决策就请用自然语言说明，不要输出任何工具协议标记。）`,
+            },
+          ]
+        : messages,
+      // 关键：**每一轮都带 tools**（含"拿到结果后的追问"），模型才不会退化成文本协议
+      ...(exhausted ? {} : { tools: env.toolSchemas }),
+      ...(input.modelOverride === undefined ? {} : { modelOverride: input.modelOverride }),
+      purpose: round === 0 ? input.purpose : `${input.purpose}（工具后续第 ${round} 轮）`,
+    }
+    const called = await env.callModel(request)
+    if (!called.ok) return called
+    text = textOf(called.value)
+    modelId = called.value.modelId
+    if (called.value.toolCalls.length === 0) return ok({ text, modelId })
+    const toolResults = await runToolCalls(env, called.value.toolCalls)
+    messages = withToolResults(messages, text, toolResults)
+  }
+
+  return ok({ text, modelId })
+}
+
 /** direct：单轮直答（最多一轮工具） */
 export function createDirectStrategy(): AgentLoopStrategy {
   return {
@@ -105,13 +157,13 @@ export function createDirectStrategy(): AgentLoopStrategy {
       }
 
       const toolResults = await runToolCalls(env, first.value.toolCalls)
-      const second = await env.callModel({
+      const concluded = await runToolLoop(env, {
         messages: withToolResults(env.contextMessages, textOf(first.value), toolResults),
         purpose: '汇总工具结果',
         ...(env.stepModelOverride === undefined ? {} : { modelOverride: env.stepModelOverride }),
       })
-      if (!second.ok) return second
-      await emitMessage(env, textOf(second.value), second.value.modelId, 'act')
+      if (!concluded.ok) return concluded
+      await emitMessage(env, concluded.value.text, concluded.value.modelId, 'act')
       return ok(undefined)
     },
   }
@@ -129,12 +181,12 @@ export function createReflectiveStrategy(): AgentLoopStrategy {
       let currentDraft = textOf(draft.value)
       if (draft.value.toolCalls.length > 0) {
         const toolResults = await runToolCalls(env, draft.value.toolCalls)
-        const afterTools = await env.callModel({
+        const afterTools = await runToolLoop(env, {
           messages: withToolResults(env.contextMessages, currentDraft, toolResults),
           purpose: '结合工具结果生成初稿',
         })
         if (!afterTools.ok) return afterTools
-        currentDraft = textOf(afterTools.value)
+        currentDraft = afterTools.value.text
       }
 
       const rounds = Math.max(1, Math.min(env.maxIterations, 2))
@@ -262,12 +314,12 @@ export function createPlanExecuteStrategy(): AgentLoopStrategy {
         let stepText = textOf(stepCall.value)
         if (stepCall.value.toolCalls.length > 0) {
           const toolResults = await runToolCalls(env, stepCall.value.toolCalls)
-          const afterTools = await env.callModel({
+          const afterTools = await runToolLoop(env, {
             messages: withToolResults(stepMessages, stepText, toolResults),
             purpose: `第 ${step.step} 步结论`,
           })
           if (!afterTools.ok) return afterTools
-          stepText = textOf(afterTools.value)
+          stepText = afterTools.value.text
         }
         stepSummaries.push(`第 ${step.step} 步「${step.title}」：${stepText}`)
         await env.emit({

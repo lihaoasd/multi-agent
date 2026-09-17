@@ -16,6 +16,7 @@ import type { SummaryEngine } from '../memory/summary-engine'
 import type { SessionService } from '../session/session-service'
 import type { TeamService } from '../team/team-service'
 import { AppFailure, err, ok, toAppErrorFrom, type Result } from '../../shared/result'
+import { extractDsmlToolCalls } from '../../shared/dsml'
 import { buildAgentContext } from './context-builder'
 import type { LoopRegistry, LoopRunEnv, ModelTurnResult } from './loop'
 import type { ToolExecutor } from '../tools/tool-executor'
@@ -159,6 +160,8 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
 
       // 任务上下文（D19-⑤/D17-①）：只注入"进行中"的任务；todo 不入上下文
       const activeTask = await options.tasks.activeFor(context.projectId, context.instanceId)
+      // 我派出去的活干到哪了（S36/D39）：委派人据此"接收到回报后继续执行"
+      const delegatedTasks = await options.tasks.delegatedFor(context.projectId, context.instanceId)
       // 产出物索引与署名（workspaces-artifacts §2.2）：我的（可改）/ 他人的（只读）
       const owners = await options.artifacts.listOwners(context.projectId)
       const myOwners = owners.ok ? owners.value.filter((item) => item.owner === context.instanceId) : []
@@ -173,6 +176,7 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         memories: memories.ok ? memories.value : [],
         snippets,
         ...(activeTask.ok && activeTask.value !== null ? { task: activeTask.value } : {}),
+        ...(delegatedTasks.ok && delegatedTasks.value.length > 0 ? { delegatedTasks: delegatedTasks.value } : {}),
         ownership: { mine: myOwners, others: otherOwners },
         artifacts: artifactList.ok ? artifactList.value : [],
         limits: {
@@ -270,13 +274,19 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         return ok({ questionId: asked.value.id, answers: answered.value.answer?.answers ?? [] })
       }
 
-      const callModel = (request: {
+      /**
+       * 调模型（内部含重试与流式归一化）。
+       * **S30 兼容层**：DeepSeek 系模型在"请求没带 tools"等情况下会把工具调用写成正文里的 DSML 文本。
+       * 这里在调用返回后做一次抢救：能识别的 DSML 调用并入 `toolCalls` 走正常工具链，
+       * 并从正文里剥离（避免脏标记落进会话）；识别不了的片段同样剥离，并落一条诊断事件。
+       */
+      const callModel = async (request: {
         readonly messages: readonly ChatMessage[]
         readonly tools?: readonly ToolSchema[]
         readonly modelOverride?: string
         readonly purpose: string
-      }): Promise<Result<ModelTurnResult>> =>
-        callModelWithRetry(
+      }): Promise<Result<ModelTurnResult>> => {
+        const result = await callModelWithRetry(
           request,
           request.modelOverride ?? config.model,
           context.signal,
@@ -288,6 +298,41 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
             })
           },
         )
+        if (!result.ok) return result
+
+        const extracted = extractDsmlToolCalls(result.value.text)
+        if (extracted.calls.length === 0 && extracted.text === result.value.text) return result
+
+        if (extracted.calls.length > 0) {
+          options.logger.warn('模型以文本（DSML）形式发起工具调用，已按兼容层解析', {
+            sessionId: context.sessionId,
+            turn: context.turn,
+            purpose: request.purpose,
+            tools: extracted.calls.map((call) => call.name),
+          })
+        } else {
+          options.logger.warn('模型正文里出现无法解析的 DSML 片段，已剥离', {
+            sessionId: context.sessionId,
+            turn: context.turn,
+            purpose: request.purpose,
+            unparsed: extracted.unparsed,
+          })
+          await context.emit({
+            kind: 'state',
+            turn: context.turn,
+            payload: {
+              dsmlUnparsed: extracted.unparsed,
+              note: '模型用文本协议表达了工具调用但无法解析，已从正文剥离（详见平台日志）',
+            },
+          })
+        }
+
+        return ok({
+          ...result.value,
+          text: extracted.text,
+          toolCalls: [...result.value.toolCalls, ...extracted.calls],
+        })
+      }
 
       const env: LoopRunEnv = {
         projectId: context.projectId,
