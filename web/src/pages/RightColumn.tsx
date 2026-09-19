@@ -4,6 +4,7 @@ import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
 import { workApi, type QuestionRecord, type TaskRecord } from '../api/work'
 import { useRealtime } from '../hooks/useRealtime'
+import { localClock } from '../lib/time-format'
 
 const TASK_STATE_LABEL: Record<string, string> = {
   todo: '待领取',
@@ -98,7 +99,8 @@ export function RightColumn({
                     <Typography.Text strong>{task.title}</Typography.Text>
                   </Space>
                   <Typography.Text type="secondary">
-                    {task.creator} → {task.assignee}｜{task.updatedAt.slice(11, 19)}
+                    {/* S39/D42：本地时间（原先是 ISO 串切片 → 显示的是 UTC） */}
+                    {task.creator} → {task.assignee}｜{localClock(task.updatedAt, { withMs: false })}
                   </Typography.Text>
                 </Space>
               </List.Item>

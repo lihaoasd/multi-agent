@@ -10,6 +10,8 @@ export interface RuntimeAgentView {
   readonly instanceId: string
   readonly displayName: string
   readonly state: 'idle' | 'working' | 'waiting'
+  /** `state='waiting'` 时说明在等什么（S38/D41：等答复 / 等审批） */
+  readonly waitingFor?: 'question' | 'approval' | null
   readonly paused: boolean
   readonly queued: number
   readonly sessionId: string

@@ -155,4 +155,4 @@ scheme + rel → 候选根 → 拼接绝对路径 → 逐段解析符号链接(r
   - `high`（需审批）：递归强制删除、装依赖（`npm/pip/... install`）、`git reset|clean|rebase|push`、`chmod/chown`、杀进程、`curl/wget/ssh/scp`，以及**内联代码执行**（`node -e`/`python -c`/`bash -c`/`powershell -Command`）——后者可绕过风险表，故一律走审批；
   - `low`：工作目录内写入（`mkdir/touch/cp/mv/...`）；`none`：其余只读命令。
 - **判定优先级**：`deny > approval > allow`；**离线模式（SANDBOX__NETWORK=offline）同时约束命令与工具**：出网命令（`CMD_NET`/安装类/`git push`）与 `network != none` 的工具一律 `NET_OFFLINE` 拒绝。
-- **审批**：命中的动作先落 `approvals.jsonl`（**append-only**，同 id 取最后一条）并广播 `approval.requested`，Agent 状态投影为 `waiting`；用户决定落盘后唤醒等待中的回合。跨重启：pending 保持、决定**不回放**（agent-runtime.md §7）。
+- **审批**：命中的动作先落 `approvals.jsonl`（**append-only**，同 id 取最后一条）并广播 `approval.requested`，Agent 状态投影为 `waiting`；用户决定落盘后唤醒等待中的回合。**跨重启：pending 保持、决定不回放原动作**；此时进程内等待者已消失，`decide` 会**改为唤醒申请者**（注入 `[审批] 你的申请已被批准/拒绝：<summary>…`，S47/D50），不让"批准"石沉大海（agent-runtime.md §7）。

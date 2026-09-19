@@ -135,7 +135,7 @@ agent_haness/                    # 平台仓库
 | `turn_end` | 回合正常结束（**中断恢复判定依据：缺此事件=回合未完成**） | turnId, ok |
 | `plan` | plan-execute 的计划与执行进度（断点恢复依据） | planId, steps[], stepIndex, status |
 | `message` | 可见消息（role: user/agent/system；流结束后完整落盘） | content.text/blocks |
-| `thought` | agent 推理过程（默认折叠展示，可展开） | content.text |
+| `thought` | agent 推理过程（默认折叠展示，可展开；**S43/D46**：`purpose` 标出该次模型调用的目的） | `{text, purpose?}` |
 | `tool_call` | 工具调用请求 | tool, input(摘要) |
 | `tool_result` | 工具结果 | tool, ok, summary(截断) |
 | `approval_request` | 审批请求卡片 | approvalId, summary, risk, previewRef?(doc 提交只读预览，D16-⑥) |

@@ -126,6 +126,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     dispatcher: options.services.dispatcher,
     promptPreview: options.services.promptPreview,
     broadcaster: options.services.broadcaster,
+    // S51/D54：/agents 状态投影带上"正在执行的任务"
+    tasks: options.services.tasks,
   })
   registerApprovalRoutes(app, { approvals: options.services.approvals })
   registerMemoryRoutes(app, {

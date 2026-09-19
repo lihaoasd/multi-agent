@@ -5,6 +5,7 @@ import {
   createReflectiveStrategy,
 } from '../../../src/application/agent-loop/strategies'
 import type { LoopRunEnv, ModelTurnResult } from '../../../src/application/agent-loop/loop'
+import type { ChatMessage } from '../../../src/ports/model'
 import type { NewEvent, StoredEvent } from '../../../src/ports/session'
 import { ok, type Result } from '../../../src/shared/result'
 
@@ -15,6 +16,8 @@ interface Harness {
   readonly modelCalls: string[]
   /** 每次模型调用时请求里带的 tool schema 数量（S30 回归用：0 = 没给模型工具通道） */
   readonly callToolSchemaCounts: number[]
+  /** 每次模型调用的请求（S40：断言思考随 assistant 消息回传） */
+  readonly requests: { purpose: string; messages: readonly ChatMessage[] }[]
 }
 
 function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
@@ -22,6 +25,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
   const toolCalls: { name: string; args: unknown }[] = []
   const modelCalls: string[] = []
   const callToolSchemaCounts: number[] = []
+  const requests: { purpose: string; messages: readonly ChatMessage[] }[] = []
   let index = 0
 
   const env: LoopRunEnv = {
@@ -46,6 +50,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
     callModel: async (request): Promise<Result<ModelTurnResult>> => {
       modelCalls.push(request.purpose)
       callToolSchemaCounts.push(request.tools?.length ?? 0)
+      requests.push({ purpose: request.purpose, messages: request.messages })
       const reply = replies[Math.min(index, replies.length - 1)] ?? {}
       index += 1
       return ok({
@@ -66,7 +71,7 @@ function harness(replies: readonly Partial<ModelTurnResult>[]): Harness {
     shouldInterrupt: () => false,
   }
 
-  return { env, events, toolCalls, modelCalls, callToolSchemaCounts }
+  return { env, events, toolCalls, modelCalls, callToolSchemaCounts, requests }
 }
 
 describe('application/agent-loop · direct 策略', () => {
@@ -93,6 +98,23 @@ describe('application/agent-loop · direct 策略', () => {
     // S30：汇总调用也必须带 tools（此前漏传 → 模型想再调工具时只能用文本协议写出来）
     expect(h.callToolSchemaCounts).toEqual([1, 1])
   })
+
+  it('S40：每一轮的思考都落进会话，且随 assistant 消息回传（DeepSeek 带 tools 时硬要求）', async () => {
+    const h = harness([
+      { text: '我先读文件', reasoning: '先想想读哪个文件', toolCalls: [{ callId: 'c1', name: 'fs_read_file', args: {} }] },
+      { text: '汇总结论', reasoning: '结果够了，可以下结论' },
+    ])
+    const result = await createDirectStrategy().run(h.env)
+    expect(result.ok).toBe(true)
+    // 两轮思考都落地（原先只有第一轮、且 plan-execute 一条都没有 → 页面看不到思考）
+    expect(h.events.filter((event) => event.kind === 'thought').map((event) => event.payload['text'])).toEqual([
+      '先想想读哪个文件',
+      '结果够了，可以下结论',
+    ])
+    // 回传：第二轮请求里的 assistant 消息必须带着上一轮的 reasoning
+    const assistant = h.requests[1]?.messages.find((message) => message.role === 'assistant')
+    expect(assistant?.reasoning).toBe('先想想读哪个文件')
+  })
 })
 
 describe('application/agent-loop · reflective 策略', () => {
@@ -101,7 +123,10 @@ describe('application/agent-loop · reflective 策略', () => {
     const result = await createReflectiveStrategy().run({ ...h.env, maxIterations: 1 })
     expect(result.ok).toBe(true)
     expect(h.modelCalls).toEqual(['生成初稿', '自查（第 1 轮）', '修订（第 1 轮）'])
-    expect(h.events.filter((event) => event.kind === 'thought')).toHaveLength(1)
+    // S43/D46：自查这一轮的产出本身是一条 `thought`（带上来源），模型对这次自查的思考并入同一条
+    const thoughts = h.events.filter((event) => event.kind === 'thought')
+    expect(thoughts.map((event) => event.payload['text'])).toEqual(['【自查第 1 轮】\n这里不严谨'])
+    expect(thoughts.map((event) => event.payload['purpose'])).toEqual(['自查（第 1 轮）'])
     expect(h.events.at(-1)?.kind).toBe('message')
     expect(h.events.at(-1)?.payload['text']).toBe('修订后的最终稿')
   })
@@ -128,8 +153,28 @@ describe('application/agent-loop · plan-execute 策略', () => {
     expect(String(h.events.at(-1)?.payload['text'])).toContain('第 2 步完成')
   })
 
-  it('计划不是合法 JSON 时退化为单步计划（不失败）', async () => {
-    const h = harness([{ text: '我先看看代码' }, { text: '完成' }])
+  it('S40：制定计划与每一步的思考都落进会话（原先 plan-execute 一条思考都没有）', async () => {
+    const h = harness([
+      { reasoning: '先拆成两步', text: '{"steps":[{"title":"读代码"},{"title":"写方案"}]}' },
+      { reasoning: '第一步先看结构', text: '第 1 步完成' },
+      { reasoning: '第二步写方案', text: '第 2 步完成' },
+    ])
+    const result = await createPlanExecuteStrategy().run({ ...h.env, maxIterations: 2 })
+    expect(result.ok).toBe(true)
+    expect(h.events.filter((event) => event.kind === 'thought').map((event) => event.payload['text'])).toEqual([
+      '先拆成两步',
+      '第一步先看结构',
+      '第二步写方案',
+    ])
+    // S43/D46：每条思考都标出"这一步是干什么的"——plan-execute 各步之间只隔一个不显示的 `plan` 事件
+    expect(h.events.filter((event) => event.kind === 'thought').map((event) => event.payload['purpose'])).toEqual([
+      '制定计划',
+      '执行第 1 步',
+      '执行第 2 步',
+    ])
+  })
+
+  it('计划不是合法 JSON 时退化为单步计划（不失败）', async () => {    const h = harness([{ text: '我先看看代码' }, { text: '完成' }])
     const result = await createPlanExecuteStrategy().run({ ...h.env, maxIterations: 3 })
     expect(result.ok).toBe(true)
     const plans = h.events.filter((event) => event.kind === 'plan')

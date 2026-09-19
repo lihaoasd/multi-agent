@@ -53,17 +53,20 @@ function buildBody(resolved: ResolvedModel, request: ModelRequest): Record<strin
   const temperature = request.temperature ?? resolved.entry.defaultParams?.temperature
   const maxOutputTokens =
     request.maxTokens ?? resolved.entry.defaultParams?.maxTokens ?? resolved.entry.maxOutputTokens
+  // S40/D43：勾选「思考」的模型要求把思考摘要一并返回（`includeThoughts`），否则只有最终答案
+  const reasoning = resolved.entry.capabilities.includes('reasoning')
+  const thinkingBudget = resolved.entry.defaultParams?.thinkingBudget
+  const generationConfig = {
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(reasoning
+      ? { thinkingConfig: { includeThoughts: true, ...(thinkingBudget === undefined ? {} : { thinkingBudget }) } }
+      : {}),
+  }
   return {
     contents,
     ...(systemInstruction === undefined ? {} : { systemInstruction }),
-    ...(temperature === undefined && maxOutputTokens === undefined
-      ? {}
-      : {
-          generationConfig: {
-            ...(temperature === undefined ? {} : { temperature }),
-            ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-          },
-        }),
+    ...(Object.keys(generationConfig).length === 0 ? {} : { generationConfig }),
     ...(request.tools === undefined || request.tools.length === 0
       ? {}
       : {

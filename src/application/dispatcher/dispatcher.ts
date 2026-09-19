@@ -1,6 +1,7 @@
 import type { Clock } from '../../ports/clock'
 import type {
   AgentStatus,
+  AgentWaitingFor,
   Dispatcher,
   DispatcherState,
   DispatcherStateStore,
@@ -43,11 +44,10 @@ export interface DispatcherOptions {
 export function createDispatcher(options: DispatcherOptions): Dispatcher {
   const { stateStore, projectStore, sessions, runner, approvals, broadcaster, lock, clock, logger } = options
   /**
-   * 运行中回合的中断句柄：暂停/停止时 abort，回合在可中断点收尾（D19-⑥）。
-   * `reason` 决定收尾口径（S37）：`pause`=挂起（游标不推进，消息留在队列、恢复后补处理）；
-   * `stop`=停止生成（本条作废不重放，剩余队列留给用户下次触发）。
+   * 运行中回合的**硬中断**句柄：`stop`（停止生成 / 停止任务）时 abort，回合在可中断点收尾（D19-⑥）。
+   * **暂停不走这条**（S49/D52）：暂停只登记意图，等当前这轮 loop 跑完再停（见 `isPaused`）。
    */
-  const activeTurns = new Map<string, { readonly controller: AbortController; reason: 'pause' | 'stop' | null }>()
+  const activeTurns = new Map<string, { readonly controller: AbortController; reason: 'stop' | null }>()
   /**
    * 暂停意图（内存即时可见，S37 修复）：`drain` 持同一把 keyed lock **跑完整个队列**，
    * 因此 `setPaused` 只能等锁释放才落盘——那时 Agent 已经把队列干完了，"暂停"等于没停。
@@ -55,10 +55,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
    */
   const pauseIntent = new Set<string>()
 
-  const abortActiveTurn = (instanceId: string, reason: 'pause' | 'stop'): boolean => {
+  const abortActiveTurn = (instanceId: string): boolean => {
     const active = activeTurns.get(instanceId)
     if (active === undefined) return false
-    active.reason = reason
+    active.reason = 'stop'
     active.controller.abort()
     return true
   }
@@ -107,6 +107,8 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
     let state = await loadState(projectId)
     if (!state.ok) return state
+    // 收窄镜像（闭包 isPaused 里要读它，避免在回调里访问 Result 联合）
+    let pausedFlags = state.value.paused
     if (state.value.paused[instanceId] === true || pauseIntent.has(instanceId)) {
       return ok({ handled: 0 })
     }
@@ -150,7 +152,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }
 
       const text = typeof next.payload['text'] === 'string' ? (next.payload['text'] as string) : ''
-      const handle: { readonly controller: AbortController; reason: 'pause' | 'stop' | null } = {
+      const handle: { readonly controller: AbortController; reason: 'stop' | null } = {
         controller: new AbortController(),
         reason: null,
       }
@@ -165,6 +167,8 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
           turn,
           userText: text,
           signal: handle.controller.signal,
+          // S49/D52：暂停在**每轮 loop 结束**时生效（不切断在途模型调用）；持久标记与内存意图都算
+          isPaused: () => pauseIntent.has(instanceId) || pausedFlags[instanceId] === true,
           emit,
         })
       } catch (cause) {
@@ -187,25 +191,35 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
         })
       }
 
-      // 被用户中断：把"事实"落进会话日志（S21/D27：平台不再判定未完成回合，Agent 靠日志自查）
-      if (handle.reason !== null) {
+      const pausedNow = pauseIntent.has(instanceId) || pausedFlags[instanceId] === true
+      // 暂停（S49/D52）：回合在"上一轮 loop 结束"处收尾 → 把事实落进会话日志
+      // （S21/D27：平台不判定未完成回合，Agent 靠日志自查）
+      if (pausedNow) {
+        await emit({
+          kind: 'state',
+          turn,
+          payload: {
+            paused: true,
+            note: '用户暂停：本轮执行完即停止循环，本条消息保留在队列，恢复后补处理',
+          },
+        })
+      }
+      // 硬中断（停止生成 / 停止任务）：也留一条事实
+      if (handle.reason === 'stop') {
         await emit({
           kind: 'state',
           turn,
           payload: {
             turnAborted: true,
-            reason: handle.reason,
-            note:
-              handle.reason === 'pause'
-                ? '用户暂停，回合在可中断点收尾；本条消息保留在队列，恢复后补处理'
-                : '用户停止生成，回合在可中断点收尾；本条不再重放',
+            reason: 'stop',
+            note: '用户停止生成，回合在可中断点收尾；本条不再重放',
           },
         })
       }
 
       // 释放占用 + 推进游标（回合结束后推进：崩溃宁可重放不丢消息）
       // 暂停=挂起：**游标不推进**（消息留在队列，恢复后补处理，规则 26）；停止生成=本条作废，游标照常推进
-      const holdCursor = handle.reason === 'pause'
+      const holdCursor = pausedNow
       const savedIdle = await updateState(projectId, (current) => ({
         ...current,
         occupancy: Object.fromEntries(Object.entries(current.occupancy).filter(([key]) => key !== instanceId)),
@@ -213,10 +227,13 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }))
       if (!savedIdle.ok) return savedIdle
       state = savedIdle
+      pausedFlags = savedIdle.value.paused
       publishState(projectId, instanceId, 'idle', sessionId)
       handled += 1
       // 中断后不再续跑队列：暂停等恢复；停止生成把剩余消息留给用户下次触发
-      if (handle.reason !== null) break
+      // 暂停（S49/D52）与硬中断（S37）都不再续跑队列剩余消息：
+      // 暂停等恢复；停止生成把剩余消息留给用户下次触发
+      if (pausedNow || handle.reason !== null) break
     }
 
     return ok({ handled })
@@ -236,14 +253,16 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       const occupancy = state.value.occupancy[instance.instanceId]
       const cursor = state.value.lastHandledSeq[instance.instanceId] ?? 0
       const pending = await pendingMessages(projectId, instance.instanceId, cursor)
-      const waiting =
-        occupancy !== undefined &&
-        ((await approvals.hasPending(projectId, instance.instanceId)) ||
-          (await options.questions.hasPending(projectId, instance.instanceId)))
+      // 等什么要说清（S38/D41）：等用户答复询问 / 等审批决定——界面分别是「等待回复中」「等待审批中」
+      const occupied = occupancy !== undefined
+      const waitingApproval = occupied ? await approvals.hasPending(projectId, instance.instanceId) : false
+      const waitingQuestion = occupied ? await options.questions.hasPending(projectId, instance.instanceId) : false
+      const waitingFor: AgentWaitingFor | null = waitingApproval ? 'approval' : waitingQuestion ? 'question' : null
       statuses.push({
         instanceId: instance.instanceId,
         enabled: instance.enabled,
-        state: occupancy === undefined ? 'idle' : waiting ? 'waiting' : 'working',
+        state: occupied ? (waitingFor === null ? 'working' : 'waiting') : 'idle',
+        waitingFor,
         // 暂停意图（内存）即时可见：drain 已收敛但标记还没落盘的窗口里，投影也要说"已暂停"（S37）
         paused: state.value.paused[instance.instanceId] === true || pauseIntent.has(instance.instanceId),
         sessionId: occupancy?.sessionId ?? null,
@@ -305,7 +324,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
     /** 中断当前回合（停止生成）：回合在可中断点收尾；本条消息作废，剩余队列留待下次触发 */
     abortTurn(projectId: string, instanceId: string): boolean {
       void projectId
-      return abortActiveTurn(instanceId, 'stop')
+      return abortActiveTurn(instanceId)
     },
 
     async resetStaleOccupancy(projectId: string): Promise<Result<number>> {
@@ -327,8 +346,18 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       const resumed: string[] = []
       for (const status of statuses.value) {
         if (!status.enabled || status.paused || status.state !== 'idle' || status.queued === 0) continue
-        const drained = await drain(projectId, status.instanceId)
-        if (drained.ok && drained.value.handled > 0) resumed.push(status.instanceId)
+        // S47/D50：**只排不 await**。补处理会真的跑回合（几十秒到几分钟），而且可能卡在"等用户答复"上；
+        // 逐个 await 会让第一个卡住的 Agent 挡住后面所有 Agent（真实事故：启动补处理时 architect_1 提问，
+        // pm_1/dev_1 的队列永远轮不到）。drain 自身按 Agent 串行（keyed lock），并发排入是安全的。
+        // 返回的 `resumed` 语义相应变为"**已排**（不保证已完成）"。
+        void drain(projectId, status.instanceId).catch((cause: unknown) => {
+          logger.warn('补处理排队消息失败', {
+            projectId,
+            instanceId: status.instanceId,
+            message: String(cause),
+          })
+        })
+        resumed.push(status.instanceId)
       }
       return ok({ resumed })
     },
@@ -341,9 +370,10 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
       }
       // **必须在取锁之前**（S37 修复）：`drain` 持同一把锁跑完整个队列，
       // 等锁释放时 Agent 早已把活干完，"暂停"名存实亡。
+      // S49/D52：暂停**不再 abort 在途回合**——用户口径是"跑完当前这一轮 loop 再停"，
+      // 因此只登记暂停意图（循环与回合收尾处据此判断），不切断正在进行的模型调用。
       if (paused) {
         pauseIntent.add(instanceId)
-        abortActiveTurn(instanceId, 'pause')
       } else {
         pauseIntent.delete(instanceId)
       }

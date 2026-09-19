@@ -10,6 +10,12 @@ import type { SessionId } from './session'
 
 export type AgentState = 'idle' | 'working' | 'waiting'
 
+/**
+ * 等待中的**具体原因**（S38/D41）：`waiting` 只说明"卡住了"，但界面要对用户说清在等什么——
+ * `question`＝等用户答复询问（`ask_user`），`approval`＝等审批决定；非等待态为 `null`。
+ */
+export type AgentWaitingFor = 'question' | 'approval'
+
 export interface OccupancyEntry {
   readonly type: 'user' | 'task'
   readonly sessionId: SessionId
@@ -54,6 +60,8 @@ export interface AgentStatus {
   readonly instanceId: InstanceId
   readonly enabled: boolean
   readonly state: AgentState
+  /** `state='waiting'` 时说明在等什么（S38/D41）；其余情况为 `null` */
+  readonly waitingFor: AgentWaitingFor | null
   readonly paused: boolean
   readonly sessionId: SessionId | null
   /** 队列中未处理的消息条数（由日志与游标派生） */
@@ -71,7 +79,11 @@ export interface Dispatcher {
   drain(projectId: ProjectId, instanceId: InstanceId): Promise<Result<{ readonly handled: number }>>
   /** 状态投影（含 enabled，来自项目团队配置） */
   status(projectId: ProjectId): Promise<Result<readonly AgentStatus[]>>
-  /** 恢复：重启后对"队列非空且无占用"的 Agent 补一轮（D18-③；不续跑缺 turn_end 的回合） */
+  /**
+   * 恢复：把"队列非空且无占用且未暂停"的 Agent **各排一次** `drain`（D18-③；S47/D50 起**不 await 回合**——
+   * 补处理会真的跑回合、还可能卡在等答复上，逐个 await 会让第一个卡住的 Agent 挡住其它 Agent）。
+   * 返回的是**已排**的实例列表（不保证已完成）。
+   */
   resumeQueued(projectId: ProjectId): Promise<Result<{ readonly resumed: readonly InstanceId[] }>>
   /**
    * 暂停/恢复（D19-⑥、S37 修复）：暂停=不再领新活，并**立即中断**当前回合（可中断点收尾）。

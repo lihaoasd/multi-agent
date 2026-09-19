@@ -6,6 +6,7 @@ import type { ProjectService } from '../../application/project/service'
 import type { InstancePatch, TeamService } from '../../application/team/team-service'
 import type { EventBroadcaster } from '../../ports/events'
 import type { LoopConfig } from '../../ports/role-templates'
+import type { TaskService } from '../../ports/task'
 import { replyFromResult } from '../errors'
 import { asRecord, readBoolean, readLoopConfig, readString, requireString } from './parse'
 
@@ -16,6 +17,8 @@ export interface ProjectRouteContext {
   readonly dispatcher: Dispatcher
   readonly promptPreview: PromptPreviewService
   readonly broadcaster: EventBroadcaster
+  /** S51/D54：状态投影带上"正在执行的任务"（会话顶部展示） */
+  readonly tasks: TaskService
 }
 
 function readMembers(record: Record<string, unknown>): readonly { roleTemplateId: string; displayName?: string }[] | undefined {
@@ -178,6 +181,11 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
     const statuses = await dispatcher.status(request.params.pid)
     if (!statuses.ok) return replyFromResult(reply, statuses)
     const byInstance = new Map(statuses.value.map((status) => [status.instanceId, status]))
+    // S51/D54：正在执行的任务（in_progress）——一次取全项目再按受派人分组
+    const activeTasks = await context.tasks.list(request.params.pid, { state: 'in_progress' })
+    const taskByAssignee = new Map(
+      (activeTasks.ok ? activeTasks.value : []).map((task) => [task.assignee, { id: task.id, title: task.title, state: task.state }]),
+    )
     return replyFromResult(reply, {
       ok: true as const,
       value: instances.value.map((instance) => {
@@ -187,10 +195,11 @@ export function registerProjectRoutes(app: FastifyInstance, context: ProjectRout
           displayName: instance.displayName,
           enabled: instance.enabled,
           state: status?.state ?? 'idle',
+          waitingFor: status?.waitingFor ?? null,
           paused: status?.paused ?? false,
           queued: status?.queued ?? 0,
           sessionId: status?.sessionId ?? sessions.sessionIdFor(instance.instanceId),
-          currentTask: null,
+          currentTask: taskByAssignee.get(instance.instanceId) ?? null,
         }
       }),
     })

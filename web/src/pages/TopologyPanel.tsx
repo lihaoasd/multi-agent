@@ -7,10 +7,10 @@ import { sessionApi, type AgentStatus } from '../api/sessions'
 import { RightColumn } from './RightColumn'
 import { WorkingBar } from './WorkingBar'
 import { useRealtime } from '../hooks/useRealtime'
+import { agentStateView } from '../lib/agent-state'
 
 const CARD_W = 190
 const CARD_H = 84
-const STATE_LABEL: Record<string, string> = { idle: '空闲', working: '工作中', waiting: '等待中' }
 
 interface TopologyPanelProps {
   readonly projectId: string
@@ -67,7 +67,14 @@ export function TopologyPanel({ projectId, onOpenSession }: TopologyPanelProps) 
     projectId,
     useCallback(
       (frame: { type: string }) => {
-        if (frame.type === 'agent.state') {
+        // S38/D41：「进入等待」没有 agent.state 帧，靠询问/审批事件补刷新，否则节点徽标停在「工作中」
+        if (
+          frame.type === 'agent.state' ||
+          frame.type === 'question.asked' ||
+          frame.type === 'question.answered' ||
+          frame.type === 'approval.requested' ||
+          frame.type === 'approval.decided'
+        ) {
           void sessionApi.status(projectId).then(setStatuses).catch(() => undefined)
         }
       },
@@ -391,9 +398,10 @@ export function TopologyPanel({ projectId, onOpenSession }: TopologyPanelProps) 
                         {disabled && <Tag>已停用</Tag>}
                       </Space>
                       <Space size={4} wrap>
-                        <Tag color={status?.state === 'working' ? 'blue' : status?.state === 'waiting' ? 'orange' : 'default'}>
-                          {STATE_LABEL[status?.state ?? 'idle'] ?? status?.state}
-                        </Tag>
+                        {(() => {
+                          const view = agentStateView(status)
+                          return <Tag color={view.color}>{view.text}</Tag>
+                        })()}
                         {status?.paused === true && <Tag color="purple">暂停</Tag>}
                         <Typography.Text type="secondary">队列 {status?.queued ?? 0}</Typography.Text>
                       </Space>

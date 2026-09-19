@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { redactSecrets } from '../../../src/infra/model/redact'
 import { createOpenAiCompatibleAdapter } from '../../../src/infra/model/providers/openai-compatible'
+import { createAnthropicAdapter } from '../../../src/infra/model/providers/anthropic'
+import { createGeminiAdapter } from '../../../src/infra/model/providers/gemini'
+import { createOllamaAdapter } from '../../../src/infra/model/providers/ollama'
 import { createInMemoryAdapter } from '../../helpers-in-memory-adapter'
 import type { ModelChunk, ModelRequest } from '../../../src/ports/model'
 import type { ResolvedModel } from '../../../src/ports/model-config'
@@ -189,6 +192,109 @@ describe('openai-compatible 适配器归一化', () => {
     const adapter = createOpenAiCompatibleAdapter()
     const models = await adapter.listModels?.(resolved().provider, 'sk-test-secret-value')
     expect(models?.ok && models.value).toEqual(['a', 'b'])
+  })
+
+  it('S40：勾选「思考」才发思考参数，并回传 reasoning_content（DeepSeek 带 tools 时硬要求）', async () => {
+    const fetchMock = vi.fn(async () => sseResponse(['data: {"choices":[{"delta":{"content":"好"}}]}', 'data: [DONE]']))
+    vi.stubGlobal('fetch', fetchMock)
+    const adapter = createOpenAiCompatibleAdapter()
+    const withReasoning = resolved({
+      entry: { ...resolved().entry, capabilities: ['chat', 'stream', 'reasoning'] },
+    })
+    const streamed = await adapter.stream(
+      withReasoning,
+      request({
+        tools: [{ name: 'fs_read_file', description: '读文件', parameters: {} }],
+        messages: [
+          { role: 'user', content: '读一下' },
+          { role: 'assistant', content: '我来读', reasoning: '先看 a.txt' },
+          { role: 'tool', content: '文件内容', toolCallId: 'call_1' },
+        ],
+      }),
+    )
+    if (!streamed.ok) throw new Error('流启动失败')
+    await collect(streamed.value)
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['reasoning_effort']).toBe('high')
+    const messages = body['messages'] as Array<Record<string, unknown>>
+    expect(messages[1]).toMatchObject({ role: 'assistant', content: '我来读', reasoning_content: '先看 a.txt' })
+  })
+
+  it('S40：没勾选「思考」就不发思考参数，但已拿到的思考仍要回传（否则带 tools 的下一轮会被拒）', async () => {
+    const fetchMock = vi.fn(async () => sseResponse(['data: {"choices":[{"delta":{"content":"好"}}]}', 'data: [DONE]']))
+    vi.stubGlobal('fetch', fetchMock)
+    const adapter = createOpenAiCompatibleAdapter()
+    const streamed = await adapter.stream(
+      resolved(),
+      request({ messages: [{ role: 'assistant', content: '我来读', reasoning: '先看 a.txt' }] }),
+    )
+    if (!streamed.ok) throw new Error('流启动失败')
+    await collect(streamed.value)
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['reasoning_effort']).toBeUndefined()
+    const messages = body['messages'] as Array<Record<string, unknown>>
+    expect(messages[0]?.['reasoning_content']).toBe('先看 a.txt')
+  })
+})
+
+describe('S40/D43 · 思考参数按能力标记下发（四种协议）', () => {
+  const withReasoning = (kind: ResolvedModel['kind']): ResolvedModel =>
+    resolved({
+      kind,
+      provider: { ...resolved().provider, kind, baseUrl: 'https://api.example.com/v1' },
+      entry: { ...resolved().entry, capabilities: ['chat', 'stream', 'reasoning'] },
+    })
+
+  it('anthropic：不带 tools 时发 thinking（budget 夹在 max_tokens 之内）；带 tools 时不发（需 signature 回传，见遗留）', async () => {
+    const fetchMock = vi.fn(async () => sseResponse(['data: {"type":"message_stop"}']))
+    vi.stubGlobal('fetch', fetchMock)
+    const adapter = createAnthropicAdapter()
+    const withoutTools = await adapter.stream(withReasoning('anthropic'), request())
+    if (!withoutTools.ok) throw new Error('流启动失败')
+    await collect(withoutTools.value).catch(() => undefined)
+    let [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    let body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['thinking']).toEqual({ type: 'enabled', budget_tokens: 3072 })
+    expect(Number(body['max_tokens'])).toBeGreaterThan(3072)
+
+    fetchMock.mockClear()
+    const withTools = await adapter.stream(
+      withReasoning('anthropic'),
+      request({ tools: [{ name: 'fs_read_file', description: '读文件', parameters: {} }] }),
+    )
+    if (!withTools.ok) throw new Error('流启动失败')
+    await collect(withTools.value).catch(() => undefined)
+    ;[, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['thinking']).toBeUndefined()
+  })
+
+  it('gemini：发 thinkingConfig.includeThoughts', async () => {
+    const fetchMock = vi.fn(async () => sseResponse(['data: {"candidates":[{"content":{"parts":[{"text":"好"}]}}]}']))
+    vi.stubGlobal('fetch', fetchMock)
+    const adapter = createGeminiAdapter()
+    const streamed = await adapter.stream(withReasoning('gemini'), request())
+    if (!streamed.ok) throw new Error('流启动失败')
+    await collect(streamed.value).catch(() => undefined)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['generationConfig']).toMatchObject({ thinkingConfig: { includeThoughts: true } })
+    expect(String(url)).toContain('streamGenerateContent')
+  })
+
+  it('ollama：发顶层 think:true', async () => {
+    const fetchMock = vi.fn(async () => new Response('{"message":{"content":"好"},"done":true}\n', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const adapter = createOllamaAdapter()
+    const streamed = await adapter.stream(withReasoning('ollama'), request())
+    if (!streamed.ok) throw new Error('流启动失败')
+    await collect(streamed.value).catch(() => undefined)
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>
+    expect(body['think']).toBe(true)
   })
 })
 

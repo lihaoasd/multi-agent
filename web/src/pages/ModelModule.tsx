@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -56,7 +57,7 @@ export function ModelModule() {
   const [providerForm] = Form.useForm<ProviderFormValues>()
   const [editingProvider, setEditingProvider] = useState<ProviderView | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [modelForm] = Form.useForm<{ id: string; providerId: string; model: string; displayName?: string }>()
+  const [modelForm] = Form.useForm<{ id: string; providerId: string; model: string; displayName?: string; reasoning?: boolean }>()
   const [modelModalOpen, setModelModalOpen] = useState(false)
   const [discoverProvider, setDiscoverProvider] = useState<ProviderView | null>(null)
   const [discovered, setDiscovered] = useState<string[]>([])
@@ -203,7 +204,12 @@ export function ModelModule() {
   const submitModel = async (): Promise<void> => {
     const values = await modelForm.validateFields()
     try {
-      await modelConfigApi.createModel(values)
+      // S40/D43：「思考」勾选 → 能力标记（后端据此决定是否下发思考参数）
+      const { reasoning, ...rest } = values
+      await modelConfigApi.createModel({
+        ...rest,
+        capabilities: ['chat', 'stream', 'tools', ...(reasoning === true ? ['reasoning'] : [])],
+      })
       message.success('模型条目已创建')
       setModelModalOpen(false)
       await refresh()
@@ -212,8 +218,21 @@ export function ModelModule() {
     }
   }
 
-  const toggleModel = async (model: ModelView, enabled: boolean): Promise<void> => {
+  /** S40/D43：开关模型条目的「思考」能力（后端据此决定要不要下发思考参数） */
+  const toggleReasoning = async (model: ModelView, enabled: boolean): Promise<void> => {
+    const next = model.capabilities.filter((item) => item !== 'reasoning')
     try {
+      await modelConfigApi.updateModel(model.id, {
+        capabilities: enabled ? [...next, 'reasoning'] : next,
+      })
+      message.success(enabled ? '已启用思考：请求会带思考参数，思考内容显示在会话流' : '已关闭思考')
+      await refresh()
+    } catch (cause) {
+      message.error(describeError(cause))
+    }
+  }
+
+  const toggleModel = async (model: ModelView, enabled: boolean): Promise<void> => {    try {
       await modelConfigApi.updateModel(model.id, { enabled })
       await refresh()
     } catch (cause) {
@@ -364,6 +383,21 @@ export function ModelModule() {
               ),
             },
             {
+              // S40/D43：勾上「思考」→ 请求带思考参数 + 思考落进会话流；显示 [reasoning] 标识
+              title: '思考',
+              dataIndex: 'capabilities',
+              width: 90,
+              render: (capabilities: readonly string[], record) => (
+                <Tooltip title="启用思考模式：请求带该协议的思考参数，思考内容显示在会话流「思考」条目（模型不支持就不要开）">
+                  <Switch
+                    size="small"
+                    checked={capabilities.includes('reasoning')}
+                    onChange={(checked) => void toggleReasoning(record, checked)}
+                  />
+                </Tooltip>
+              ),
+            },
+            {
               title: '被引用',
               dataIndex: 'referrers',
               render: (referrers: readonly string[]) =>
@@ -495,6 +529,17 @@ export function ModelModule() {
           </Form.Item>
           <Form.Item name="displayName" label="展示名">
             <Input placeholder="DeepSeek Chat" />
+          </Form.Item>
+          {/* S40/D43：勾选后请求会带上该协议的思考参数（openai-compatible 用 reasoning_effort，
+              ollama 用 think，gemini 用 includeThoughts，anthropic 用 thinking），
+              且模型返回的思考会落到会话流的「思考」条目里 */}
+          <Form.Item
+            name="reasoning"
+            label="思考（think）"
+            valuePropName="checked"
+            extra="该模型支持思考/思维链时勾选：请求会带思考参数，思考内容显示在会话流「思考」条目（不确定就别勾——陌生参数可能被厂商拒绝）"
+          >
+            <Checkbox>启用思考模式</Checkbox>
           </Form.Item>
         </Form>
       </Modal>

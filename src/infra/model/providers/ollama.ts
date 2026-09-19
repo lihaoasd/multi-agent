@@ -17,9 +17,12 @@ function authHeaders(apiKey: string | null): Record<string, string> {
 function buildBody(resolved: ResolvedModel, request: ModelRequest): Record<string, unknown> {
   const temperature = request.temperature ?? resolved.entry.defaultParams?.temperature
   const maxTokens = request.maxTokens ?? resolved.entry.defaultParams?.maxTokens
+  // S40/D43：勾选「思考」的模型显式开思考（Ollama 用顶层 `think`；不支持该字段的模型请勿勾选）
+  const reasoning = resolved.entry.capabilities.includes('reasoning')
   return {
     model: resolved.entry.model,
     stream: true,
+    ...(reasoning ? { think: true } : {}),
     messages: request.messages.map((message) => ({
       role: message.role,
       content: message.content,

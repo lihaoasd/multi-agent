@@ -17,6 +17,7 @@ import type { EffectiveAgentConfig } from '../team/effective-config'
 export type ContextBlockOrigin =
   | 'role-config'
   | 'platform-role'
+  | 'team-roster'
   | 'global-memory'
   | 'role-memory'
   | 'session-window'
@@ -24,6 +25,16 @@ export type ContextBlockOrigin =
   | 'task-context'
   | 'artifact-index'
   | 'tools'
+
+/** 团队成员视图（S50/D53）：角色职能用模板名/描述表达，供"按职能派单" */
+export interface TeamMemberView {
+  readonly instanceId: string
+  readonly displayName: string
+  readonly roleTemplateId: string
+  /** 角色职能（模板描述或模板名） */
+  readonly duty?: string
+  readonly enabled?: boolean
+}
 
 export interface ContextBlock {
   readonly id: string
@@ -57,6 +68,12 @@ export interface BuildContextInput {
    * 让委派人"接收到回报后继续执行"不依赖单条聊天消息。
    */
   readonly delegatedTasks?: readonly TaskRecord[]
+  /** 团队成员与职能（S50/D53）：让派发人按角色职能决定派给谁 */
+  readonly team?: readonly TeamMemberView[]
+  /** 我当前**可以直接派单**的对象（编排图出边，S50/D53） */
+  readonly delegatesTo?: readonly string[]
+  /** 我名下**待领取**（todo）的任务（S50/D53）：每回合提醒先 claim */
+  readonly pendingTasks?: readonly TaskRecord[]
   /** 产出物署名（`file-owners`）：我的（可改）/ 他人的（只读）（workspaces-artifacts §2.2） */
   readonly ownership?: { readonly mine: readonly FileOwnerRecord[]; readonly others: readonly FileOwnerRecord[] }
   /** 项目产出物索引（名称/版本/文件数，内容按需读） */
@@ -157,10 +174,38 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
       `项目：${project.name}（id=${project.id}）。`,
       `用户是老板：需要决策时用 ask_user 提问并等待答复；不要假设用户的意图。`,
       `你的产出物只能落在项目工作目录内（当前工作目录：${project.workdir}）。`,
+      // S50/D53：文档与代码分开放，文档统一进 docs/（用户口径："角色产生的文档存放在 docs 文件夹里"）
+      '**文档类产出**（设计/需求/说明/报告/方案等 doc 产出物）统一写到工作目录的 `docs/` 子目录下（如 `workdir://docs/design.md`）；代码与测试按设计稿约定的目录放（不要混进 `docs/`）。',
       // S21/D27：中断收尾由 Agent 自己判断并发起询问（平台既不判定"未完成回合"，也不给固定选项）
       `开工前若你怀疑上一个回合没有正常收尾（例如服务刚重启、你要接着做上次没做完的事），先用 session_recent 核对本会话最近事件：若最后一个【回合开始】之后没有对应的【回合结束】，或你的最后一条回复明显不完整，就先用文字说明现状，并用 ask_user 问我怎么处理——不要擅自续跑，也不要假装没发生。`,
     ].join('\n'),
   })
+
+  // 团队与可委派对象（S50/D53）：让派发人"按角色职能决定谁做什么"，而不是盲派/只派给记得住的人
+  const team = input.team ?? []
+  if (team.length > 0) {
+    const lines = team.map((member) => {
+      const duty = member.duty === undefined || member.duty.trim().length === 0 ? '' : `：${member.duty.trim()}`
+      const disabled = member.enabled === false ? '（已停用）' : ''
+      return `- ${member.displayName} ${member.instanceId}（${member.roleTemplateId}）${disabled}${duty}`
+    })
+    const targets = input.delegatesTo ?? []
+    blocks.push({
+      id: 'team-roster',
+      origin: 'team-roster',
+      title: '团队与可委派对象',
+      text: [
+        '本项目角色（按各自职能决定把活派给谁）：',
+        ...lines,
+        targets.length === 0
+          ? '你**没有**可委派对象（编排图里没有你的出边）：需要别人配合时用 ask_user 请老板安排。'
+          : `你当前**可以直接派单**的对象（编排图出边）：${targets.join('、')}。`,
+        ...(targets.length === 0
+          ? []
+          : ['派单用 task_assign：标题写清交付物、验收标准与边界；越出出边的派单会被拒（ERR_ORCHESTRATION_EDGE）。']),
+      ].join('\n'),
+    })
+  }
 
   if (input.memories !== undefined) {
     blocks.push({
@@ -204,6 +249,25 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
           return `- [${where}] ${hit.text}`
         })
         .join('\n'),
+    })
+  }
+
+  // 待领取任务（S50/D53）：**每一回合都提醒**该角色还没领的活——只靠一条唤醒消息容易漏（实测有任务
+  // 创建后 7 小时都没被领取），这里把"先 task_claim 领取"变成每回合都可见的行动项
+  const pendingTasks = input.pendingTasks ?? []
+  if (pendingTasks.length > 0) {
+    blocks.push({
+      id: 'pending-tasks',
+      origin: 'task-context',
+      title: '待领取任务',
+      text: [
+        '你名下有**尚未领取**的任务（领取后才能开工；同一时刻只能有一个进行中任务）：',
+        ...pendingTasks.map((task) => {
+          const desc = task.desc.trim().length === 0 ? '' : `\n  说明：${trim(task.desc.trim(), 800)}`
+          return `- ${task.id}《${task.title}》（发起：${task.creator}）${desc}`
+        }),
+        '用 task_claim 领取；若被"你已有进行中的任务"挡住，先把那个任务收口（task_update done/blocked），或回报派发人说明原因。',
+      ].join('\n'),
     })
   }
 

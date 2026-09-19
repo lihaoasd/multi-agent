@@ -7,23 +7,31 @@ export interface RealtimeFrame {
 
 export interface RealtimeState {
   readonly connected: boolean
-  /** 最近收到的帧（含历史，最多保留 200 条） */
-  readonly frames: readonly RealtimeFrame[]
+  /** 启动以来收到的帧数（**按 ~500ms 节流**更新，仅供状态/调试显示；不要指望它实时） */
+  readonly frameCount: number
   send(frame: { type: string; payload?: Record<string, unknown> }): void
 }
 
-const MAX_FRAMES = 200
+/** 帧计数的刷新节流（S48/D51）：`message.chunk` 可达每秒上百帧，计数器绝不能按帧 setState */
+const COUNT_THROTTLE_MS = 500
 
 /**
- * WS 客户端（contract.md §3）：连接 `/ws?projectId=…`，重连退避，帧缓冲供 UI 读取。
- * 注意：服务端只在事件**落盘后**才推送（先盘后推），因此前端无需去重也能保证顺序。
+ * WS 客户端（contract.md §3）：连接 `/ws?projectId=…`，重连退避，帧直接交给 `onFrame`。
+ *
+ * ⚠️ **S48/D51（性能事故修复）**：原先每收到一帧就 `setFrames([...prev, frame])`——
+ * 而流式输出时 `message.chunk` 可达 **150+ 帧/秒**，等于每秒上百次 state 更新 + 数组复制 +
+ * 整个页面重渲染（会话流里每条消息都要重新 Markdown 解析）→ 页面卡死、按钮点不动、
+ * 询问/审批卡也刷不出来（用户报"应用挂了，暂停/审批/询问都失效、不显示在前端"）。
+ * 现在：**帧不进 React 状态**，直接走 handler；只保留一个节流的计数器。
  */
 export function useRealtime(projectId: string | null, onFrame?: (frame: RealtimeFrame) => void): RealtimeState {
   const [connected, setConnected] = useState(false)
-  const [frames, setFrames] = useState<readonly RealtimeFrame[]>([])
+  const [frameCount, setFrameCount] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
   const handlerRef = useRef(onFrame)
   handlerRef.current = onFrame
+  const countRef = useRef(0)
+  const lastFlushRef = useRef(0)
 
   useEffect(() => {
     if (projectId === null) return
@@ -42,12 +50,19 @@ export function useRealtime(projectId: string | null, onFrame?: (frame: Realtime
         setConnected(true)
       }
       socket.onmessage = (event: MessageEvent<string>) => {
+        let frame: RealtimeFrame
         try {
-          const frame = JSON.parse(event.data) as RealtimeFrame
-          setFrames((previous) => [...previous.slice(-(MAX_FRAMES - 1)), frame])
-          handlerRef.current?.(frame)
+          frame = JSON.parse(event.data) as RealtimeFrame
         } catch {
-          // 坏帧忽略
+          return // 坏帧忽略
+        }
+        // 关键：**不 setState**，直接把帧交给订阅者（订阅者自己做去抖/合并）
+        handlerRef.current?.(frame)
+        countRef.current += 1
+        const now = Date.now()
+        if (now - lastFlushRef.current >= COUNT_THROTTLE_MS) {
+          lastFlushRef.current = now
+          setFrameCount(countRef.current)
         }
       }
       socket.onclose = () => {
@@ -77,5 +92,5 @@ export function useRealtime(projectId: string | null, onFrame?: (frame: Realtime
     socket.send(JSON.stringify({ type: frame.type, payload: frame.payload ?? {} }))
   }, [])
 
-  return { connected, frames, send }
+  return { connected, frameCount, send }
 }

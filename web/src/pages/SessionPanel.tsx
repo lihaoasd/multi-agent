@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Collapse, Empty, Input, Popconfirm, Segmented, Space, Switch, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Empty, Input, Popconfirm, Segmented, Space, Spin, Switch, Tag, Tooltip, Typography, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeError } from '../api/client'
 import { approvalApi, type ApprovalView } from '../api/platform'
@@ -7,10 +7,12 @@ import { sessionApi, type AgentStatus, type SessionSummary, type StoredEvent } f
 import { useRealtime } from '../hooks/useRealtime'
 import { RightColumn } from './RightColumn'
 import { QuestionCarousel } from '../components/QuestionCarousel'
-import { Markdown } from '../components/Markdown'
-import { eventRow, isToolFailed, messageTextOf, traceLine } from '../lib/event-display'
-import { runtimeApi } from '../api/runtime'
-import { stopTurnFeedback } from '../lib/stop-feedback'
+import { EventRowView } from '../components/EventRowView'
+import { traceLine } from '../lib/event-display'
+import { agentStateView } from '../lib/agent-state'
+import { composerStatus } from '../lib/composer-status'
+import { pendingForSession } from '../lib/session-pending'
+import { isSending, withSending, withoutSending } from '../lib/sending'
 
 interface SessionPanelProps {
   readonly projectId: string
@@ -18,14 +20,9 @@ interface SessionPanelProps {
   readonly focus?: { readonly instanceId: string; readonly at: number } | null
 }
 
-/** 会话列表里的 Agent 状态文字与颜色（S19；`paused` 叠加显示为「已暂停」） */
-const AGENT_STATE_LABEL: Record<string, string> = { idle: '空闲', working: '工作中', waiting: '等待中' }
-const AGENT_STATE_COLOR: Record<string, string> = { idle: 'default', working: 'blue', waiting: 'orange' }
-
+/** 会话列表里的 Agent 状态文字与颜色（S19；S38/D41 起与拓扑/细条共用 `agentStateView`） */
 function agentState(status: AgentStatus | undefined): { readonly text: string; readonly color: string } {
-  if (status?.paused === true) return { text: '已暂停', color: 'purple' }
-  const state = status?.state ?? 'idle'
-  return { text: AGENT_STATE_LABEL[state] ?? state, color: AGENT_STATE_COLOR[state] ?? 'default' }
+  return agentStateView(status)
 }
 
 /** 左右两栏的收起状态（S20）：单机单用户，落 localStorage 记忆；读写异常只影响记忆，不影响功能 */
@@ -59,7 +56,8 @@ function writeCollapsed(value: CollapsedState): void {
  * 会话流展示的事件类别（S22）：对话 + 思考 + 工具调用（含结果）+ 错误；不再有筛选与"工作日志"折叠包装。
  * 事件→文本的映射在 `lib/event-display.ts`（纯函数，带单测；S24 修复字段名不一致导致的"工具不显示"）。
  */
-const VISIBLE_KINDS = ['message', 'thought', 'tool_call', 'tool_result', 'error'] as const
+/** 会话流显示的事件（S22/D28 去掉筛选；S44/D47 把 `plan` 加回来——计划是各步之间可见的分界） */
+const VISIBLE_KINDS = ['message', 'thought', 'tool_call', 'tool_result', 'error', 'plan'] as const
 
 /**
  * 会话面板（S3：会话 / 单工 / 队列 / WS 实时；S22：会话流只内联展示对话/思考/工具调用/错误）。
@@ -67,10 +65,15 @@ const VISIBLE_KINDS = ['message', 'thought', 'tool_call', 'tool_result', 'error'
 export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  /** 当前会话 id 的"最新值"引用：给异步回调（发送/加载）判断"响应回来时还是不是同一个会话"（S46/D49） */
+  const activeSessionRef = useRef<string | null>(null)
+  activeSessionRef.current = activeSessionId
   const [events, setEvents] = useState<StoredEvent[]>([])
   const [statuses, setStatuses] = useState<AgentStatus[]>([])
   const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
+  /** S46/D49：发送中标记按**会话**记（给 A 发消息时 B 的发送按钮不受影响） */
+  const [sending, setSending] = useState<readonly string[]>([])
+  const busy = isSending(sending, activeSessionId)
   const [error, setError] = useState<string | null>(null)
   const [approvals, setApprovals] = useState<ApprovalView[]>([])
   /** 会话窗口视图（S35）：`chat` = 对话视图；`trace` = 详细日志（原始事件全量） */
@@ -79,6 +82,8 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
   const [showRawPayload, setShowRawPayload] = useState(false)
   /** 待答复询问（S32）：在本会话窗口（输入框上方）答复；逐题作答的草稿由 `QuestionCarousel` 自己管（S33） */
   const [questions, setQuestions] = useState<QuestionRecord[]>([])
+  /** S42/D45：最近是否收到流式增量（`message.chunk`）——用于"模型正在输出" */
+  const [streaming, setStreaming] = useState(false)
   /** 已应用过的聚焦令牌（S17）：只在匹配到目标会话时记录，避免会话列表刷新时覆盖用户的手动选择 */
   const appliedFocusRef = useRef<number | null>(null)
   /** 左右两栏收起状态（S20）：收起后把宽度让给聊天区 */
@@ -157,6 +162,8 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     async (sessionId: string) => {
       try {
         const detail = await sessionApi.detail(projectId, sessionId, 200)
+        // S46/D49：期间用户可能切到别的会话——迟到的响应不能把当前会话的事件流覆盖掉
+        if (activeSessionRef.current !== sessionId) return
         setEvents(detail.events)
       } catch (cause) {
         setError(describeError(cause))
@@ -174,6 +181,8 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
 
   useEffect(() => {
     if (activeSessionId !== null) void loadEvents(activeSessionId)
+    // S42/D45：切会话时把"正在输出"重置（上一个会话的流式增量与本会话无关）
+    setStreaming(false)
   }, [activeSessionId, loadEvents])
 
   // 拓扑页点节点带来的聚焦（S17）：按 instanceId 选中对应会话；未加载到该会话时等下一次列表更新再试
@@ -192,6 +201,8 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     useCallback(
       (frame) => {
         if (frame.type === 'event.appended' && frame.payload['sessionId'] === activeSessionId) {
+          // 有事件落盘 = 这一轮调用已经结束（或进了下一步工具），不再是"正在吐字"
+          setStreaming(false)
           const seq = Number(frame.payload['seq'])
           void sessionApi
             .log(projectId, String(activeSessionId), { fromSeq: seq })
@@ -204,7 +215,22 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
             })
             .catch(() => undefined)
         }
-        if (frame.type === 'agent.state' || frame.type === 'team.updated') void refreshStatuses()
+        // S42/D45：模型正在流式输出（平台本来就推 message.chunk，此前没人消费）
+        if (frame.type === 'message.chunk' && frame.payload['sessionId'] === activeSessionId) {
+          setStreaming(true)
+        }
+        // S38/D41：询问/审批一到就刷新状态——"进入等待"没有 agent.state 帧（帧由 dispatcher 发），
+        // 原先只认 agent.state，于是 Agent 明明在等答复，左栏还挂着上一个「工作中」
+        if (
+          frame.type === 'agent.state' ||
+          frame.type === 'team.updated' ||
+          frame.type === 'question.asked' ||
+          frame.type === 'question.answered' ||
+          frame.type === 'approval.requested' ||
+          frame.type === 'approval.decided'
+        ) {
+          void refreshStatuses()
+        }
         if (frame.type === 'approval.requested' || frame.type === 'approval.decided') void refreshApprovals()
         if (frame.type === 'question.asked' || frame.type === 'question.answered') void refreshQuestions()
       },
@@ -224,8 +250,38 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
 
   /** 只显示**当前会话**的待答询问（S32：答复入口在会话窗口内） */
   const sessionQuestions = useMemo(
-    () => questions.filter((question) => question.sessionId === activeSessionId),
+    () => pendingForSession(questions, activeSessionId),
     [questions, activeSessionId],
+  )
+
+  /**
+   * S45/D48：审批卡也只显示**当前会话**的（原先渲染项目全量 → A 角色的审批会出现在 B 角色的窗口里）。
+   * 项目级视角仍在右栏「审批」列表。
+   */
+  const sessionApprovals = useMemo(
+    () => pendingForSession(approvals, activeSessionId),
+    [approvals, activeSessionId],
+  )
+
+  /** 申请者显示名（会话列表/状态投影同源；查不到就退回 instanceId） */
+  const nameOf = useCallback(
+    (instanceId: string): string =>
+      sessions.find((session) => session.instanceId === instanceId)?.displayName ??
+      statuses.find((status) => status.instanceId === instanceId)?.displayName ??
+      instanceId,
+    [sessions, statuses],
+  )
+
+  /** S42/D45：输入框上方"现在在干什么"——状态投影 + 事件尾巴 + 流式增量三者合成 */
+  const composer = useMemo(
+    () =>
+      composerStatus({
+        status: activeStatus,
+        events,
+        streaming,
+        hasPendingQuestion: sessionQuestions.length > 0,
+      }),
+    [activeStatus, events, streaming, sessionQuestions.length],
   )
 
   /**
@@ -244,6 +300,9 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
 
   const send = async (): Promise<void> => {
     if (activeSessionId === null) return
+    const sessionId = activeSessionId
+    // S46/D49：发送中标记**按会话**记——给 A 发消息不该让 B 的发送按钮也转圈（会话相互独立）
+    if (busy) return
     const text = draft.trim()
     if (text.length === 0) return
 
@@ -252,20 +311,20 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
     // 即**整个回合跑完才响应**（模型调用 + 工具，可能几十秒）——等它返回再清空，
     // 输入框会在整轮期间一直留着刚发出去的文字，发送按钮也一直转圈。
     setDraft('')
-    setBusy(true)
+    setSending((previous) => withSending(previous, sessionId))
     try {
-      const result = await sessionApi.send(projectId, activeSessionId, text)
+      const result = await sessionApi.send(projectId, sessionId, text)
       if (result.queued) {
         message.info('该 Agent 正在工作或已暂停，消息已排队，稍后处理')
       }
-      await loadEvents(activeSessionId)
+      await loadEvents(sessionId)
       await refreshStatuses()
     } catch (cause) {
       // 只有发送失败才把文字放回去；期间用户若已重新输入，则不覆盖他的新内容
       setDraft((current) => (current.length === 0 ? text : current))
       message.error(describeError(cause))
     } finally {
-      setBusy(false)
+      setSending((previous) => withoutSending(previous, sessionId))
     }
   }
 
@@ -366,7 +425,21 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
           style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 270px)', minHeight: 360 }}
           styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
           title={
-            activeSession === undefined ? '会话' : `${activeSession.displayName}｜${activeSession.sessionId}`
+            activeSession === undefined ? (
+              '会话'
+            ) : (
+              <Space size={8} wrap>
+                <span>{`${activeSession.displayName}｜${activeSession.sessionId}`}</span>
+                {/* S51/D54：领取后就地显示"正在执行的任务"（用户口径：会话顶部显示当前任务） */}
+                {activeStatus?.currentTask != null && (
+                  <Tooltip title={`任务 ${activeStatus.currentTask.id}｜${activeStatus.currentTask.state}`}>
+                    <Tag color="blue" style={{ maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      正在执行：{activeStatus.currentTask.title}
+                    </Tag>
+                  </Tooltip>
+                )}
+              </Space>
+            )
           }
           extra={
             <Space>
@@ -407,28 +480,17 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
               </Button>
               <Popconfirm
                 title={activeStatus?.paused === true ? '恢复该 Agent？' : '暂停该 Agent？'}
-                description={activeStatus?.paused === true ? '将立刻补处理排队消息' : '不再领新任务，当前回合到可中断点挂起'}
+                description={
+                  activeStatus?.paused === true
+                    ? '将立刻补处理排队消息'
+                    : // S49/D52：暂停不再中途切断模型调用——当前这一轮 loop 跑完即停止
+                      '不再领新任务；当前这一轮 loop 跑完就停止生成，之后点「恢复」继续'
+                }
                 onConfirm={() => void togglePause()}
               >
                 <Button size="small" danger={activeStatus?.paused !== true}>
                   {activeStatus?.paused === true ? '恢复' : '暂停'}
                 </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="停止生成？"
-                description="停止当前回合的输出；队列中的消息保留，任务不受影响。"
-                onConfirm={() =>
-                  void runtimeApi
-                    .stop(projectId, activeSession?.instanceId ?? '', 'turn')
-                    .then((result) => {
-                      // S37：如实反馈——空闲时"没停到东西"不能报成功
-                      const feedback = stopTurnFeedback(result)
-                      message[feedback.kind](feedback.text)
-                    })
-                    .catch((cause: unknown) => message.error(describeError(cause)))
-                }
-              >
-                <Button size="small">停止生成</Button>
               </Popconfirm>
             </Space>
           }
@@ -467,104 +529,22 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
               <Empty description="还没有内容：在下面输入框说点什么" />
             ) : (
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
-              {visibleEvents.map((event) => {
-                if (event.kind === 'message') {
-                  const role = String(event.payload['role'] ?? '')
-                  const align = role === 'user' ? 'flex-end' : 'flex-start'
-                  const background = role === 'user' ? '#e6f4ff' : '#f6ffed'
-                  return (
-                    <div key={event.seq} style={{ display: 'flex', justifyContent: align }}>
-                      <div
-                        style={{
-                          background,
-                          borderRadius: 6,
-                          padding: '6px 10px',
-                          maxWidth: '80%',
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          #{event.seq} · {event.kind}
-                          {role.length > 0 ? ` · ${role}` : ''} · turn {event.turn}
-                        </Typography.Text>
-                        {/* S23：对话消息按 Markdown 渲染（自研零依赖，不注入 HTML） */}
-                        <Markdown text={messageTextOf(event)} />
-                      </div>
-                    </div>
-                  )
-                }
-                // S22：思考 / 工具调用 / 工具结果 / 错误直接内联展示（不再折叠成"工作日志"）
-                // S24：字段名与生产者 strategies.ts 对齐；S26：工具结果条目只显示工具名（正文与序号不显示）
-                const failed = isToolFailed(event)
-                const row = eventRow(event)
-                const tone =
-                  event.kind === 'error' || failed
-                    ? { background: '#fff2f0', border: '1px solid #ffccc7' }
-                    : event.kind === 'tool_call'
-                      ? { background: '#f0f5ff', border: '1px solid #d6e4ff' }
-                      : { background: '#fafafa', border: '1px solid #f0f0f0' }
-                return (
-                  <div key={event.seq} style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                    <div
-                      style={{
-                        ...tone,
-                        borderRadius: 6,
-                        padding: '4px 8px',
-                        maxWidth: '85%',
-                        whiteSpace: 'pre-wrap',
-                        fontSize: 12,
-                      }}
-                    >
-                      {row.showMeta ? (
-                        row.bodyMode === 'collapsed' ? (
-                          // S28：工具调用参数默认折叠（点标题展开看参数结构）
-                          <Collapse
-                            ghost
-                            size="small"
-                            style={{ background: 'transparent' }}
-                            items={[
-                              {
-                                key: String(event.seq),
-                                label: (
-                                  <Typography.Text style={{ fontSize: 12 }}>
-                                    {row.label} · #{event.seq} · turn {event.turn}
-                                  </Typography.Text>
-                                ),
-                                children: (
-                                  <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                                    {row.body}
-                                  </pre>
-                                ),
-                              },
-                            ]}
-                          />
-                        ) : (
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            {row.label} · #{event.seq} · turn {event.turn}
-                          </Typography.Text>
-                        )
-                      ) : (
-                        <span style={{ fontWeight: failed ? 600 : 400 }}>{row.label}</span>
-                      )}
-                      {row.body !== null && row.bodyMode === 'inline' && (
-                        <div style={{ whiteSpace: 'pre-wrap' }}>{row.body}</div>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
+              {visibleEvents.map((event) => (
+                <EventRowView key={event.seq} event={event} />
+              ))}
             </Space>
             )}
           </div>
-          {approvals.length > 0 && (
-            <Card size="small" title={`待审批（${approvals.length}）`} style={{ marginTop: 12 }}>
+          {sessionApprovals.length > 0 && (
+            <Card size="small" title={`待审批（${sessionApprovals.length}）`} style={{ marginTop: 12 }}>
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                {approvals.map((approval) => (
+                {sessionApprovals.map((approval) => (
                   <div key={approval.id} style={{ border: '1px solid #ffe58f', background: '#fffbe6', borderRadius: 6, padding: 8 }}>
                     <Space size={6} wrap>
                       <Tag color="orange">{approval.kind}</Tag>
                       <Typography.Text strong>{approval.summary}</Typography.Text>
-                      <Typography.Text type="secondary">触发者 {approval.actor}</Typography.Text>
+                      {/* S45/D48：是"谁"申请的（显示名，而不是 instanceId） */}
+                      <Typography.Text type="secondary">申请者 {nameOf(approval.actor)}</Typography.Text>
                     </Space>
                     <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 4 }}>{approval.detail}</div>
                     <Space size={6} style={{ marginTop: 6 }}>
@@ -594,6 +574,18 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
               </Space>
             </Card>
           )}
+          {/* S42/D45：输入框上方一句话说清"现在在干什么"（调工具 / 模型在跑 / 等你答复 / 排队） */}
+          {composer !== null && (
+            <Space size={6} style={{ marginTop: 12 }}>
+              {composer.spinner && <Spin size="small" />}
+              <Typography.Text
+                type={composer.tone === 'waiting' ? 'warning' : 'secondary'}
+                style={{ fontSize: 12 }}
+              >
+                {composer.text}
+              </Typography.Text>
+            </Space>
+          )}
           <Space.Compact style={{ width: '100%', marginTop: 12 }}>
             <Input.TextArea
               value={draft}
@@ -613,8 +605,7 @@ export function SessionPanel({ projectId, focus = null }: SessionPanelProps) {
           </Space.Compact>
           {activeStatus !== undefined && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              状态：{activeStatus.state}
-              {activeStatus.paused ? '（已暂停）' : ''}｜排队 {activeStatus.queued} 条｜会话进度 #
+              状态：{agentState(activeStatus).text}｜排队 {activeStatus.queued} 条｜会话进度 #
               {activeSession?.lastSeq ?? 0}
             </Typography.Text>
           )}

@@ -1,13 +1,15 @@
-import { Badge, Button, Card, Popconfirm, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { Badge, Button, Card, Popconfirm, Space, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { describeError } from '../api/client'
 import { runtimeApi, type RuntimeSnapshot } from '../api/runtime'
 import { useRealtime } from '../hooks/useRealtime'
-import { stopTaskFeedback, stopTurnFeedback } from '../lib/stop-feedback'
+import { stopTaskFeedback } from '../lib/stop-feedback'
+import { agentStateView } from '../lib/agent-state'
 
 /**
  * 运行细条（S15 起挂在「拓扑」页的编排图顶部，不再横跨项目页两个导航）：显示占用中的 Agent、当前任务与最近 plan 状态；
- * 提供「停止生成」（停当前回合输出、队列保留）与「停止任务」（终止当前任务并结算快照）。
+ * 提供「停止任务」（终止当前任务并结算快照）。**S49/D52 起不再有「停止生成」**——要停生成就对该 Agent「暂停」
+ * （当前这一轮 loop 跑完即停止循环，消息留在队列，恢复后补处理）。
  * **空闲不渲染**：没有 Agent 在工作时整条不出现（无内容可停）。更细的终止入口在右栏任务列表（改状态为 `terminated`）。
  */
 export function WorkingBar({ projectId }: { readonly projectId: string }) {
@@ -37,11 +39,11 @@ export function WorkingBar({ projectId }: { readonly projectId: string }) {
     ),
   )
 
-  const stop = async (instanceId: string, scope: 'turn' | 'task'): Promise<void> => {
+  /** S49/D52：细条上不再有「停止生成」——暂停就是"跑完当前这轮 loop 后停止生成" */
+  const stopTask = async (instanceId: string): Promise<void> => {
     try {
-      const result = await runtimeApi.stop(projectId, instanceId, scope)
-      // S37：如实反馈（空闲时"停止生成"没停到东西要说清楚，而不是报成功）
-      const feedback = scope === 'turn' ? stopTurnFeedback(result) : stopTaskFeedback(result)
+      const result = await runtimeApi.stop(projectId, instanceId, 'task')
+      const feedback = stopTaskFeedback(result)
       message[feedback.kind](feedback.text)
       await load()
     } catch (cause) {
@@ -64,20 +66,19 @@ export function WorkingBar({ projectId }: { readonly projectId: string }) {
         {working.map((agent) => (
           <Space key={agent.instanceId} size={6} wrap>
             <Typography.Text>{agent.displayName}</Typography.Text>
-            <Tag color={agent.state === 'waiting' ? 'orange' : 'blue'}>{agent.state}</Tag>
+            {(() => {
+              // S38/D41：与左栏/节点同源——等答复与等审批分开说
+              const view = agentStateView({ ...agent, paused: false })
+              return <Tag color={view.color}>{view.text}</Tag>
+            })()}
             {agent.paused && <Tag color="purple">暂停</Tag>}
             {agent.taskTitle !== null && <Tag>任务：{agent.taskTitle}</Tag>}
             {agent.planStatus !== null && <Tag color="geekblue">plan {agent.planStatus}</Tag>}
             {agent.queued > 0 && <Tag color="orange">队列 {agent.queued}</Tag>}
-            <Tooltip title="停当前回合输出（队列保留，任务继续）">
-              <Button size="small" onClick={() => void stop(agent.instanceId, 'turn')}>
-                停止生成
-              </Button>
-            </Tooltip>
             <Popconfirm
               title="终止该 Agent 的当前任务？"
               description="存在未结算改动时会先结算为可回退的产出物快照。"
-              onConfirm={() => void stop(agent.instanceId, 'task')}
+              onConfirm={() => void stopTask(agent.instanceId)}
             >
               <Button size="small" danger>
                 停止任务

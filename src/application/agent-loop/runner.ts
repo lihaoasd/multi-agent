@@ -39,6 +39,10 @@ export interface AgentLoopRunnerOptions {
   readonly summary: SummaryEngine
   /** 任务：上下文注入 + 产出物按任务聚合归属（D14-⑧/D19-⑤） */
   readonly tasks: TaskService
+  /** 编排图：取"我的出边"作为可委派对象注入上下文（S50/D53） */
+  readonly orchestration: import('../../ports/orchestration').OrchestrationService
+  /** 角色模板库：取角色职能描述用于「团队与可委派对象」块（S50/D53） */
+  readonly roleTemplates: import('../../ports/role-templates').RoleTemplateStore
   /** 询问桥：`ask_user` 落 pending 并等待用户答复（D19-⑦） */
   readonly questions: QuestionService
   /** 产出物清单（`file-owners`）注入系统提示：我的/他人产出物（§2.2） */
@@ -162,6 +166,26 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
       const activeTask = await options.tasks.activeFor(context.projectId, context.instanceId)
       // 我派出去的活干到哪了（S36/D39）：委派人据此"接收到回报后继续执行"
       const delegatedTasks = await options.tasks.delegatedFor(context.projectId, context.instanceId)
+      // 团队与可委派对象（S50/D53）：角色职能 + 我的出边 → 让派发人按职能派单
+      const instances = await options.team.listInstances(context.projectId)
+      const templates = await options.roleTemplates.list()
+      const dutyOf = (roleTemplateId: string): string | undefined =>
+        templates.ok ? templates.value.find((item) => item.roleId === roleTemplateId)?.description : undefined
+      const team = instances.ok
+        ? instances.value.map((item) => {
+            const duty = dutyOf(item.roleTemplateId)
+            return {
+              instanceId: item.instanceId,
+              displayName: item.displayName,
+              roleTemplateId: item.roleTemplateId,
+              ...(duty === undefined ? {} : { duty }),
+              enabled: item.enabled,
+            }
+          })
+        : []
+      const outgoing = await options.orchestration.outgoingOf(context.projectId, context.instanceId)
+      // 待领取任务（S50/D53）：每回合提醒"先 task_claim"，别再出现"派了 7 小时没人领"
+      const todoTasks = await options.tasks.list(context.projectId, { assignee: context.instanceId, state: 'todo' })
       // 产出物索引与署名（workspaces-artifacts §2.2）：我的（可改）/ 他人的（只读）
       const owners = await options.artifacts.listOwners(context.projectId)
       const myOwners = owners.ok ? owners.value.filter((item) => item.owner === context.instanceId) : []
@@ -177,6 +201,9 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
         snippets,
         ...(activeTask.ok && activeTask.value !== null ? { task: activeTask.value } : {}),
         ...(delegatedTasks.ok && delegatedTasks.value.length > 0 ? { delegatedTasks: delegatedTasks.value } : {}),
+        ...(team.length > 0 ? { team } : {}),
+        ...(outgoing.ok && outgoing.value.length > 0 ? { delegatesTo: outgoing.value } : {}),
+        ...(todoTasks.ok && todoTasks.value.length > 0 ? { pendingTasks: todoTasks.value } : {}),
         ownership: { mine: myOwners, others: otherOwners },
         artifacts: artifactList.ok ? artifactList.value : [],
         limits: {
@@ -368,8 +395,9 @@ export function createAgentLoopRunner(options: AgentLoopRunnerOptions): TurnRunn
           }),
         budget,
         shouldInterrupt: () => {
-          if (context.signal.aborted) return true
-          return false
+          // S49/D52：**暂停也在这里生效**——每轮 loop 开始时检查，因此"当前这一轮会跑完，下一轮不再开始"
+          if (context.isPaused?.() === true) return true
+          return context.signal.aborted
         },
       }
 

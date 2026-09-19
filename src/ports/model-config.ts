@@ -43,7 +43,14 @@ export interface ModelEntry {
   readonly capabilities: readonly ModelCapability[]
   readonly contextWindow?: number
   readonly maxOutputTokens?: number
-  readonly defaultParams?: { readonly temperature?: number; readonly maxTokens?: number }
+  readonly defaultParams?: {
+    readonly temperature?: number
+    readonly maxTokens?: number
+    /** 思考强度（S40/D43）：openai-compatible（DeepSeek/OpenAI 系）映射为 `reasoning_effort`，缺省 `high` */
+    readonly reasoningEffort?: 'low' | 'high' | 'max'
+    /** 思考预算（S40/D43）：anthropic `thinking.budget_tokens` / gemini `thinkingBudget` */
+    readonly thinkingBudget?: number
+  }
   readonly enabled: boolean
   readonly createdAt: string
   readonly updatedAt: string

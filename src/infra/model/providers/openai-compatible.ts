@@ -28,8 +28,17 @@ function effectiveParams(
   }
 }
 
+/**
+ * 是否要按"思考模式"发请求（S40/D43）：由**模型条目的能力标记**决定（`capabilities` 含 `reasoning`）。
+ * 只在条目显式声明时发送思考参数——不同厂商的参数名不一致，乱发会被 400；勾选即表示"我知道这个模型支持"。
+ */
+function reasoningEnabled(resolved: ResolvedModel): boolean {
+  return resolved.entry.capabilities.includes('reasoning')
+}
+
 function buildBody(resolved: ResolvedModel, request: ModelRequest, stream: boolean): Record<string, unknown> {
   const params = effectiveParams(resolved, request)
+  const reasoning = reasoningEnabled(resolved)
   return {
     model: resolved.entry.model,
     stream,
@@ -37,6 +46,12 @@ function buildBody(resolved: ResolvedModel, request: ModelRequest, stream: boole
       role: message.role,
       content: message.content,
       ...(message.toolCallId === undefined ? {} : { tool_call_id: message.toolCallId }),
+      // S40/D43：思考模式 + 带 tools 时**必须回传** `reasoning_content`（DeepSeek 明确要求，否则 400）。
+      // 这里**不看能力开关**：能力只管"要不要主动要求思考"，而模型可能本来就在思考（DeepSeek 默认开），
+      // 拿到的思考一律带回去，才不会因为少回传而被拒。
+      ...(message.reasoning === undefined || message.reasoning.length === 0
+        ? {}
+        : { reasoning_content: message.reasoning }),
     })),
     ...(request.tools === undefined || request.tools.length === 0
       ? {}
@@ -48,6 +63,8 @@ function buildBody(resolved: ResolvedModel, request: ModelRequest, stream: boole
         }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { max_tokens: params.maxTokens }),
+    // 思考强度：DeepSeek 与 OpenAI 系都接受 `reasoning_effort`（DeepSeek 思考模式默认开、默认 high）
+    ...(reasoning ? { reasoning_effort: resolved.entry.defaultParams?.reasoningEffort ?? 'high' } : {}),
   }
 }
 

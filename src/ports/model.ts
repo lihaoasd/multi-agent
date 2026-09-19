@@ -19,6 +19,11 @@ export interface ChatMessage {
   readonly content: string
   /** 工具结果消息关联的调用 id（role=tool 时使用） */
   readonly toolCallId?: string
+  /**
+   * 该 assistant 消息的**思考内容**（S40/D43：DeepSeek 的 `reasoning_content`）。
+   * 带 `tools` 的思考模式请求，后续轮次**必须回传**，否则 API 会 400；适配器按能力标记决定是否发送。
+   */
+  readonly reasoning?: string
 }
 
 export interface ToolSchema {

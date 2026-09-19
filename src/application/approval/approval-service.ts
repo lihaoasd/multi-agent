@@ -2,6 +2,7 @@ import type { Clock } from '../../ports/clock'
 import type { ApprovalKind, ApprovalRecord, ApprovalStatus, ApprovalStore } from '../../ports/approval'
 import type { EventBroadcaster } from '../../ports/events'
 import type { IdGenerator } from '../../ports/id'
+import type { Logger } from '../../ports/logger'
 import type { InstanceId, ProjectId } from '../../ports/project'
 import { err, ok, type Result } from '../../shared/result'
 
@@ -10,6 +11,17 @@ export interface ApprovalServiceOptions {
   readonly broadcaster: EventBroadcaster
   readonly ids: IdGenerator
   readonly clock: Clock
+  readonly logger: Logger
+  /**
+   * 唤醒申请者（S47/D50）：**没有进程内等待者**时（典型是进程重启过——等待者随进程消失，
+   * 见本文件"跨重启"口径），决定落盘后必须让申请者知道，否则用户点了"批准/拒绝"什么都不会发生，
+   * 表现为"审批失效"。与询问答复的处理方式一致（question-service 也是这么做的）。
+   */
+  readonly notify: (input: {
+    readonly projectId: ProjectId
+    readonly instanceId: InstanceId
+    readonly text: string
+  }) => Promise<void>
 }
 
 export interface ApprovalRequestInput {
@@ -89,6 +101,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         if (updated.value.status === 'approved' || updated.value.status === 'rejected') {
           waiter(updated.value.status)
         }
+      } else if (updated.value.status === 'approved' || updated.value.status === 'rejected') {
+        // S47/D50：没有等待者（进程重启过，回合已不在）→ 主动唤醒申请者，别让"批准"石沉大海
+        await options
+          .notify({
+            projectId,
+            instanceId: updated.value.actor,
+            text: `[审批] 你的申请已被${updated.value.status === 'approved' ? '批准' : '拒绝'}：${updated.value.summary}。请据此继续；若该动作已不再需要，忽略本条即可。`,
+          })
+          .catch((cause: unknown) => {
+            options.logger.warn('审批决定唤醒申请者失败', { projectId, approvalId, message: String(cause) })
+          })
       }
       broadcaster.broadcast({
         type: 'approval.decided',

@@ -495,11 +495,22 @@ export function resolveDeps(
     clock,
   })
 
+  // 唤醒的**间接层**：`wake` 的实现依赖 dispatcher（在下方创建），而 approvals/tasks/questions 需要
+  // 在各自创建时就拿到 `notify` —— 因此先用一个可变 holder 占位，稍后把真正的实现塞进去（S47/D50 复用）。
+  const notifier: { wake?: (input: { projectId: string; instanceId: string; text: string }) => Promise<void> } = {}
+  const wake = async (input: { projectId: string; instanceId: string; text: string }): Promise<void> => {
+    if (notifier.wake === undefined) return
+    await notifier.wake(input)
+  }
+
   const approvals = createApprovalService({
     store: container.resolve<ApprovalStore>(TOKENS.ApprovalStore),
     broadcaster,
     ids,
     clock,
+    logger: container.resolve(TOKENS.Logger),
+    // S47/D50：没有等待者时（进程重启过）唤醒申请者；wake 由下方 notifier 注入
+    notify: wake,
   })
 
   const memory = createMemoryService({
@@ -524,12 +535,6 @@ export function resolveDeps(
     clock,
     logger: container.resolve(TOKENS.Logger),
   })
-
-  const notifier: { wake?: (input: { projectId: string; instanceId: string; text: string }) => Promise<void> } = {}
-  const wake = async (input: { projectId: string; instanceId: string; text: string }): Promise<void> => {
-    if (notifier.wake === undefined) return
-    await notifier.wake(input)
-  }
 
   const orchestration = createOrchestrationService({
     store: container.resolve<OrchestrationStore>(TOKENS.OrchestrationStore),
@@ -620,6 +625,9 @@ export function resolveDeps(
     tasks,
     questions,
     artifacts,
+    // S50/D53：团队职能与"我的出边"注入上下文（按职能派单）
+    orchestration,
+    roleTemplates: roleTemplateStore,
     broadcaster,
     config: configProvider,
     clock,
@@ -634,6 +642,9 @@ export function resolveDeps(
     memory,
     tasks,
     artifacts,
+    // S50/D53：预览与运行期同源（团队/出边/待领取任务）
+    orchestration,
+    roleTemplates: roleTemplateStore,
   })
 
   const dispatcher = createDispatcher({
@@ -649,7 +660,7 @@ export function resolveDeps(
     logger: container.resolve(TOKENS.Logger),
   })
 
-  // 通知并唤醒一轮（D18-③）：向该角色的 user 会话注入一条系统消息，再触发 drain 处理它
+  // 通知并唤醒一轮（D18-③）：向该角色的 user 会话注入一条系统消息，再**排一次** drain 处理它
   notifier.wake = async (input) => {
     const appended = await sessions.append(input.projectId, sessions.sessionIdFor(input.instanceId), [
       {
@@ -659,7 +670,17 @@ export function resolveDeps(
       },
     ])
     if (!appended.ok) return
-    await dispatcher.drain(input.projectId, input.instanceId)
+    // S47/D50：**只排不 await**。`drain` 持该 Agent 的锁跑完整个回合；wake 的调用方往往正在某个回合的
+    // 工具调用里（task_assign / task_update / 答复询问…），若在这里 await 对方的 drain，就会形成
+    // "A 的 drain 等 B 的回合、B 的回合又唤醒 A"的**互等死锁**（keyed lock 不可重入、也没有超时）。
+    // 唤醒只需要"消息落盘 + 排一次 drain"，失败记日志即可（回合内不嵌套 drain 是硬约束）。
+    void dispatcher.drain(input.projectId, input.instanceId).catch((cause: unknown) => {
+      container.resolve(TOKENS.Logger).warn('唤醒 drain 失败', {
+        projectId: input.projectId,
+        instanceId: input.instanceId,
+        message: String(cause),
+      })
+    })
   }
 
   // S8/S21：运行控制 + 项目导出（未完成回合的判定与恢复已在 S21/D27 移除，改由 Agent 自查 + ask_user）

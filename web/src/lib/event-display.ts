@@ -10,6 +10,8 @@
  * 这里对 `name`/`args`/`text` 保留兜底，避免旧日志或未来字段调整直接显示空白。
  */
 
+import { localClock } from './time-format'
+
 export interface EventLike {
   readonly kind: string
   readonly seq: number
@@ -65,7 +67,36 @@ export function toolInputOf(event: EventLike): string {
   }
 }
 
-/** 非消息事件的正文（工具调用=参数、工具结果=结果文本、思考/错误=文本） */
+/**
+ * 计划进度（`plan` 事件：`{planId, steps:[{step,title}], stepIndex, status}`）。
+ * S44/D47：会话流里要把计划显示出来——它是"制定计划"与"执行第 N 步"之间**可见的分界**。
+ */
+function planInfo(event: EventLike): {
+  readonly total: number
+  readonly index: number
+  readonly status: string
+  readonly titles: readonly string[]
+} {
+  const steps = Array.isArray(event.payload['steps']) ? event.payload['steps'] : []
+  const titles: string[] = []
+  for (const raw of steps) {
+    if (typeof raw === 'string') {
+      titles.push(raw)
+      continue
+    }
+    if (typeof raw === 'object' && raw !== null) {
+      const title = (raw as Record<string, unknown>)['title']
+      if (typeof title === 'string' && title.trim().length > 0) titles.push(title.trim())
+    }
+  }
+  const rawIndex = event.payload['stepIndex']
+  const index = typeof rawIndex === 'number' && Number.isFinite(rawIndex) ? rawIndex : 0
+  const status = asText(event.payload['status']) ?? 'running'
+  const total = titles.length === 0 ? Math.max(index, 1) : titles.length
+  return { total, index, status, titles }
+}
+
+/** 非消息事件的正文（工具调用=参数、工具结果=结果文本、思考/错误=文本、计划=步骤清单） */
 export function eventBody(event: EventLike): string {
   switch (event.kind) {
     case 'tool_call':
@@ -75,6 +106,13 @@ export function eventBody(event: EventLike): string {
         asText(event.payload['summary']) ?? asText(event.payload['text']) ?? asText(event.payload['result'])
       if (summary !== null) return summary
       break
+    }
+    case 'plan': {
+      // 只有"计划刚产出"那一条（stepIndex=0 & running）带步骤清单；后续进度行只留一行标题
+      const info = planInfo(event)
+      const initial = info.index === 0 && info.status === 'running'
+      if (!initial || info.titles.length === 0) return ''
+      return info.titles.map((title, i) => `${i + 1}. ${title}`).join('\n')
     }
     case 'thought':
     case 'error': {
@@ -93,8 +131,20 @@ export function eventBody(event: EventLike): string {
 /** 事件标题（会话流每行的第一行文字） */
 export function eventLabel(event: EventLike): string {
   switch (event.kind) {
-    case 'thought':
-      return '思考'
+    case 'plan': {
+      // S44/D47：计划本身也要看得见——产出时给步数，之后给进度/结果
+      const info = planInfo(event)
+      if (info.status === 'done') return `计划完成 · ${info.total} 步`
+      if (info.status === 'interrupted') return `计划已中断 · 第 ${info.index}/${info.total} 步`
+      if (info.index === 0) return `计划（${info.total} 步）`
+      return `计划进度 · 第 ${info.index}/${info.total} 步`
+    }
+    case 'thought': {
+      // S43/D46：带上来源步骤（制定计划 / 执行第 N 步 / 汇总工具结果…）——
+      // 否则 plan-execute 各步的思考在会话流里看起来就是"两条连着、看不出差别的思考"
+      const purpose = asText(event.payload['purpose'])
+      return purpose === null || purpose.trim().length === 0 ? '思考' : `思考 · ${purpose.trim()}`
+    }
     case 'tool_call':
       return `工具调用 ${toolNameOf(event)}`
     case 'tool_result':
@@ -116,8 +166,8 @@ export interface EventRow {
   readonly showMeta: boolean
   /**
    * 正文呈现方式：
-   * - `inline` 直接展示（含**工具报错内容**，S34）；
-   * - `collapsed` **默认折叠**、点击展开（S28：工具调用参数）；
+   * - `inline` 直接展示（消息、含**工具报错内容**，S34）；
+   * - `collapsed` **默认折叠**、点击展开（S28：工具调用参数；S41：思考）；
    * - `none` 没有正文。
    */
   readonly bodyMode: 'inline' | 'collapsed' | 'none'
@@ -125,7 +175,8 @@ export interface EventRow {
 
 /**
  * **一行怎么渲染**（唯一真相）：
- * - 思考 / 错误：标题 + 正文 + `#seq · turn N`（`inline`）；
+ * - 消息 / 错误：标题 + 正文 + `#seq · turn N`（`inline`）；
+ * - **思考：标题 + 正文默认折叠**（S41/D44，点击展开——S40 打开思考后每轮一条，正文很长会刷屏）；
  * - **工具调用：标题 + 参数默认折叠**（S28，点击展开看参数结构）；
  * - **工具结果：成功时只有工具名**（S26）；**失败时必须显示报错内容**（S34，见 `isToolFailed`）；
  * - 其它 kind：标题 = kind 名 + 正文（`inline`）。
@@ -145,17 +196,18 @@ export function eventRow(event: EventLike): EventRow {
     return { label: eventLabel(event), body: null, showMeta: false, bodyMode: 'none' }
   }
   const body = eventBody(event)
-  if (event.kind === 'tool_call') {
-    // S28 用户口径：参数默认不展开（没有参数时退化为纯标题行）
-    return { label: eventLabel(event), body: body.length > 0 ? body : null, showMeta: true, bodyMode: body.length > 0 ? 'collapsed' : 'none' }
+  // 空白正文按"没有正文"处理（否则会渲染出一个点开是空的折叠面板）
+  const hasBody = body.trim().length > 0
+  if (event.kind === 'tool_call' || event.kind === 'thought') {
+    // S28：工具调用参数默认不展开；S41/D44：思考默认折叠（没有正文时退化为纯标题行）
+    return { label: eventLabel(event), body: hasBody ? body : null, showMeta: true, bodyMode: hasBody ? 'collapsed' : 'none' }
   }
-  return { label: eventLabel(event), body: body.length > 0 ? body : null, showMeta: true, bodyMode: body.length > 0 ? 'inline' : 'none' }
+  return { label: eventLabel(event), body: hasBody ? body : null, showMeta: true, bodyMode: hasBody ? 'inline' : 'none' }
 }
 
-/** 时间戳 → `HH:MM:SS.mmm`（详细日志视图用；缺失或异常时原样返回） */
+/** 时间戳 → **本地** `HH:MM:SS.mmm`（详细日志视图用；S39/D42：不再是 UTC 切片） */
 export function shortTime(ts: string | undefined): string {
-  if (ts === undefined || ts.length < 23) return ts ?? ''
-  return ts.slice(11, 23)
+  return localClock(ts)
 }
 
 /**
@@ -171,8 +223,12 @@ export function traceLine(event: EventLike): { readonly head: string; readonly t
       const role = asText(payload['role']) ?? '?'
       return { head, text: `${role === 'user' ? '用户' : 'Agent'}：${messageTextOf(event)}` }
     }
-    case 'thought':
-      return { head, text: asText(payload['text']) ?? '' }
+    case 'thought': {
+      // S43/D46：详细日志里也标出来源步骤
+      const purpose = asText(payload['purpose'])
+      const body = asText(payload['text']) ?? ''
+      return { head, text: purpose === null || purpose.trim().length === 0 ? body : `${purpose.trim()}：${body}` }
+    }
     case 'tool_call': {
       const input = toolInputOf(event)
       return { head, text: input.length === 0 ? toolNameOf(event) : `${toolNameOf(event)} ${input}` }

@@ -65,6 +65,7 @@ export function createRuntimeService(options: RuntimeServiceOptions): RuntimeSer
           instanceId: status.instanceId,
           displayName: instance?.displayName ?? status.instanceId,
           state: status.state,
+          waitingFor: status.waitingFor,
           paused: status.paused,
           queued: status.queued,
           sessionId,

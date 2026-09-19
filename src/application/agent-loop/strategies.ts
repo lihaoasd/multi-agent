@@ -23,9 +23,15 @@ function summarizeArgs(args: unknown): string {
   }
 }
 
-async function emitThought(env: LoopRunEnv, text: string): Promise<void> {
+async function emitThought(env: LoopRunEnv, text: string, purpose?: string): Promise<void> {
   if (text.trim().length === 0) return
-  await env.emit({ kind: 'thought', turn: env.turn, payload: { text } })
+  // S43/D46：带上"这一步是干什么的"（制定计划 / 执行第 N 步 / 汇总工具结果…）——
+  // plan-execute 每步之间只隔一个在会话流里不显示的 `plan` 事件，不标来源就会显示成"两条连着、看不出差别的思考"
+  await env.emit({
+    kind: 'thought',
+    turn: env.turn,
+    payload: { text, ...(purpose === undefined || purpose.length === 0 ? {} : { purpose }) },
+  })
 }
 
 async function emitMessage(env: LoopRunEnv, text: string, modelId: string | null, loopStep: string): Promise<void> {
@@ -76,10 +82,21 @@ async function runToolCalls(env: LoopRunEnv, calls: readonly { callId: string; n
   return results
 }
 
-function withToolResults(messages: readonly ChatMessage[], draft: string, toolResults: readonly string[]): readonly ChatMessage[] {
+function withToolResults(
+  messages: readonly ChatMessage[],
+  draft: string,
+  toolResults: readonly string[],
+  reasoning?: string,
+): readonly ChatMessage[] {
   return [
     ...messages,
-    { role: 'assistant', content: draft.length > 0 ? draft : '（我先调用工具获取信息）' },
+    {
+      role: 'assistant',
+      content: draft.length > 0 ? draft : '（我先调用工具获取信息）',
+      // S40/D43：思考内容随 assistant 消息回传——DeepSeek 在**带 tools** 的思考模式下，
+      // 后续请求不回传 `reasoning_content` 会直接 400；适配器按模型条目的「思考」能力决定是否真的发出
+      ...(reasoning === undefined || reasoning.length === 0 ? {} : { reasoning }),
+    },
     { role: 'user', content: `工具执行结果如下，请据此给出最终答复：\n\n${toolResults.join('\n\n')}` },
   ]
 }
@@ -126,11 +143,13 @@ async function runToolLoop(
     }
     const called = await env.callModel(request)
     if (!called.ok) return called
+    // S40/D43：**每一轮**的思考都落进会话（原先只有 direct 的首次调用落地 → 页面看不到思考）
+    await emitThought(env, called.value.reasoning, request.purpose)
     text = textOf(called.value)
     modelId = called.value.modelId
     if (called.value.toolCalls.length === 0) return ok({ text, modelId })
     const toolResults = await runToolCalls(env, called.value.toolCalls)
-    messages = withToolResults(messages, text, toolResults)
+    messages = withToolResults(messages, text, toolResults, called.value.reasoning)
   }
 
   return ok({ text, modelId })
@@ -149,7 +168,7 @@ export function createDirectStrategy(): AgentLoopStrategy {
         purpose: '直接回答',
       })
       if (!first.ok) return first
-      await emitThought(env, first.value.reasoning)
+      await emitThought(env, first.value.reasoning, '直接回答')
 
       if (first.value.toolCalls.length === 0) {
         await emitMessage(env, textOf(first.value), first.value.modelId, 'act')
@@ -158,7 +177,7 @@ export function createDirectStrategy(): AgentLoopStrategy {
 
       const toolResults = await runToolCalls(env, first.value.toolCalls)
       const concluded = await runToolLoop(env, {
-        messages: withToolResults(env.contextMessages, textOf(first.value), toolResults),
+        messages: withToolResults(env.contextMessages, textOf(first.value), toolResults, first.value.reasoning),
         purpose: '汇总工具结果',
         ...(env.stepModelOverride === undefined ? {} : { modelOverride: env.stepModelOverride }),
       })
@@ -177,12 +196,13 @@ export function createReflectiveStrategy(): AgentLoopStrategy {
     async run(env: LoopRunEnv): Promise<Result<void>> {
       const draft = await env.callModel({ messages: env.contextMessages, tools: env.toolSchemas, purpose: '生成初稿' })
       if (!draft.ok) return draft
+      await emitThought(env, draft.value.reasoning, '生成初稿')
 
       let currentDraft = textOf(draft.value)
       if (draft.value.toolCalls.length > 0) {
         const toolResults = await runToolCalls(env, draft.value.toolCalls)
         const afterTools = await runToolLoop(env, {
-          messages: withToolResults(env.contextMessages, currentDraft, toolResults),
+          messages: withToolResults(env.contextMessages, currentDraft, toolResults, draft.value.reasoning),
           purpose: '结合工具结果生成初稿',
         })
         if (!afterTools.ok) return afterTools
@@ -204,7 +224,9 @@ export function createReflectiveStrategy(): AgentLoopStrategy {
           purpose: `自查（第 ${round} 轮）`,
         })
         if (!critique.ok) return critique
-        await emitThought(env, `【自查第 ${round} 轮】\n${textOf(critique.value)}`)
+        // 自查这一轮的产出本身就是一条 `thought`（见下）；模型对这次自查的思考并入同一条，
+        // 避免同一轮出现两条"看不出差别"的思考（S43/D46）
+        await emitThought(env, `【自查第 ${round} 轮】\n${textOf(critique.value)}`, `自查（第 ${round} 轮）`)
 
         const revised = await env.callModel({
           messages: [
@@ -215,6 +237,7 @@ export function createReflectiveStrategy(): AgentLoopStrategy {
           purpose: `修订（第 ${round} 轮）`,
         })
         if (!revised.ok) return revised
+        await emitThought(env, revised.value.reasoning, `修订（第 ${round} 轮）`)
         currentDraft = textOf(revised.value)
       }
 
@@ -278,6 +301,8 @@ export function createPlanExecuteStrategy(): AgentLoopStrategy {
         purpose: '制定计划',
       })
       if (!planCall.ok) return planCall
+      // S40/D43：制定计划这一步的思考也要落进会话（S43/D46：标上来源，便于区分后面的各步思考）
+      await emitThought(env, planCall.value.reasoning, '制定计划')
 
       const steps = parsePlan(textOf(planCall.value), `完成：${env.userText.slice(0, 60)}`)
       const limited = steps.slice(0, Math.max(1, env.maxIterations))
@@ -310,12 +335,14 @@ export function createPlanExecuteStrategy(): AgentLoopStrategy {
         ]
         const stepCall = await env.callModel({ messages: stepMessages, tools: env.toolSchemas, purpose: `执行第 ${step.step} 步` })
         if (!stepCall.ok) return stepCall
+        // S40/D43：每一步的思考都落进会话（plan-execute 是内置模板默认策略，原先一条思考都没有）
+        await emitThought(env, stepCall.value.reasoning, `执行第 ${step.step} 步`)
 
         let stepText = textOf(stepCall.value)
         if (stepCall.value.toolCalls.length > 0) {
           const toolResults = await runToolCalls(env, stepCall.value.toolCalls)
           const afterTools = await runToolLoop(env, {
-            messages: withToolResults(stepMessages, stepText, toolResults),
+            messages: withToolResults(stepMessages, stepText, toolResults, stepCall.value.reasoning),
             purpose: `第 ${step.step} 步结论`,
           })
           if (!afterTools.ok) return afterTools

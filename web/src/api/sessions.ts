@@ -48,9 +48,13 @@ export interface AgentStatus {
   readonly displayName: string
   readonly enabled: boolean
   readonly state: string
+  /** `state='waiting'` 时说明在等什么（S38/D41：`question`＝等用户答复、`approval`＝等审批） */
+  readonly waitingFor?: 'question' | 'approval' | null
   readonly paused: boolean
   readonly queued: number
   readonly sessionId: string
+  /** 正在执行的任务（S51/D54：`in_progress`；会话顶部展示，无则 `null`） */
+  readonly currentTask?: { readonly id: string; readonly title: string; readonly state: string } | null
 }
 
 export const sessionApi = {

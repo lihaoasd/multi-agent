@@ -72,7 +72,14 @@
 ```
 
 - **为什么与供应商分开**：一家供应商可以挂多个模型（同族大小杯、推理模型、embedding），Agent 的 `model` 需要精确到模型而不仅是供应商；这也是本模块对既有"`model` 引用 provider id"口径的修订（D20-①，兼容见 §11）。
-- `capabilities` 是**声明**不是探测：`tools` 未声明时，Agent 若挂载了工具包，UI 给出"该模型未声明工具能力"的告警，运行期仍按模型实际返回处理。
+- `capabilities` 是**声明**不是探测：`tools` 未声明时，Agent 若挂载了工具包，UI 给出"该模型未声明工具能力"的告警，运行期仍按模型实际返回处理。**`reasoning`（思考）是运行期开关**（**S40/D43**）：勾选后适配器按协议下发思考参数，模型返回的思考落成 `thought` 事件并在会话流展示；不勾选则完全不发思考参数（陌生参数会被部分厂商 400）。
+  | 协议 | 开启「思考」后下发 | 备注 |
+  | --- | --- | --- |
+  | `openai-compatible` | `reasoning_effort: "high"`（可由 `defaultParams.reasoningEffort` 改 low/high/max） | 思考内容按 `reasoning_content` 返回；**带 `tools` 的后续请求必须回传该字段，否则 400**（平台自动回传，不依赖开关） |
+  | `anthropic` | `thinking: { type: "enabled", budget_tokens }` | 预算取 `defaultParams.thinkingBudget`、夹在 `max_tokens - 1024` 内；**本次请求带 tools 时不发**（思考块含 `signature` 需原样回传，平台暂未保存） |
+  | `gemini` | `generationConfig.thinkingConfig.includeThoughts = true`（可选 `thinkingBudget`） | — |
+  | `ollama` | 顶层 `think: true` | 仅支持该字段的模型（如 qwen3）可用 |
+  **超时提示**：思考模式更慢，60s 的供应商超时可能让回合失败（S40 实测有两次 `ERR_MODEL` 超时）；请按需调大供应商配置里的「超时（毫秒）」。
 - `defaultParams` 与 loop 参数的关系：模型参数（temperature/maxTokens 等）来自模型条目；loop 参数（maxIterations/toolBudget/stepModelOverride）来自 Agent 配置（agent-templates §4）。二者不重叠。
 
 ## 5. 凭证与安全

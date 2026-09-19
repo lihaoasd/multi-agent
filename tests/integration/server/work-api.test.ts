@@ -155,6 +155,18 @@ describe('API · 产出物 / 任务 / 询问（规则 4/10/12/15/21/24/25）', (
     expect(claimed.statusCode).toBe(200)
     expect(claimed.json<TaskRecord>().state).toBe('in_progress')
 
+    // S51/D54：领取后，状态投影带上"正在执行的任务"（会话顶部展示用）
+    const agents = await inject({ method: 'GET', url: `/api/projects/${work.projectId}/agents` })
+    const devView = agents
+      .json<Array<{ instanceId: string; currentTask: { id: string; title: string; state: string } | null }>>()
+      .find((item) => item.instanceId === 'dev_1')
+    expect(devView?.currentTask).toMatchObject({ id: task.task.id, title: '实现登录模块', state: 'in_progress' })
+    // 其它角色不受影响（各看各的）
+    const pmView = agents
+      .json<Array<{ instanceId: string; currentTask: unknown }>>()
+      .find((item) => item.instanceId === 'pm_1')
+    expect(pmView?.currentTask).toBeNull()
+
     // 单 in_progress：另起一条任务置位被拦
     const another = await inject({
       method: 'POST',
@@ -186,6 +198,13 @@ describe('API · 产出物 / 任务 / 询问（规则 4/10/12/15/21/24/25）', (
     })
     expect(done.statusCode).toBe(200)
     expect(done.json<TaskRecord>()).toMatchObject({ state: 'done', note: '已完成' })
+
+    // S51/D54：任务收口后，会话顶部的"正在执行"随之清空
+    const afterDone = await inject({ method: 'GET', url: `/api/projects/${work.projectId}/agents` })
+    const devAfter = afterDone
+      .json<Array<{ instanceId: string; currentTask: unknown }>>()
+      .find((item) => item.instanceId === 'dev_1')
+    expect(devAfter?.currentTask).toBeNull()
   })
 
   it('规则 12：任务级代码聚合——进行中任务的编辑按 taskId 暂存，任务 done 后结算为 code artifact', async () => {

@@ -1,5 +1,5 @@
 import type { Result } from '../shared/result'
-import type { AgentState } from './dispatcher'
+import type { AgentState, AgentWaitingFor } from './dispatcher'
 import type { InstanceId, ProjectId } from './project'
 import type { SessionId } from './session'
 
@@ -17,6 +17,8 @@ export interface RuntimeAgentView {
   readonly instanceId: InstanceId
   readonly displayName: string
   readonly state: AgentState
+  /** `state='waiting'` 时说明在等什么（S38/D41：等答复询问 / 等审批） */
+  readonly waitingFor: AgentWaitingFor | null
   readonly paused: boolean
   readonly queued: number
   readonly sessionId: SessionId

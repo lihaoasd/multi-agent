@@ -57,6 +57,16 @@ function buildBody(resolved: ResolvedModel, request: ModelRequest): Record<strin
     resolved.entry.defaultParams?.maxTokens ??
     resolved.entry.maxOutputTokens ??
     DEFAULT_MAX_TOKENS
+  /**
+   * 思考（S40/D43）：Anthropic 的 `thinking` 要求 `max_tokens > budget_tokens`，
+   * 且**带工具调用时**必须把上一轮的 thinking block（含 signature）原样回传，否则会被拒。
+   * 本平台尚未保存 signature，因此**只在本次请求不带 tools 时**启用思考，避免 400
+   * （完整支持＝保存 signature 并随 assistant 消息回传，记在遗留里）。
+   */
+  const wantsThinking = resolved.entry.capabilities.includes('reasoning')
+  const hasTools = request.tools !== undefined && request.tools.length > 0
+  const budget = Math.min(resolved.entry.defaultParams?.thinkingBudget ?? 4096, maxTokens - 1024)
+  const thinkingEnabled = wantsThinking && !hasTools && budget >= 1024
   return {
     model: resolved.entry.model,
     max_tokens: maxTokens,
@@ -64,6 +74,7 @@ function buildBody(resolved: ResolvedModel, request: ModelRequest): Record<strin
     messages: others,
     ...(system === undefined ? {} : { system }),
     ...(temperature === undefined ? {} : { temperature }),
+    ...(thinkingEnabled ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
     ...(request.tools === undefined || request.tools.length === 0
       ? {}
       : {
