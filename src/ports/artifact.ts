@@ -36,21 +36,10 @@ export interface ArtifactRecord {
   readonly turn: number
   /** 该版本内容目录（相对 FileStore 根），如 `data/projects/<pid>/artifact-versions/<id>/v1` */
   readonly versionDir: string
-  /**
-   * 回退产生的新版本记录里的目标版本：`undo` 时＝被撤销的那一版，`restore` 时＝退回到的那一版。
-   * 非 reverted 版本为 `null`。
-   */
+  /** 回退产生的新版本记录：被回退（撤销）的目标版本 */
   readonly revertedTo: number | null
-  /**
-   * 回退方式（S54/D58）：`undo`＝撤销该版本的改动（恢复其 base，历史口径）；
-   * `restore`＝退回到该版本的**内容**（等价于撤销它之后的所有版本）。缺省/旧数据视为 `undo`。
-   */
-  readonly revertMode?: ArtifactRollbackMode | null
   readonly ts: string
 }
-
-/** 回退方式：见 `ArtifactRecord.revertMode`（S54/D58） */
-export type ArtifactRollbackMode = 'undo' | 'restore'
 
 export interface ArtifactListFilter {
   readonly type?: ArtifactType
@@ -187,19 +176,12 @@ export interface ArtifactService {
     readonly sessionId: SessionId
     readonly turn: number
   }): Promise<Result<ArtifactRecord | null>>
-  /**
-   * 回退（S54/D58 增加 `mode`）：
-   * - `undo`（缺省，历史口径）：把目标版本涉及的 relPath 恢复为其 `base`（＝撤销这一版）；
-   * - `restore`：把文件恢复成目标版本的**内容**（＝撤销它之后的所有版本）。
-   * 两种方式都产生一条新版本（`state=reverted`），不物理删历史。
-   */
+  /** 回退：把某版本涉及的 relPath 恢复为其 base 内容（新版本 state=reverted） */
   rollback(input: {
     readonly projectId: ProjectId
     readonly instanceId: InstanceId
     readonly artifactId: string
     readonly version: number
-    /** 缺省 `undo` */
-    readonly mode?: ArtifactRollbackMode
     /** force=true 时跳过"文件已被后续修改"的冲突拦截（用户明确选择覆盖） */
     readonly force?: boolean
     readonly sessionId: SessionId

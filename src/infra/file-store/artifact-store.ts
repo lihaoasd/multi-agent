@@ -74,15 +74,6 @@ function parseArtifact(raw: unknown): ArtifactRecord | null {
     turn: Number(record['turn'] ?? 0) || 0,
     versionDir: typeof record['versionDir'] === 'string' ? record['versionDir'] : '',
     revertedTo: typeof record['revertedTo'] === 'number' ? record['revertedTo'] : null,
-    // S54/D58：回退方式；旧数据没有该字段 → 视为历史口径 `undo`（非回退版本为 null）
-    revertMode:
-      record['revertMode'] === 'restore'
-        ? 'restore'
-        : record['revertMode'] === 'undo'
-          ? 'undo'
-          : state === 'reverted'
-            ? 'undo'
-            : null,
     ts: typeof record['ts'] === 'string' ? record['ts'] : '',
   }
 }

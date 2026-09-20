@@ -67,11 +67,6 @@ export function registerArtifactRoutes(app: FastifyInstance, context: WorkRouteC
     if (typeof version !== 'number' || !Number.isFinite(version)) {
       return replyFromResult(reply, err('ERR_VALIDATION', '缺少 version', { field: 'version' }))
     }
-    // S54/D58：mode 缺省 undo（撤销这一版）；restore＝退回到该版本的内容（用户界面用）
-    const mode = body['mode']
-    if (mode !== undefined && mode !== 'undo' && mode !== 'restore') {
-      return replyFromResult(reply, err('ERR_VALIDATION', `未知回退方式：${String(mode)}`, { allowed: ['undo', 'restore'] }))
-    }
     const artifact = await artifacts.get(request.params.pid, request.params.aid)
     if (!artifact.ok) return replyFromResult(reply, artifact)
     // 用户侧回退：以提交者身份代行（用户不受"只能回退自己"的 Agent 限制）
@@ -82,7 +77,6 @@ export function registerArtifactRoutes(app: FastifyInstance, context: WorkRouteC
         instanceId: artifact.value.submitter,
         artifactId: request.params.aid,
         version: Math.floor(version),
-        ...(mode === undefined ? {} : { mode }),
         ...(body['force'] === true ? { force: true } : {}),
         sessionId: artifact.value.sessionId,
         turn: artifact.value.turn,

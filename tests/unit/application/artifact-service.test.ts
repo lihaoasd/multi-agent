@@ -249,13 +249,13 @@ describe('application/artifact-service（规则 4/10/12/21）', () => {
     expect(await harness.readWorkdir('docs/prd.md')).toBe('A')
   })
 
-  it('S54/D58：mode=restore 退回到该版本的**内容**（等于撤销其后的所有版本）', async () => {
+  it('回退的冲突判定按"该文件已知最新内容"取基准：最新一版没碰这个文件时不误报冲突', async () => {
     const harness = await createHarness()
-    const submit = async (title: string, relPaths: readonly string[]): Promise<string> => {
+    const submit = async (relPaths: readonly string[]): Promise<string> => {
       const submitted = await harness.service.submit({
         ...base,
         instanceId: 'dev_1',
-        title,
+        title: 'PRD',
         summary: '',
         type: 'doc',
         relPaths,
@@ -265,95 +265,34 @@ describe('application/artifact-service（规则 4/10/12/21）', () => {
       return submitted.value.id
     }
 
-    // v1 新增 prd；v2 改 prd；v3 新增 ux
+    // v1 新增 prd；v2 改 prd；v3 只新增 ux（**没有碰 prd**）
     await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'A' })
-    const artifactId = await submit('PRD', ['docs/prd.md'])
+    const artifactId = await submit(['docs/prd.md'])
     await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'B' })
-    await submit('PRD', ['docs/prd.md'])
+    await submit(['docs/prd.md'])
     await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/ux.md', content: 'UX' })
-    await submit('PRD', ['docs/ux.md'])
-    expect(await harness.readWorkdir('docs/prd.md')).toBe('B')
+    await submit(['docs/ux.md'])
+
+    // 撤销 v2 → prd 回到 v2 的 base（=A）。若拿"最新一版的文件清单"当基准，这里会被误判成冲突
+    const undone = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 2 })
+    expect(undone.ok).toBe(true)
+    if (!undone.ok) return
+    expect(undone.value).toMatchObject({ state: 'reverted', version: 4, revertedTo: 2 })
+    expect(await harness.readWorkdir('docs/prd.md')).toBe('A')
+    // v3 新增的 ux 不受影响（撤销 v2 与它无关）
     expect(await harness.readWorkdir('docs/ux.md')).toBe('UX')
 
-    // 最新版本不能"退回"（它已经是当前内容）
-    const noop = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 3, mode: 'restore' })
-    expect(noop.ok).toBe(false)
-    if (!noop.ok) expect(noop.error.code).toBe('ERR_VALIDATION')
-
-    const restored = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 1, mode: 'restore' })
-    expect(restored.ok).toBe(true)
-    if (!restored.ok) return
-    expect(restored.value).toMatchObject({ state: 'reverted', version: 4, revertedTo: 1, revertMode: 'restore' })
-    // prd 回到 v1 的内容；v1 之后新增的 ux 被删除
-    expect(await harness.readWorkdir('docs/prd.md')).toBe('A')
-    expect(await harness.readWorkdir('docs/ux.md')).toBeNull()
-    expect(restored.value.files).toEqual([
-      { relPath: 'docs/prd.md', action: 'modify', hash: restored.value.files[0]?.hash },
-      { relPath: 'docs/ux.md', action: 'delete', hash: restored.value.files[1]?.hash },
-    ])
-
-    // 历史版本都在（不物理删）
-    const versions = await harness.service.versions(PROJECT, artifactId)
-    expect(versions.ok && versions.value.map((item) => item.version)).toEqual([1, 2, 3, 4])
-  })
-
-  it('S54/D58：restore 同样受"文件被后续改动过"拦截（force 可覆盖），undo 记 revertMode=undo', async () => {
-    const harness = await createHarness()
-    const submit = async (): Promise<string> => {
-      const submitted = await harness.service.submit({
-        ...base,
-        instanceId: 'dev_1',
-        title: 'PRD',
-        summary: '',
-        type: 'doc',
-        relPaths: ['docs/prd.md'],
-      })
-      expect(submitted.ok).toBe(true)
-      if (!submitted.ok) throw new Error(submitted.error.message)
-      return submitted.value.id
-    }
-
-    await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'A' })
-    const artifactId = await submit()
-    await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'B' })
-    await submit()
-    await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'C' })
-    await submit()
-    // 登记之后又改过（模拟外部/手工修改）→ 退回 v1 必须先确认
-    await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/prd.md', content: 'D' })
-
-    const conflicted = await harness.service.rollback({
-      ...base,
-      instanceId: 'dev_1',
-      artifactId,
-      version: 1,
-      mode: 'restore',
-    })
+    // 平台之外的手工改动仍要被拦住（真实冲突）
+    await harness.service.editFile({ ...base, instanceId: 'dev_1', relPath: 'docs/ux.md', content: 'UX 手改' })
+    const conflicted = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 3 })
     expect(conflicted.ok).toBe(false)
     if (!conflicted.ok) {
       expect(conflicted.error.code).toBe('ERR_CONFLICT')
-      expect(conflicted.error.detail?.['conflicted']).toEqual(['docs/prd.md'])
+      expect(conflicted.error.detail?.['conflicted']).toEqual(['docs/ux.md'])
     }
-
-    const forced = await harness.service.rollback({
-      ...base,
-      instanceId: 'dev_1',
-      artifactId,
-      version: 1,
-      mode: 'restore',
-      force: true,
-    })
+    const forced = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 3, force: true })
     expect(forced.ok).toBe(true)
-    if (!forced.ok) return
-    expect(forced.value).toMatchObject({ version: 4, revertMode: 'restore', revertedTo: 1 })
-    expect(await harness.readWorkdir('docs/prd.md')).toBe('A')
-
-    // 历史口径（mode 缺省）：撤销 v4 → 内容回到 v4 的 base（=D），revertMode 记 undo
-    const undo = await harness.service.rollback({ ...base, instanceId: 'dev_1', artifactId, version: 4 })
-    expect(undo.ok).toBe(true)
-    if (!undo.ok) return
-    expect(undo.value).toMatchObject({ version: 5, state: 'reverted', revertMode: 'undo', revertedTo: 4 })
-    expect(await harness.readWorkdir('docs/prd.md')).toBe('D')
+    expect(await harness.readWorkdir('docs/ux.md')).toBeNull()
   })
 
   it('规则 12：任务级聚合落袋为 code artifact（文件清单=该任务全部变更）；无任务按回合兜底', async () => {

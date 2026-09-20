@@ -1,5 +1,7 @@
 # S54 方案：产出物的「版本历史」与「退回版本」
 
+> ⚠️ **已被 S56 撤销**：本文描述的「版本历史」与「退回此版本」已按用户要求删除（"产出物的历史版本功能删除"），当前行为以 `docs/changes/2026-09-20-s56-remove-artifact-history.md` 与 `workspaces-artifacts.md` §3/§4/§5 为准。本文保留为当时的方案记录。
+
 > 日期：2026-09-20　类型：用户报告（"产出物没有退回版本功能"）　真源：`workspaces-artifacts.md` §3/§4、`prd` FR-07、`ui.md` §5
 > 关联：`docs/changes/2026-09-20-s54-artifact-version-rollback.md`、`docs/plan/development.md`
 > 用户原话：**"产出物没有退回版本功能"**

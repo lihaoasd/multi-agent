@@ -56,10 +56,10 @@
 > 会话与事件口径（2026-09-15 实现）：事件**先落盘后推送**（`EventPipeline` 是唯一写入口）；`GET .../log` 返回 `[{seq,ts,sessionId,turn,kind,...payload}]`；seq 会话内单调且**跨轮转连续**（轮转段命名 `<sid>.log.<n>.jsonl`，当前段恒为 `<sid>.log.jsonl`）。
 
 ### 产出物 / 任务 / 审批 / 搜索
-| GET | /api/projects/:pid/artifacts?type=&submitter=&state=&taskId=&limit= | manifest 列表（每个 artifact 只回最新版本）。实现（2026-09-15，S6）：条目含 `id/type/title/summary/submitter/state/version/files[{relPath,action,hash}]/diffSummary/prevVersion/taskId/revertedTo/ts`；**S54/D58** 起回退版本另含 `revertMode`（`undo`\|`restore`\|`null`，旧数据缺省 `undo`） |
+| GET | /api/projects/:pid/artifacts?type=&submitter=&state=&taskId=&limit= | manifest 列表（每个 artifact 只回最新版本）。实现（2026-09-15，S6）：条目含 `id/type/title/summary/submitter/state/version/files[{relPath,action,hash}]/diffSummary/prevVersion/taskId/revertedTo/ts` |
 | GET | /api/projects/:pid/artifacts/:aid | 详情（文件清单/diff 摘要）|
-| GET | /api/projects/:pid/artifacts/:aid/versions | 该 artifact 的全部版本（版本号升序；回退产生 `state=reverted` + `revertedTo` + `revertMode` 的新版本）|
-| POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 `{version, mode?, force?}`（**S54/D58** 加 `mode`）：`undo`（缺省）＝把该版本涉及文件恢复为其提交前内容（新增文件即删除）；`restore`＝把文件恢复成该版本的**内容**（等于撤销它之后的所有版本）；`mode=restore` 且目标已是最新 → `ERR_VALIDATION`。文件在目标版本后被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`，确认覆盖需 `force=true` |
+| GET | /api/projects/:pid/artifacts/:aid/versions | 该 artifact 的全部版本（版本号升序；回退产生 `state=reverted` + `revertedTo` 的新版本）。**S56/D60**：界面不再有版本历史入口，接口保留（Agent 工具/脚本可用）|
+| POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 `{version, force?}`：把该版本涉及文件恢复为其提交前内容（新增文件即删除）；文件在目标版本后被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`，确认覆盖需 `force=true`。**S56/D60**：`mode` 已移除（回到单一语义）；界面无入口，供 Agent 工具/脚本调用 |
 | GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee/creator 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
 | PATCH | /api/projects/:pid/tasks/:tid | 改状态 `{state, note?}`（状态含 `terminated`=用户终止，先结算未结算改动为 code artifact，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/terminated 会通知委派人；**S53/D57**：`blocked` 不再被接受（`ERR_VALIDATION`），历史 `blocked` 记录仍可读可筛；**S55/D59**：`actor` 缺省 `user` —— 用户可把任意状态改成任意状态（含 `done`/`terminated` → `in_progress` 重新开工），Agent 侧（`actor=<instanceId>`）仍须 `todo`→`in_progress`（否则 `ERR_CONFLICT`）；置 `in_progress` 且 `actor !== assignee` 时平台通知并唤醒受派人；该角色已有进行中任务 → `ERR_CONFLICT` + `detail.holding`/`holdingTitle` |
 | GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12；实现（S6）另含 `lastTaskId`/`via`（`workdir_edit`\|`artifact_submit`）|

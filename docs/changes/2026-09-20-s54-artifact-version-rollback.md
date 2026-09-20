@@ -1,5 +1,7 @@
 # 修改记录 · S54 产出物的「版本历史」与「退回版本」
 
+> ⚠️ **已被 S56 撤销**：本次交付的「版本历史」与「退回此版本」已按用户要求删除（"产出物的历史版本功能删除"），当前行为以 [S56 记录](2026-09-20-s56-remove-artifact-history.md) 与 [`workspaces-artifacts.md`](../design/workspaces-artifacts.md) §3/§4/§5 为准。本文保留为当时的改动记录。
+
 > 类别：changes · 日期：2026-09-20 · 关联方案：[docs/plan/2026-09-20-s54-artifact-version-rollback.md](../plan/2026-09-20-s54-artifact-version-rollback.md)
 > 关联设计：[workspaces-artifacts.md](../design/workspaces-artifacts.md) §3/§4/§5/§7、[ui.md](../design/ui.md) §5、[data-storage.md](../design/data-storage.md) §6、[contract.md](../api/contract.md)、[prd](../requirements/prd.md) FR-07 / D58
 

@@ -4,8 +4,6 @@ import { apiRequest } from './client'
 
 export type ArtifactType = 'doc' | 'code' | 'config' | 'test' | 'deploy'
 export type ArtifactState = 'submitted' | 'approved' | 'rejected' | 'reverted'
-/** 回退方式（S54）：`undo`＝撤销这一版；`restore`＝退回到这一版的内容（撤销它之后的所有版本） */
-export type ArtifactRollbackMode = 'undo' | 'restore'
 export type TaskState = 'todo' | 'in_progress' | 'done' | 'blocked' | 'terminated'
 
 export interface ArtifactRecord {
@@ -21,8 +19,6 @@ export interface ArtifactRecord {
   readonly prevVersion: number | null
   readonly taskId: string | null
   readonly revertedTo: number | null
-  /** S54/D58：回退方式；非回退版本为 `null`，旧数据缺省视为 `undo` */
-  readonly revertMode?: ArtifactRollbackMode | null
   readonly ts: string
 }
 
@@ -81,16 +77,10 @@ export const workApi = {
   },
   artifactVersions: (projectId: string, artifactId: string): Promise<ArtifactRecord[]> =>
     apiRequest('GET', `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/versions`),
-  rollback: (
-    projectId: string,
-    artifactId: string,
-    version: number,
-    options?: { readonly mode?: ArtifactRollbackMode; readonly force?: boolean },
-  ): Promise<ArtifactRecord> =>
+  rollback: (projectId: string, artifactId: string, version: number, force = false): Promise<ArtifactRecord> =>
     apiRequest('POST', `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/rollback`, {
       version,
-      mode: options?.mode ?? 'undo',
-      force: options?.force === true,
+      force,
     }),
   fileOwners: (projectId: string, owner?: string): Promise<FileOwnerRecord[]> =>
     apiRequest(
