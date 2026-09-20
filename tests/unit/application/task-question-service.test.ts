@@ -255,7 +255,7 @@ describe('application/task-service（规则 15/17/24）', () => {
     expect(!again.ok && again.error.code).toBe('ERR_CONFLICT')
   })
 
-  it('规则 24：done/blocked/terminated 汇报并回报委派人（用户创建则不通知自己）', async () => {
+  it('规则 24：done/terminated 汇报并回报委派人（用户创建则不通知自己）', async () => {
     const harness = await createHarness()
     // Agent 发起派单必须沿编排图出边（规则 23）
     const graph = await harness.orchestration.get(PROJECT)
@@ -300,8 +300,31 @@ describe('application/task-service（规则 15/17/24）', () => {
     if (!byUser.ok) return
     harness.notices.length = 0
     await harness.tasks.claim(PROJECT, byUser.value.task.id, 'qa_1')
-    await harness.tasks.setState(PROJECT, byUser.value.task.id, 'blocked', { actor: 'qa_1', note: '缺测试环境' })
+    await harness.tasks.setState(PROJECT, byUser.value.task.id, 'terminated', { actor: 'qa_1', note: '需求取消' })
     expect(harness.notices).toHaveLength(0)
+  })
+
+  it('S53/D57：任务没有「受阻」——新的 blocked 迁移被拒，任务状态保持不变', async () => {
+    const harness = await createHarness()
+    const created = await harness.tasks.create({
+      projectId: PROJECT,
+      title: '接入测试环境',
+      desc: '',
+      creator: 'user',
+      assignee: 'dev_1',
+      sessionId: 'u_dev_1',
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    const taskId = created.value.task.id
+    await harness.tasks.claim(PROJECT, taskId, 'dev_1')
+
+    const blocked = await harness.tasks.setState(PROJECT, taskId, 'blocked', { actor: 'dev_1', note: '缺测试环境' })
+    expect(blocked.ok).toBe(false)
+    if (!blocked.ok) expect(blocked.error.code).toBe('ERR_VALIDATION')
+
+    const after = await harness.tasks.get(PROJECT, taskId)
+    expect(after.ok && after.value.state).toBe('in_progress')
   })
 
   it('规则 17：终止前先结算未结算改动为可回退的 code artifact', async () => {

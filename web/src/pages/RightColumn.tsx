@@ -10,7 +10,8 @@ const TASK_STATE_LABEL: Record<string, string> = {
   todo: '待领取',
   in_progress: '进行中',
   done: '已完成',
-  blocked: '受阻',
+  // S53/D57：任务不再有「受阻」；旧数据仍要显示，标成"未完成"提示它还需要人推一下
+  blocked: '未完成（旧受阻）',
   terminated: '已终止',
 }
 

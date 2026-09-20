@@ -99,7 +99,7 @@ approved ──回退──▶ reverted
 | 高危命令 | **需审批**（见 agent-runtime §6） |
 
 > 自 2026-09-12 起产出**直接写进项目工作目录并署名**（§2），产出物登记只是"再给它一个版本快照"；
-> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json 与 `.env` 的 `APPROVAL__*` 中保留（项目数据模型），但当前**不读该策略**。
+> `artifactPolicy`（docSubmitApproval/codeSubmitApproval）配置项仍在 project.json 与 `.env` 的 `APPROVAL__*` 中保留（项目数据模型），但自 **S53/D56** 起登记**一律免审批**——`PolicyAction.kind='submit'` 直接判 `allow`（`SUBMIT_FREE`），该字段**不再读**、仅为兼容既有数据保留。
 
 P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合（如某评审节点）锁定为基线，后续改动需先解锁/评审。
 
@@ -112,6 +112,6 @@ P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合�
   ⚠️ 设计原文要求"code 回退=补丁反向应用"：实现同时保存 `diff.patch` 与 base 内容，回退直接写回 base（与反向应用等价且不引入补丁解析风险）。
 - **版本递增**：同一提交者 + 同题 + 同任务再次登记 → 复用同一 `artifactId` 且 `version+1`（`prevVersion` 链），跨回合/跨会话持续累计（D14-⑧）。
 - **回退**：目标版本之后文件被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`（用户确认后 `force=true` 覆盖）；回退产生 `state=reverted` + `revertedTo` 的新版本，不物理删历史。
-- **审批门（§6 与 §4 的口径冲突处理）**：`artifact_submit` 是否需审批**由项目 `artifactPolicy` 决定**（`docSubmitApproval`/`codeSubmitApproval`，`PolicyAction.kind='submit'`），策略拒绝时不产生 manifest 条目（审计在 session log 的 `approval_result`/`tool_result`）；任务级聚落（settle）不走审批门，直接 `state=approved`（B1 口径）。审批卡带 `previewRef`（doc 类提交的只读预览引用）。
+- **审批门（S53/D56 起取消）**：`artifact_submit` **一律免审批**（`PolicyAction.kind='submit'` → `SUBMIT_FREE`，与 §6 口径一致，用户口径"提交产出物不用审批"）——项目 `artifactPolicy`（`docSubmitApproval`/`codeSubmitApproval`）字段保留但**不再作为登记的门**；`deny`（越界路径/离线联网）与高危动作规则不变，登记照旧写 manifest + 版本快照 + 署名 + `tool_result` 审计；任务级聚落（settle）不走审批门，直接 `state=approved`（B1 口径）。审批卡带 `previewRef`（doc 类提交的只读预览引用）。
 - **任务级聚合**：`workdir_edit` 的 `taskId` 由运行时注入（当前 `in_progress` 任务）；`done`/`terminated` 前 `TaskService` 先 `settle` 生成 `type=code` artifact（文件清单=该任务全部变更）并回写 `artifactIds`（可回退）。
 - **未做**：托盘批量同意/信任开关 UI（D17-④，留 S8）；回退的 UI 入口已在项目页「任务与产出物」提供（用户侧以提交者身份代行）。

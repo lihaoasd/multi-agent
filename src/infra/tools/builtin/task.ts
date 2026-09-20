@@ -6,7 +6,8 @@ import type { ToolDefinition, ToolHandler, ToolOutcome } from '../../../ports/to
 /**
  * 任务工具（data-storage §7、D19-⑤）：
  * `task_view`/`task_list`（看）/ `task_assign`（委派，受编排图出边约束——边校验在 S7 接入，
- * 本轮先记录 creator 并按任务闭环流转）/ `task_claim`（领取）/ `task_update`（汇报 done/blocked/terminated）。
+ * 本轮先记录 creator 并按任务闭环流转）/ `task_claim`（领取）/ `task_update`（汇报 done/terminated）。
+ * S53：任务不再有「受阻」状态；汇报/领取的结果里会带上名下剩余任务，推动角色主动续领。
  */
 
 const SESSION_USER_ONLY = ['user'] as const
@@ -188,9 +189,35 @@ export function taskClaimTool(deps: TaskToolDeps): { definition: ToolDefinition;
       if (taskId === undefined) return { ok: false, text: '缺少 taskId', errorCode: 'ERR_VALIDATION' }
       const claimed = await deps.tasks.claim(context.projectId, taskId, context.instanceId)
       if (!claimed.ok) return { ok: false, text: claimed.error.message, errorCode: claimed.error.code }
-      return { ok: true, text: `已领取任务：${describe(claimed.value)}`, data: { task: claimed.value } }
+      return {
+        ok: true,
+        text: `已领取任务：${describe(claimed.value)}${await remainingTodoHint(deps, context.projectId, context.instanceId)}`,
+        data: { task: claimed.value },
+      }
     },
   }
+}
+
+/**
+ * 汇报完一条任务后，附带提醒名下还没做完的任务（S53-②）：角色不能只等唤醒，
+ * 每完成一条就要自己回头看任务列表并继续领取。
+ */
+async function pendingHint(deps: TaskToolDeps, projectId: string, instanceId: string): Promise<string> {
+  const listed = await deps.tasks.list(projectId, { assignee: instanceId })
+  if (!listed.ok) return ''
+  const pending = listed.value.filter((task) => task.state === 'todo' || task.state === 'in_progress')
+  if (pending.length === 0) return '\n你名下已没有未完成任务。'
+  const lines = pending.map((task) => `  #${task.id} [${task.state}] ${task.title}`).join('\n')
+  const claimable = pending.filter((task) => task.state === 'todo').length
+  return `\n你名下还有 ${pending.length} 条未完成任务：\n${lines}\n不要等唤醒：${claimable === 0 ? '请直接用 task_list 复核全项目任务，看是否有需要你接手的工作。' : '请立即用 task_claim 领取 todo 中的任务继续推进。'}`
+}
+
+/** 领取成功后提醒名下还有多少条待领取任务（S53-②）。 */
+async function remainingTodoHint(deps: TaskToolDeps, projectId: string, instanceId: string): Promise<string> {
+  const listed = await deps.tasks.list(projectId, { assignee: instanceId, state: 'todo' })
+  if (!listed.ok || listed.value.length === 0) return ''
+  const lines = listed.value.map((task) => `  #${task.id} [todo] ${task.title}`).join('\n')
+  return `\n你名下还有 ${listed.value.length} 条待领取任务：\n${lines}\n当前任务做完后请立即用 task_claim 领取下一条，不要等唤醒。`
 }
 
 export function taskUpdateTool(deps: TaskToolDeps): { definition: ToolDefinition; handler: ToolHandler } {
@@ -199,13 +226,13 @@ export function taskUpdateTool(deps: TaskToolDeps): { definition: ToolDefinition
       name: 'task_update',
       package: 'task',
       description:
-        '汇报任务进展：done（完成）/blocked（受阻）/terminated（终止）。完成或终止前平台会把该任务的全部代码改动结算为一条可回退的产出物。',
+        '汇报任务进展：done（完成）/terminated（终止）。完成或终止前平台会把该任务的全部代码改动结算为一条可回退的产出物。任务没有「受阻」状态：做不下去时说明缺口、改派或直接终止，不要停在中间态。',
       paramsSchema: {
         type: 'object',
         properties: {
           taskId: { type: 'string', description: '任务 id' },
-          state: { type: 'string', enum: ['done', 'blocked', 'terminated'], description: '目标状态' },
-          note: { type: 'string', description: '汇报说明（做了什么 / 卡在哪）' },
+          state: { type: 'string', enum: ['done', 'terminated'], description: '目标状态' },
+          note: { type: 'string', description: '汇报说明（做了什么 / 还差什么）' },
         },
         required: ['taskId', 'state'],
       },
@@ -224,8 +251,15 @@ export function taskUpdateTool(deps: TaskToolDeps): { definition: ToolDefinition
       if (taskId === undefined || state === undefined) {
         return { ok: false, text: '缺少 taskId 或 state', errorCode: 'ERR_VALIDATION' }
       }
-      if (state !== 'done' && state !== 'blocked' && state !== 'terminated') {
-        return { ok: false, text: `task_update 只接受 done/blocked/terminated（收到 ${state}）`, errorCode: 'ERR_VALIDATION' }
+      if (state !== 'done' && state !== 'terminated') {
+        return {
+          ok: false,
+          text:
+            state === 'blocked'
+              ? 'task_update 不再接受 blocked：任务没有「受阻」状态，请说明缺口后继续推进，确实做不下去就 terminated，或让发起人改派。'
+              : `task_update 只接受 done/terminated（收到 ${state}）`,
+          errorCode: 'ERR_VALIDATION',
+        }
       }
       const updated = await deps.tasks.setState(context.projectId, taskId, state, {
         actor: context.instanceId,
@@ -235,7 +269,7 @@ export function taskUpdateTool(deps: TaskToolDeps): { definition: ToolDefinition
       const artifacts = updated.value.artifactIds.length
       return {
         ok: true,
-        text: `已汇报任务 ${taskId} → ${state}${artifacts === 0 ? '' : `（已结算 ${artifacts} 条产出物）`}`,
+        text: `已汇报任务 ${taskId} → ${state}${artifacts === 0 ? '' : `（已结算 ${artifacts} 条产出物）`}${await pendingHint(deps, context.projectId, context.instanceId)}`,
         data: { task: updated.value },
       }
     },

@@ -15,7 +15,8 @@ import { err, ok, type Result } from '../../shared/result'
  * 任务用例（data-storage.md §7、D19-⑤、D17-①）：
  * - 发布（用户经 UI / 上游 Agent 沿出边委派）→ `todo`，撞车去重（同受派人 + 归一化标题 + 活跃状态）；
  * - 受派人 `claim` → `in_progress`（**每 Agent 至多 1 个**，否则 `ERR_CONFLICT`）；
- * - `done`/`blocked`/`terminated` 汇报 → 通知委派人**并指派"据此继续"**（S36/D39）；`done`/`terminated` 前**先结算未结算改动**为 code artifact（可回退）。
+ * - `done`/`terminated` 汇报 → 通知委派人**并指派"据此继续"**（S36/D39）；`done`/`terminated` 前**先结算未结算改动**为 code artifact（可回退）。
+ * - S53/D57：**不再接受新的 blocked 迁移**（任务没有"受阻"概念）；`blocked` 仅作为既有数据的只读状态保留。
  *
  * 通知（"唤醒一轮"）由组合根注入：向受派人 user 会话注入一条系统消息 + 触发 dispatcher.drain。
  */
@@ -53,12 +54,14 @@ export function taskReportNotice(input: {
   readonly assignee: string
   readonly taskId: string
   readonly title: string
+  /** S53/D57 后只会有 done/terminated；blocked 仅用于渲染既有历史数据 */
   readonly state: 'done' | 'blocked' | 'terminated'
   readonly note: string | null
 }): string {
   const note = input.note?.trim() ?? ''
   const next: Record<typeof input.state, string> = {
     done: '请据此继续你的计划：基于这个结果推进下一步；若你的任务因此已无后续，用 task_update 汇报你自己任务的结论。',
+    // 历史数据兼容：旧 blocked 记录被重新播报时的文案
     blocked: '请立即安排后续：调整方案后重新派单、自己接手，或用 ask_user 向用户澄清——不要停在原地等待。',
     terminated: '请决定是否重新安排这项工作（重新派单 / 自己接手 / 用 ask_user 澄清）。',
   }
@@ -188,6 +191,13 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       if (state === 'in_progress' && task.state !== 'todo') {
         return err('ERR_CONFLICT', `只有 todo 任务可以置为进行中（当前 ${task.state}）`, { taskId, state: task.state })
       }
+      // S53/D57：任务不再有「受阻」概念——受阻往往只是"角色没执行/没做完"，不该停在中间态。
+      // 既有 blocked 记录仍可读可显示（不做数据迁移），但不再接受新的 blocked 迁移。
+      if (state === 'blocked') {
+        return err('ERR_VALIDATION', '任务没有「受阻」状态：请说明缺口后继续推进，确实做不下去就 terminated，或让发起人改派', {
+          taskId,
+        })
+      }
       if (state === 'in_progress') {
         const busy = await inProgressOf(projectId, task.assignee)
         if (busy !== null && busy.id !== taskId) {
@@ -227,8 +237,9 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       if (!saved.ok) return saved
       publish(projectId, saved.value)
 
-      // 完成/受阻/终止 → 通知委派人**并要它继续**（S36/D39；用户创建的任务不必通知自己）
-      if (state === 'done' || state === 'blocked' || state === 'terminated') {
+      // 完成/终止 → 通知委派人**并要它继续**（S36/D39；用户创建的任务不必通知自己）
+      // S53/D57：blocked 已在上方被拒，这里只剩 done/terminated 两种终结汇报
+      if (state === 'done' || state === 'terminated') {
         const creator = saved.value.creator
         if (creator !== 'user' && creator !== saved.value.assignee) {
           await options

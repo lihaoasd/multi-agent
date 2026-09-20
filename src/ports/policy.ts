@@ -29,7 +29,7 @@ export type PolicyAction =
       readonly args: readonly string[]
     }
   | {
-      /** 产出物登记（workspaces-artifacts §6）：是否需审批由项目 `artifactPolicy` 决定 */
+      /** 产出物登记（workspaces-artifacts §6）。S53/D56：一律免审批（`artifactPolicy` 字段已废弃） */
       readonly kind: 'submit'
       readonly tool: ToolName
       readonly artifactType: ArtifactType
@@ -47,7 +47,9 @@ export interface TrustScope {
 
 export interface ProjectPolicy {
   readonly highRiskCommands: boolean
+  /** @deprecated S53/D56：产出物登记已一律免审批，仅保留以兼容既有项目数据 */
   readonly docSubmitApproval: boolean
+  /** @deprecated S53/D56：同上 */
   readonly codeSubmitApproval: boolean
   /** 联网开关（sandbox.md §6）：offline 时拒绝任何联网动作 */
   readonly network: 'online' | 'offline'

@@ -13,12 +13,13 @@ export const SNAPSHOT_ARTIFACT_TYPES: readonly ArtifactType[] = ['doc', 'config'
 export const ARTIFACT_STATES = ['submitted', 'approved', 'rejected', 'reverted'] as const
 export type ArtifactState = (typeof ARTIFACT_STATES)[number]
 
+/** 任务状态。S53/D57 起不再产生 `blocked`，保留它只为读取/显示既有数据 */
 export const TASK_STATES = ['todo', 'in_progress', 'done', 'blocked', 'terminated'] as const
 export type TaskState = (typeof TASK_STATES)[number]
 
 /** 活跃（未终结）任务状态：去重与"单 in_progress"判定只看这两个 */
 export const TASK_ACTIVE_STATES: readonly TaskState[] = ['todo', 'in_progress']
-/** 终结状态：释放 in_progress 槽位 */
+/** 终结状态：释放 in_progress 槽位（`blocked` 为历史值，见上） */
 export const TASK_TERMINAL_STATES: readonly TaskState[] = ['done', 'blocked', 'terminated']
 
 export const QUESTION_STATUSES = ['pending', 'answered'] as const

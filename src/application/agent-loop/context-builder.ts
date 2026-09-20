@@ -176,6 +176,10 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
       `你的产出物只能落在项目工作目录内（当前工作目录：${project.workdir}）。`,
       // S50/D53：文档与代码分开放，文档统一进 docs/（用户口径："角色产生的文档存放在 docs 文件夹里"）
       '**文档类产出**（设计/需求/说明/报告/方案等 doc 产出物）统一写到工作目录的 `docs/` 子目录下（如 `workdir://docs/design.md`）；代码与测试按设计稿约定的目录放（不要混进 `docs/`）。',
+      // S53/D56：产出物登记免审批，角色不必为"交东西"走审批
+      '产出物登记**不需要审批**：直接把产出物登记上（submit），不用为此发起审批申请，也不要因为等待审批而不交东西。',
+      // S53：角色不能只等唤醒，每完成一条任务都要主动回头看任务列表
+      '手上有任务时按「领取（task_claim）→ 执行 → 汇报（task_update）」闭环推进；每汇报完一条**立刻**用 task_list 复核名下任务并续领下一条，不要等唤醒才动；确认名下没有任务了再结束这一轮。',
       // S21/D27：中断收尾由 Agent 自己判断并发起询问（平台既不判定"未完成回合"，也不给固定选项）
       `开工前若你怀疑上一个回合没有正常收尾（例如服务刚重启、你要接着做上次没做完的事），先用 session_recent 核对本会话最近事件：若最后一个【回合开始】之后没有对应的【回合结束】，或你的最后一条回复明显不完整，就先用文字说明现状，并用 ask_user 问我怎么处理——不要擅自续跑，也不要假装没发生。`,
     ].join('\n'),
@@ -266,7 +270,8 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
           const desc = task.desc.trim().length === 0 ? '' : `\n  说明：${trim(task.desc.trim(), 800)}`
           return `- ${task.id}《${task.title}》（发起：${task.creator}）${desc}`
         }),
-        '用 task_claim 领取；若被"你已有进行中的任务"挡住，先把那个任务收口（task_update done/blocked），或回报派发人说明原因。',
+        '用 task_claim 领取；若被"你已有进行中的任务"挡住，先把那个任务收口（task_update done；确实做不下去就 terminated 并说明缺口，让发起人改派）。',
+        '任务没有「受阻」状态：不要停在中间态等唤醒，每做完一条都要回头用 task_list 看还有没有派给你的活。',
       ].join('\n'),
     })
   }
@@ -280,6 +285,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
         `任务 ${input.task.id}：${input.task.title}（${input.task.state}｜发起：${input.task.creator}）`,
         ...(input.task.desc.length === 0 ? [] : [`说明：${input.task.desc}`]),
         '你的代码改动会计入这条任务；完成后用 task_update 汇报 done（平台会结算为可回退的产出物）。',
+        '汇报 done 之后**不要停下等唤醒**：立刻用 task_list 复核名下任务，还有 todo 就 task_claim 继续干；确认没有活了再结束这一轮。',
       ].join('\n'),
     })
   }
@@ -298,7 +304,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltContext {
         ...(delegated.length > shown.length
           ? [`（另有 ${delegated.length - shown.length} 条，需要时用 task_list 查看全部）`]
           : []),
-        '回报到达后请据此继续你自己的计划：已完成的结果直接用起来推进下一步；受阻或终止的，决定调整方案、重新派单还是自己接手。',
+        '回报到达后请据此继续你自己的计划：已完成的结果直接用起来推进下一步；终止（没做完）的，决定调整方案、重新派单还是自己接手。',
       ].join('\n'),
     })
   }

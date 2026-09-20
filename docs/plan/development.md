@@ -77,8 +77,10 @@
 | **S49** | 去掉「停止生成」；暂停＝跑完当前这一轮 loop 后停止循环（用户口径，见 prd D52） | `isPaused()` 接进每轮检查点（不切断在途调用）；`setPaused` 不再 abort；界面删除停止生成按钮与 `stopTurnFeedback` | S48 | — | **已完成（2026-09-19）**：[方案](2026-09-19-s49-pause-at-loop-boundary.md) · [记录](../changes/2026-09-19-s49-pause-at-loop-boundary.md) |
 | **S50** | 按职能派单 / 待领取任务 / 文档进 `docs/`（用户口径三条，见 prd D53） | 上下文新增 `team-roster`（角色职能 + 出边可派单对象）与 `pending-tasks`（todo + 领取指引）；`platform-role` 写入 `docs/` 约定；runner/预览同源 | S49 | — | **已完成（2026-09-19）**：[方案](2026-09-19-s50-roster-pending-docs.md) · [记录](../changes/2026-09-19-s50-roster-pending-docs.md) |
 | **S51** | 会话顶部显示「正在执行的任务」（用户口径，见 prd D54） | `/agents` 投影 `currentTask`（一次取全项目 in_progress 按受派人分组）；会话卡片标题旁渲染「正在执行：<标题>」标签 | S50 | — | **已完成（2026-09-19）**：[方案](2026-09-19-s51-session-current-task.md) · [记录](../changes/2026-09-19-s51-session-current-task.md) |
+| **S53** | 产出物登记免审批 / 角色主动续领任务 / 取消「受阻」（用户口径三条，见 prd D56/D57） | `policy.ts`：`kind='submit'` 一律放行 `SUBMIT_FREE`（`artifactPolicy` 字段废弃但保留）；`task.ts`：`task_update` 只收 `done`/`terminated`，汇报/领取的结果带出**名下剩余任务**并催续领；`context-builder.ts`：`platform-role`/`[当前任务]` 写入"每完成一条主动复核续领"；`task-service.ts`：拒绝新的 `blocked`；web 状态选择器去掉「受阻」（旧数据仍显示、仍列在右栏） | S52 | — | **已完成（2026-09-20）**：[方案](2026-09-20-s53-submit-free-proactive-tasks.md) · [记录](../changes/2026-09-20-s53-submit-free-proactive-tasks.md) |
+| **S52** | 模型请求超时改为「空闲超时」（用户报告，见 prd D55） | `http.ts`：响应头阶段独立截止 + 响应体空闲看门狗（数据在流就不超时）；超时给中文指引；表单文案改「空闲超时」 | S51 | — | **已完成（2026-09-19）**：[方案](2026-09-19-s52-model-idle-timeout.md) · [记录](../changes/2026-09-19-s52-model-idle-timeout.md) |
 
-> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10~S51 为 S9 之后的需求变更/UI 简化收口。
+> 关键路径：`S0 → S1 → S2 → S3 → S4 → S6 → S7 → S8 → S9`。S5 与 S4/S6 可并行（只依赖 S3）；S10~S52 为 S9 之后的需求变更/UI 简化收口。
 
 ## 4. S0 · 工程脚手架与依赖门禁
 
@@ -170,6 +172,7 @@
 | **S49 暂停在轮次边界停止循环** | 用户口径"不要停止生成按钮，暂停给每个 agent 设置状态…执行完一轮 loop 后判断是否暂停，是则停止循环"。现状：停止生成按钮两处（会话头/细条）、暂停会**立刻 abort** 在途模型调用。做法：`TurnRunContext.isPaused()` 接进 `shouldInterrupt`（每轮开始处检查）→ 当前轮跑完即停、不切断在途调用；`setPaused` 不再 abort；游标仍不推进（恢复补处理），日志改记 `state{paused:true}`；界面删除停止生成按钮与 `stopTurnFeedback`（接口保留）。**结果（2026-09-19）**：`pause-interrupt.test.ts` 重写为轮次边界口径（断言未切断、只跑 1 次调用、`queued=2`、恢复后补处理 2 条且调用数 `1+2×5`）；`npm test` **63 files / 390 tests 全绿**；`coverage` 143/143、`ratchet` 0、`typecheck`/`eslint`/`build` 通过（产物 `index-D5G05hX2.js`） |
 | **S50 按职能派单 / 待领取任务 / 文档进 docs** | 用户口径三条。诊断：`task_update done` 通（dev_1 成功汇报过），断的是**领取**——任务创建后领取被单工槽位拒、此后再无提醒，`todo` 躺了 7 小时；根因是 `todo` 不进上下文、"待领取"只有一条唤醒消息（S36 记录的文档漂移）。做法：新增 `team-roster`（8 角色真实职能 + 我的出边）与 `pending-tasks`（todo + "被槽位挡住先收口/回报"指引）两块，平台块写入 `docs/` 约定，runner/预览同源。**结果（2026-09-19）**：新增单测 7 条；活体验证 PM 预览出现 8 角色 + 7 个可派单对象；`npm test` **64 files / 397 tests 全绿**；`coverage` 143/143、`ratchet` 0、`typecheck`/`eslint`/`build` 通过 |
 | **S51 会话顶部显示正在执行的任务** | 用户口径"领取任务后，对应的角色会话顶部显示正在执行的任务"。缺口：`/agents` 的 `currentTask` 硬编码 `null`（数据早就有，运行细条的 `taskTitle` 就是它）。做法：`/agents` 一次取全项目 `in_progress` 任务按受派人分组投影 `currentTask`；会话卡片标题旁渲染蓝色「正在执行：<标题>」标签（Tooltip 给 id/state）。**结果（2026-09-19）**：集成断言（领取后命中 / 其它角色 null / 收口后 null）+ 临时实例端到端验证；`npm test` **64 files / 397 tests 全绿**；`coverage` 143/143、`ratchet` 0；产物 `index-BEjLg3iO.js` |
+| **S52 模型超时改空闲语义** | 用户报告"执行失败：模型调用失败（已重试 3 次）：模型流式响应中断：The operation was aborted due to timeout"。根因：`AbortSignal.timeout(timeoutMs)` 是固定总截止且约束响应体 → 总时长超 60s 的正常长输出被砍、还白重试 3 次（写 20~35KB 文档必踩）。做法：改成**空闲超时**（连接阶段独立截止 + 响应体看门狗按数据重置）、报错中文化、表单改「空闲超时」。**结果（2026-09-19）**：新用例 4 条（"总时长 360ms ≫ 空闲 100ms 仍读完"为关键条，**退回旧实现实测必红**）；顺带修掉一个"替身忽略 signal 导致假绿"的用例缺陷；`npm test` **65 files / 401 tests 全绿**；`coverage` 143/143、`ratchet` 0、`build` 产物 `index-_R5D1iNe.js` |
 
 ## 7. 每阶段完成定义（DoD，缺一不算完成）
 

@@ -105,6 +105,19 @@ describe('domain/rules/policy · 判定优先级 deny > approval > allow', () =>
     ).toBe('allow')
   })
 
+  it('产出物登记一律免审批（S53/D56）：项目开着 docSubmitApproval 也拦不住', () => {
+    for (const artifactType of ['doc', 'code'] as const) {
+      const outcome = engine.decide({
+        actor,
+        sessionType: 'user',
+        // 最严的项目配置：文档与代码提交都"需要审批"
+        projectPolicy: { ...projectPolicy, docSubmitApproval: true, codeSubmitApproval: true },
+        action: { kind: 'submit', tool: 'artifact_submit', artifactType, risk: 'low', network: 'none', needsApproval: true },
+      })
+      expect(outcome).toMatchObject({ decision: 'allow', ruleId: 'SUBMIT_FREE' })
+    }
+  })
+
   it('信任开关只放行被记住的类别（D17-④）', () => {
     const trusted: PolicyInput = {
       actor,

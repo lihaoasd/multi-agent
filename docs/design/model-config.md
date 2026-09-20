@@ -79,7 +79,7 @@
   | `anthropic` | `thinking: { type: "enabled", budget_tokens }` | 预算取 `defaultParams.thinkingBudget`、夹在 `max_tokens - 1024` 内；**本次请求带 tools 时不发**（思考块含 `signature` 需原样回传，平台暂未保存） |
   | `gemini` | `generationConfig.thinkingConfig.includeThoughts = true`（可选 `thinkingBudget`） | — |
   | `ollama` | 顶层 `think: true` | 仅支持该字段的模型（如 qwen3）可用 |
-  **超时提示**：思考模式更慢，60s 的供应商超时可能让回合失败（S40 实测有两次 `ERR_MODEL` 超时）；请按需调大供应商配置里的「超时（毫秒）」。
+  **超时口径（S52/D55）**：供应商配置里的「**空闲超时（毫秒）**」＝"多久没有数据到达算失败"，**不是总时长上限**——数据持续到达的长输出（如写 20~35KB 文档）永远不会被超时砍掉；真卡住时报 `模型流式响应空闲超时：N 秒没有数据到达（可在「模型 → 供应商」调大超时）`。连接/响应头阶段另有独立截止（N 秒内没拿到响应 → `模型请求超时`）。
 - `defaultParams` 与 loop 参数的关系：模型参数（temperature/maxTokens 等）来自模型条目；loop 参数（maxIterations/toolBudget/stepModelOverride）来自 Agent 配置（agent-templates §4）。二者不重叠。
 
 ## 5. 凭证与安全

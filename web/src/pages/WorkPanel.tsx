@@ -15,9 +15,13 @@ const TASK_STATE_LABEL: Record<TaskState, string> = {
   todo: '待领取',
   in_progress: '进行中',
   done: '已完成',
-  blocked: '受阻',
+  // S53/D57：任务不再有「受阻」；这里只为显示既有历史数据
+  blocked: '受阻（旧数据）',
   terminated: '已终止',
 }
+
+/** 用户可手动改成的状态：不再包含 blocked（服务端也会拒绝） */
+const SELECTABLE_TASK_STATES: readonly TaskState[] = ['todo', 'in_progress', 'done', 'terminated']
 
 const ARTIFACT_TYPE_LABEL: Record<string, string> = {
   doc: '文档',
@@ -149,7 +153,7 @@ export function WorkPanel({
                     value={record.state}
                     style={{ width: 110 }}
                     onChange={(value) => void run(() => workApi.setTaskState(projectId, record.id, value as TaskState))}
-                    options={(Object.keys(TASK_STATE_LABEL) as TaskState[]).map((state) => ({
+                    options={SELECTABLE_TASK_STATES.map((state) => ({
                       value: state,
                       label: TASK_STATE_LABEL[state],
                     }))}

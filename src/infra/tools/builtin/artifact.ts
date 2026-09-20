@@ -122,7 +122,7 @@ export function artifactSubmitTool(deps: ArtifactToolDeps): { definition: ToolDe
       name: 'artifact_submit',
       package: 'artifact',
       description:
-        '把工作目录里已经写好的文件登记为产出物（版本快照 + manifest + 署名，不移动文件）。省略 files 时登记本任务/本回合的全部改动；code 类提交会按任务聚合。',
+        '把工作目录里已经写好的文件登记为产出物（版本快照 + manifest + 署名，不移动文件）。省略 files 时登记本任务/本回合的全部改动；code 类提交会按任务聚合。**登记免审批**（S53/D56），不需要为交产出物申请审批。',
       paramsSchema: {
         type: 'object',
         properties: {
@@ -144,7 +144,8 @@ export function artifactSubmitTool(deps: ArtifactToolDeps): { definition: ToolDe
       scope: 'workdir',
       risk: 'low',
       network: 'none',
-      // 是否需审批由 PolicyEngine 按项目 artifactPolicy（docSubmitApproval/codeSubmitApproval）判定
+      // S53/D56：产出物登记一律免审批，PolicyEngine 直接放行（SUBMIT_FREE）；
+      // 项目里的 artifactPolicy 字段保留仅为兼容既有数据，不再作为登记的门
       needsApproval: false,
       idempotent: false,
       availableIn: [...SESSION_USER_ONLY],

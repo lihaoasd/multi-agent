@@ -203,7 +203,7 @@ agent_haness/                    # 平台仓库
 - `relPath` 一律相对**工作目录**；文件由角色经 `workdir_edit` 直接写入工作目录后就地登记（无隔离区拷贝步骤）；登记受 `file-owners` 归属校验。
 - **版本内容落盘（H2 定稿，回退的内容依据）**：每次提交/聚合把可回退内容写入运行时项目文件夹 `artifact-versions/<artifactId>/v<n>/`：静态产物(doc/config/deploy 等)=各文件提交时**完整快照**；代码(code)=该版本覆盖的受控编辑**补丁**（每文件 diff）。manifest 每条含 `versionDir` 引用；回退=依前序版本内容反向恢复，不依赖 git（workspaces-artifacts.md §3）。
   - **S6 实现口径**：`v<n>/` 内为 `manifest.json`（文件表 + `diffText`）、`diff.patch`（统一 diff）、`files/<i>/<扁平名>`（提交后内容）、`base/<i>/<扁平名>`（提交前内容）；快照类与 code 类**同样保存 base**，回退写回 base（= 补丁反向应用的等价实现）。文件名扁平化以避开 relPath 对目录结构的影响。
-- 代码受控编辑按**任务级**自动聚合生成 artifact 记录（D14-⑧；无任务上下文时按回合兜底，见 workspaces-artifacts.md §2.2）；**无审批门时初始 `state`=approved**（B1 口径，与 workspaces-artifacts §4 状态机一致），仅当策略要求审批时才先 `submitted` 待批；manifest 条目含 `taskId`（归属任务，可为 null）。
+- 代码受控编辑按**任务级**自动聚合生成 artifact 记录（D14-⑧；无任务上下文时按回合兜底，见 workspaces-artifacts.md §2.2）；**无审批门时初始 `state`=approved**（B1 口径，与 workspaces-artifacts §4 状态机一致），**S53/D56 起登记一律免审批**，不再有 `submitted` 待批路径；manifest 条目含 `taskId`（归属任务，可为 null）。
 
 ## 7. 任务（tasks.jsonl）、询问（questions.jsonl）与审批（approvals.jsonl）
 
@@ -211,11 +211,13 @@ agent_haness/                    # 平台仓库
 // task（creator：用户经 UI 创建，或**上游 Agent** 沿编排图出边创建（D19-④⑤）；受派者领取后执行）
 { "id": "t_…", "title": "实现登录模块", "desc": "…",
   "creator": "user | pm_1", "assignee": "dev_1",
-  "state": "todo|in_progress|done|blocked|terminated", "sessionId": "u_dev_1",
+  "state": "todo|in_progress|done|terminated",  // S53/D57：blocked 已取消（仅历史数据里存在）
+  "sessionId": "u_dev_1",
   "artifactIds": [], "ts": "…" }
 // 状态流转（2026-09-12 任务栏）：todo=已发布·待领取 → 受派人 task_claim 领取 → in_progress
-//   → 受派人 task_update 汇报 done/blocked/terminated；用户与委派人（creator）可干预。
-// 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/blocked/terminated = 通知委派人安排后续。
+//   → 受派人 task_update 汇报 done/terminated（S53/D57 取消 blocked：做不下去就说明缺口、请求改派或 terminated，不允许停在中间态）；用户与委派人（creator）可干预。
+// 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/terminated = 通知委派人安排后续（历史 blocked 记录仍按原文案播报）。
+// S53/D57：task_update/task_claim 的结果会带出**名下剩余任务**并附「不要等唤醒，立即 task_claim 续领」的指引。
 // 状态变化广播 WS task.updated，任务栏面板实时刷新。
 // 撞车去重（2026-09-12）：同 assignee + 归一化标题（去空白/标点+小写）+ 状态∈{todo,in_progress} 视为同一件事，
 //   第二次发布不新建（回执点名重复对象）；force=true 可强制新建；终态任务不参与去重。

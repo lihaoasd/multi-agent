@@ -61,7 +61,7 @@
 | GET | /api/projects/:pid/artifacts/:aid/versions | 该 artifact 的全部版本（版本号升序；回退产生 `state=reverted` + `revertedTo` 的新版本）|
 | POST | /api/projects/:pid/artifacts/:aid/rollback | 回退到指定版本 `{version, force?}`：把该版本涉及文件恢复为其提交前内容（新增文件即删除）；文件在目标版本后被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`，确认覆盖需 `force=true` |
 | GET/POST | /api/projects/:pid/tasks | 任务列表（可按 state/assignee/creator 筛）/ 发布任务（`todo`=已发布待领取，落库后通知受派人）；**同受派人+同题活跃任务自动去重**：新建 201，命中重复 200 `{task, duplicate:true}`，`force:true` 强制新建 |
-| PATCH | /api/projects/:pid/tasks/:tid | 改状态 `{state, note?}`（状态含 `terminated`=用户终止，先结算未结算改动为 code artifact，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/blocked/terminated 会通知委派人 |
+| PATCH | /api/projects/:pid/tasks/:tid | 改状态 `{state, note?}`（状态含 `terminated`=用户终止，先结算未结算改动为 code artifact，D17-①；已有 in_progress 时置新 in_progress 返回 ERR_CONFLICT）；done/terminated 会通知委派人；**S53/D57**：`blocked` 不再被接受（`ERR_VALIDATION`），历史 `blocked` 记录仍可读可筛 |
 | GET | /api/projects/:pid/file-owners?owner= | 产出物**署名与归属**列表（relPath/owner/ownerName/时间/次数），2026-09-12；实现（S6）另含 `lastTaskId`/`via`（`workdir_edit`\|`artifact_submit`）|
 | GET | /api/projects/:pid/pending-edits?key= | 未结算改动（任务级聚合视图）：`{edits[], files, diffSummary}`；`key=task-<taskId>` 或 `turn-<sessionId>-<turn>` |
 | GET | /api/projects/:pid/questions?status=pending\|answered&sessionId= | **询问列表**：Agent 向用户提问（一条记录含 `items[]`；`pending`=待答）；Agent 提问后状态 `waiting`，同一 Agent 至多 1 个 pending（再问 → `ERR_QUESTION_PENDING`）|

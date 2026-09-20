@@ -52,7 +52,7 @@ export interface TaskService {
   create(input: CreateTaskInput): Promise<Result<{ readonly task: TaskRecord; readonly duplicate: boolean }>>
   /** 受派人领取（todo → in_progress）；每 Agent 至多 1 个 in_progress */
   claim(projectId: ProjectId, taskId: string, assignee: InstanceId): Promise<Result<TaskRecord>>
-  /** 汇报/干预：done/blocked/terminated；置 in_progress 受"单 in_progress"约束 */
+  /** 汇报/干预：done/terminated；置 in_progress 受"单 in_progress"约束。S53/D57：不再接受新的 blocked */
   setState(
     projectId: ProjectId,
     taskId: string,

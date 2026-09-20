@@ -502,7 +502,12 @@ export function ModelModule() {
               )
             }
           </Form.Item>
-          <Form.Item name="timeoutMs" label="超时（毫秒）">
+          <Form.Item
+            name="timeoutMs"
+            label="空闲超时（毫秒）"
+            // S52/D55：这是"多久没有数据到达算失败"，不是整个请求的总时长——长输出不会被砍
+            extra="多久没收到数据算失败（不是总时长上限）；模型边想边写很久也不会被中断，卡住才超时"
+          >
             <InputNumber min={1000} max={600000} step={1000} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
