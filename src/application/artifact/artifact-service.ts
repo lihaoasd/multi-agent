@@ -24,6 +24,8 @@ import { SNAPSHOT_ARTIFACT_TYPES, type ArtifactType } from '../../shared/artifac
  * - `submit`：登记已写好的文件（版本快照/补丁 + manifest + 署名）；
  * - `settle`：任务 done / 终止前结算 / 回合兜底时把暂存改动落袋为一条 artifact；
  * - `rollback`：按版本内容依据恢复（快照类=完整快照，code=补丁的反向内容=base），新版本 state=reverted。
+ *   S54/D58 起分两种方式：`undo`＝撤销目标版本这一版（恢复其 base）；`restore`＝退回到目标版本的**内容**
+ *   （＝撤销它之后的所有版本，每个文件取"目标版本之后最早改动它的那一版"的 base）。
  *
  * ⚠️ 设计原文要求"code 回退=补丁反向应用"：实现里为同一版本同时保存 `diff.patch`（审计）
  * 与每个文件的 base 内容（反向应用的内容依据），回退直接写回 base（等价且不引入补丁解析风险）。
@@ -160,6 +162,7 @@ export function createArtifactService(options: ArtifactServiceOptions): Artifact
       turn: input.turn,
       versionDir: put.value.dir,
       revertedTo: null,
+      revertMode: null,
       ts: clock.now().toISOString(),
     }
     const created = prior === undefined
@@ -335,14 +338,48 @@ export function createArtifactService(options: ArtifactServiceOptions): Artifact
       const project = await projectOf(input.projectId)
       if (!project.ok) return project
 
-      // 前置校验（§3）：目标文件在该版本之后被改动过 → 先提示冲突（force 可覆盖）
       const latest = versions.value[versions.value.length - 1]
+      const mode = input.mode ?? 'undo'
+
+      // 组装"要写回什么"的计划（relPath → 目标内容；null＝删除该文件）：
+      // - undo：目标版本自己的 base（撤销这一版）
+      // - restore：目标版本之后**最早改动该文件**的那一版的 base（＝该文件在目标版本时的内容）
+      const plan = new Map<string, { content: string | null; hash: string }>()
+      if (mode === 'restore') {
+        if (latest !== undefined && latest.version === target.version) {
+          return err('ERR_VALIDATION', `v${target.version} 已经是最新版本，无需退回`, { version: target.version })
+        }
+        for (const later of versions.value) {
+          if (later.version <= target.version) continue
+          const laterBundle = await store.getVersion(input.projectId, input.artifactId, later.version)
+          if (!laterBundle.ok) return laterBundle
+          for (const file of laterBundle.value.files) {
+            if (!plan.has(file.relPath)) plan.set(file.relPath, { content: file.base, hash: file.hash })
+          }
+        }
+        if (plan.size === 0) {
+          return err('ERR_VALIDATION', `v${target.version} 之后没有可退回的改动`, { version: target.version })
+        }
+      } else {
+        for (const file of bundle.value.files) plan.set(file.relPath, { content: file.base, hash: file.hash })
+      }
+
+      // 前置校验（§3）：计划里的文件在该版本之后被改动过 → 先提示冲突（force 可覆盖）
+      // 比对基准＝"平台已知的该文件最新内容"：从最新版本往前找第一个碰到它的版本
+      // （不能只看最新一版的文件清单——最新一版可能根本没碰这个文件，那是假冲突）
+      const committedHashOf = (relPath: string): string | null => {
+        for (let index = versions.value.length - 1; index >= 0; index -= 1) {
+          const version = versions.value[index]
+          const file = version?.files.find((item) => item.relPath === relPath)
+          if (file !== undefined) return file.action === 'delete' ? null : file.hash
+        }
+        return null
+      }
       if (latest !== undefined && latest.version !== target.version && input.force !== true) {
         const conflicted: string[] = []
-        for (const file of bundle.value.files) {
-          const current = await workdir.hash(project.value.workdir, file.relPath)
-          const expected = latest.files.find((item) => item.relPath === file.relPath)?.hash ?? null
-          if (current !== expected) conflicted.push(file.relPath)
+        for (const relPath of plan.keys()) {
+          const current = await workdir.hash(project.value.workdir, relPath)
+          if (current !== committedHashOf(relPath)) conflicted.push(relPath)
         }
         if (conflicted.length > 0) {
           return err('ERR_CONFLICT', `以下文件在该版本后被修改过，回退会覆盖它们：${conflicted.join('、')}`, {
@@ -353,31 +390,31 @@ export function createArtifactService(options: ArtifactServiceOptions): Artifact
       }
 
       const restored: { relPath: string; action: 'add' | 'modify' | 'delete'; hash: string; snapshot: string | null; base: string | null }[] = []
-      for (const file of bundle.value.files) {
-        const current = await workdir.read(project.value.workdir, file.relPath)
+      for (const [relPath, entry] of plan) {
+        const current = await workdir.read(project.value.workdir, relPath)
         if (!current.ok) return current
-        if (file.base === null) {
-          // 该版本新增的文件 → 回退即删除（新版本记录为 delete，便于再次回退）
+        if (entry.content === null) {
+          // 计划里"没有 base 的文件"＝该版本新增的 → 回退即删除（新版本记录为 delete，便于再次回退）
           if (current.value !== null) {
-            const removed = await workdir.remove(project.value.workdir, file.relPath)
+            const removed = await workdir.remove(project.value.workdir, relPath)
             if (!removed.ok) return removed
           }
           restored.push({
-            relPath: file.relPath,
+            relPath,
             action: 'delete',
-            hash: file.hash,
+            hash: entry.hash,
             snapshot: null,
             base: current.value?.content ?? null,
           })
           continue
         }
-        const written = await workdir.write(project.value.workdir, file.relPath, file.base)
+        const written = await workdir.write(project.value.workdir, relPath, entry.content)
         if (!written.ok) return written
         restored.push({
-          relPath: file.relPath,
+          relPath,
           action: 'modify',
           hash: written.value.hash,
-          snapshot: file.base,
+          snapshot: entry.content,
           base: current.value?.content ?? null,
         })
       }
@@ -401,6 +438,7 @@ export function createArtifactService(options: ArtifactServiceOptions): Artifact
         ),
         versionDir: dir.value.dir,
         revertedTo: target.version,
+        revertMode: mode,
         ts: clock.now().toISOString(),
         sessionId: input.sessionId,
         turn: input.turn,
@@ -419,6 +457,7 @@ export function createArtifactService(options: ArtifactServiceOptions): Artifact
       options.logger.info('产出物已回退', {
         projectId: input.projectId,
         artifactId: input.artifactId,
+        mode,
         from: target.version,
         newVersion: nextVersion,
       })

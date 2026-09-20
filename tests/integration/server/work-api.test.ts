@@ -117,6 +117,45 @@ describe('API · 产出物 / 任务 / 询问（规则 4/10/12/15/21/24/25）', (
       url: `/api/projects/${work.projectId}/artifacts/${artifact.id}/versions`,
     })
     expect(versions.json<ArtifactRecord[]>().map((item) => item.state)).toEqual(['approved', 'reverted'])
+
+    // S54/D58：未知回退方式被拒
+    const badMode = await inject({
+      method: 'POST',
+      url: `/api/projects/${work.projectId}/artifacts/${artifact.id}/rollback`,
+      payload: { version: 1, mode: 'nope' },
+    })
+    expect(badMode.statusCode).toBe(400)
+    expect(badMode.json<{ code: string }>().code).toBe('ERR_VALIDATION')
+
+    // S54/D58：mode=restore 退回到 v1 的**内容**（v2 删掉的 prd 被写回，而不是再删一次）
+    const restored = await inject({
+      method: 'POST',
+      url: `/api/projects/${work.projectId}/artifacts/${artifact.id}/rollback`,
+      payload: { version: 1, mode: 'restore' },
+    })
+    expect(restored.statusCode).toBe(200)
+    expect(restored.json<ArtifactRecord>()).toMatchObject({
+      state: 'reverted',
+      version: 3,
+      revertedTo: 1,
+      revertMode: 'restore',
+    })
+    expect(readFileSync(join(work.workdir, 'docs/prd.md'), 'utf8')).toContain('目标')
+
+    // 已是最新版本 → 没有可退回的东西
+    const noop = await inject({
+      method: 'POST',
+      url: `/api/projects/${work.projectId}/artifacts/${artifact.id}/rollback`,
+      payload: { version: 3, mode: 'restore' },
+    })
+    expect(noop.statusCode).toBe(400)
+    expect(noop.json<{ code: string }>().code).toBe('ERR_VALIDATION')
+
+    const afterRestore = await inject({
+      method: 'GET',
+      url: `/api/projects/${work.projectId}/artifacts/${artifact.id}/versions`,
+    })
+    expect(afterRestore.json<ArtifactRecord[]>().map((item) => item.version)).toEqual([1, 2, 3])
   })
 
   it('规则 15/24：任务发布（去重）→ 领取 → 汇报闭环，每 Agent 单 in_progress', async () => {

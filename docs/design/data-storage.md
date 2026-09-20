@@ -197,7 +197,10 @@ agent_haness/                    # 平台仓库
   "version": 3,
   "files": [ { "relPath": "docs/prd.md", "action": "add|modify|delete", "hash": "sha256…" } ],
   "diffSummary": { "add": 320, "del": 40 },
-  "prevVersion": 2, "approvalId": null, "ts": "…" }
+  "prevVersion": 2, "approvalId": null,
+  // S54/D58：仅 state=reverted 的版本有值。revertedTo＝undo 时"被撤销的那一版"/restore 时"退回到的那一版"；
+  //   revertMode＝undo|restore（旧数据缺省视为 undo）
+  "revertedTo": null, "revertMode": null, "ts": "…" }
 ```
 
 - `relPath` 一律相对**工作目录**；文件由角色经 `workdir_edit` 直接写入工作目录后就地登记（无隔离区拷贝步骤）；登记受 `file-owners` 归属校验。

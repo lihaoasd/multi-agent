@@ -63,8 +63,8 @@
 
 ## 3. 回退（Rollback）
 
-- 触发：用户右栏对某 artifact 版本点"回退"（或 Agent 在用户批准下回退自己的提交）。
-- 语义：将该版本涉及的 relPath 恢复为前序版本内容——内容依据 = `artifact-versions/<artifactId>/v<n>/` 的快照/补丁（data-storage §6，H2 定稿）；新版本记录 state=reverted，不物理删历史。
+- 触发：用户在项目页「任务与产出物」的产出物行点**「版本历史」**，再对某一版点**「退回此版本」**（Agent 侧经 `artifact_rollback` 工具只能回退自己提交的版本，语义为 `undo`；用户不受"只能回退自己"限制，服务端以提交者身份代行）。
+- 语义（**S54/D58 起两种方式**）：`undo`＝将该版本涉及的 relPath 恢复为**前序版本内容**（＝撤销这一版）；`restore`＝把文件恢复成**该版本的内容**（＝撤销它之后的所有版本：每个文件取"该版本之后最早改动它的那一版"的 base，该版本之后新增的文件删除）。内容依据 = `artifact-versions/<artifactId>/v<n>/` 的快照/补丁（data-storage §6，H2 定稿）；新版本记录 `state=reverted` + `revertedTo` + `revertMode`，不物理删历史。
 - 前置校验：目标文件自该版本后被其他提交/外部修改过时，先提示差异与冲突风险（用户可选先备份），不静默覆盖。
 - 与 git 的关系：平台回退不依赖 git、不自动操作 git；若 workdir 是 git 仓库且存在未提交改动，回退前提示冲突风险（可选先备份）。
 
@@ -75,7 +75,7 @@
 approved ──回退──▶ reverted
 ```
 
-- **不在界面设"产出物"栏**（2026-09-09 用户要求）：提交即交付，工作目录里的文件本身就是可见结果；manifest（artifacts.jsonl）仍为唯一记录，供审计与回退接口使用（回退无 UI 入口）。
+- **不在界面设独立的"产出物"栏**（2026-09-09 用户要求）：提交即交付，工作目录里的文件本身就是可见结果；manifest（artifacts.jsonl）仍为唯一记录，供审计与回退使用（S6 起项目页「任务与产出物」有产出物表；**S54/D58** 起每行给「版本历史」+「退回此版本」，见 ui.md §5）。
 - manifest（artifacts.jsonl）为唯一记录；工作目录文件本身用户可用任意工具查看。
 
 ## 5. 审计与防呆
@@ -86,7 +86,7 @@ approved ──回退──▶ reverted
 - 未声明目标文件的受控编辑：`workdir_edit` 要求每次声明 relPath；批量/覆盖写需 high 审批。
 - 删除工作目录既有文件（未经提交上下文）→ high 审批。
 - 所有登记/回退/审批决策都落 approvals/artifacts/file-owners 文件与 session log（双写一致性由事件总线保证）。
-- **已知边界**：`cmd_run` 的命令副作用不按 owner 校验（无法静态判定命令会写哪些文件）；回退接口当前无 UI 入口。
+- **已知边界**：`cmd_run` 的命令副作用不按 owner 校验（无法静态判定命令会写哪些文件）；`restore` 会删除"目标版本之后新增"的文件——版本历史的确认文案会先列出会影响哪些文件（写回 N 个、删除 M 个）。
 
 ## 6. 审批默认值（已确认，D13②）与 P1 预留
 
@@ -111,7 +111,7 @@ P1 预留（MVP 不做）："阶段基线锁定"——把某个 artifact 集合�
 - **版本内容（补丁类与快照类的统一存放）**：`artifact-versions/<artifactId>/v<n>/` 下 `manifest.json`（文件表 + diffText）、`diff.patch`（统一 diff，审计）、`files/<i>/<flat>`（提交后内容）、`base/<i>/<flat>`（提交前内容，新增文件缺省）。
   ⚠️ 设计原文要求"code 回退=补丁反向应用"：实现同时保存 `diff.patch` 与 base 内容，回退直接写回 base（与反向应用等价且不引入补丁解析风险）。
 - **版本递增**：同一提交者 + 同题 + 同任务再次登记 → 复用同一 `artifactId` 且 `version+1`（`prevVersion` 链），跨回合/跨会话持续累计（D14-⑧）。
-- **回退**：目标版本之后文件被改动过 → `ERR_CONFLICT` + `detail.conflicted[]`（用户确认后 `force=true` 覆盖）；回退产生 `state=reverted` + `revertedTo` 的新版本，不物理删历史。
+- **回退（S54/D58 起两种方式）**：`mode=undo`（缺省，历史口径）＝撤销目标版本这一版；`mode=restore`＝把文件恢复成目标版本的**内容**（＝撤销它之后的所有版本，每个文件取"目标版本之后最早改动它的那一版"的 base；`action='add'` 的文件删除）。目标已是最新版本时 `restore` 返回 `ERR_VALIDATION`。冲突拦截：比对基准＝**"平台已知的该文件最新内容"**（从最新版本往前找第一个碰到这个文件的版本，`delete` 视为应不存在）——不能只看最新一版的文件清单，否则最新一版没碰它时会误报冲突；命中 → `ERR_CONFLICT` + `detail.conflicted[]`（用户确认后 `force=true` 覆盖）。回退产生 `state=reverted` + `revertedTo` + `revertMode` 的新版本，不物理删历史。
 - **审批门（S53/D56 起取消）**：`artifact_submit` **一律免审批**（`PolicyAction.kind='submit'` → `SUBMIT_FREE`，与 §6 口径一致，用户口径"提交产出物不用审批"）——项目 `artifactPolicy`（`docSubmitApproval`/`codeSubmitApproval`）字段保留但**不再作为登记的门**；`deny`（越界路径/离线联网）与高危动作规则不变，登记照旧写 manifest + 版本快照 + 署名 + `tool_result` 审计；任务级聚落（settle）不走审批门，直接 `state=approved`（B1 口径）。审批卡带 `previewRef`（doc 类提交的只读预览引用）。
 - **任务级聚合**：`workdir_edit` 的 `taskId` 由运行时注入（当前 `in_progress` 任务）；`done`/`terminated` 前 `TaskService` 先 `settle` 生成 `type=code` artifact（文件清单=该任务全部变更）并回写 `artifactIds`（可回退）。
-- **未做**：托盘批量同意/信任开关 UI（D17-④，留 S8）；回退的 UI 入口已在项目页「任务与产出物」提供（用户侧以提交者身份代行）。
+- **未做**：托盘批量同意/信任开关 UI（D17-④，留 S8）；回退只能整版回退（不能只回退某个文件里的某一处改动），且只能由用户从版本历史里发起（Agent 侧工具仅 `undo`）。

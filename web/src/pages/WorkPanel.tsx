@@ -1,6 +1,6 @@
-import { Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { describeError } from '../api/client'
+import { ApiError, describeError } from '../api/client'
 import {
   workApi,
   type ArtifactRecord,
@@ -10,6 +10,16 @@ import {
   type TaskState,
 } from '../api/work'
 import { projectApi, type InstanceView } from '../api/projects'
+import {
+  conflictFiles,
+  restorePlan,
+  rollbackConfirmText,
+  rollbackModeText,
+  rollbackTone,
+  versionRows,
+  type ArtifactVersionRow,
+} from '../lib/artifact-versions'
+import { localClock } from '../lib/time-format'
 
 const TASK_STATE_LABEL: Record<TaskState, string> = {
   todo: '待领取',
@@ -54,6 +64,11 @@ export function WorkPanel({
   const [busy, setBusy] = useState(false)
   const [assignOpen, setAssignOpen] = useState(false)
   const [assignForm] = Form.useForm<{ assignee: string; title: string; desc?: string }>()
+  /** S54/D58：正在查看版本历史的产出物（含最新版本记录）+ 它的全部版本 */
+  const [historyFor, setHistoryFor] = useState<ArtifactRecord | null>(null)
+  const [history, setHistory] = useState<ArtifactRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyBusy, setHistoryBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +105,57 @@ export function WorkPanel({
       setBusy(false)
     }
   }
+
+  /** 打开版本历史（S54/D58）：产出物列表每行只有最新版本，历史要单独拉 `.../versions` */
+  const openHistory = async (record: ArtifactRecord): Promise<void> => {
+    setHistoryFor(record)
+    setHistory([])
+    setHistoryLoading(true)
+    try {
+      setHistory(await workApi.artifactVersions(projectId, record.id))
+      setError(null)
+    } catch (cause) {
+      setError(describeError(cause))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  /**
+   * 退回此版本（S54/D58）：`mode='restore'` ＝把文件恢复成这一版的内容（撤销它之后的所有版本），
+   * 产生一条新版本。文件在该版本之后被外部改过时服务端回 `ERR_CONFLICT` → 二次确认后带 force 重试。
+   */
+  const revertTo = async (version: number, force: boolean): Promise<void> => {
+    if (historyFor === null) return
+    setHistoryBusy(true)
+    try {
+      const updated = await workApi.rollback(projectId, historyFor.id, version, { mode: 'restore', force })
+      message.success(`已退回 v${version}：文件恢复为该版本内容，产生新版本 v${updated.version}`)
+      const versions = await workApi.artifactVersions(projectId, historyFor.id)
+      setHistory(versions)
+      setHistoryFor(updated)
+      await load()
+    } catch (cause) {
+      const conflicted = cause instanceof ApiError && cause.code === 'ERR_CONFLICT' ? conflictFiles(cause.detail) : []
+      if (conflicted.length > 0) {
+        Modal.confirm({
+          title: '这些文件在该版本之后被改动过',
+          content: `${conflicted.join('、')} 会被覆盖。仍要强制退回吗？`,
+          okText: '强制退回',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: () => revertTo(version, true),
+        })
+      } else {
+        setError(describeError(cause))
+      }
+    } finally {
+      setHistoryBusy(false)
+    }
+  }
+
+  const historyRows = versionRows(history)
+  const latestVersion = historyRows[0]?.version ?? 0
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -216,21 +282,16 @@ export function WorkPanel({
             {
               title: '状态',
               dataIndex: 'state',
-              width: 110,
-              render: (state: string, record) =>
-                state === 'reverted' ? <Tag color="orange">已回退→v{record.revertedTo}</Tag> : <Tag color="green">已登记</Tag>,
+              width: 120,
+              render: (_state: string, record) => <Tag color={rollbackTone(record)}>{rollbackModeText(record)}</Tag>,
             },
             {
               title: '操作',
-              width: 110,
+              width: 130,
               render: (_v, record) => (
-                <Button
-                  size="small"
-                  danger
-                  disabled={busy || record.state === 'reverted'}
-                  onClick={() => void run(() => workApi.rollback(projectId, record.id, record.version, true))}
-                >
-                  回退此版本
+                // S54/D58：退回按"版本"走，先看版本历史再挑一版退回（不再有静默 force 的隐式回退）
+                <Button size="small" onClick={() => void openHistory(record)}>
+                  版本历史
                 </Button>
               ),
             },
@@ -288,6 +349,82 @@ export function WorkPanel({
             <Input.TextArea rows={3} placeholder="验收标准、产出要求…" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* S54/D58：版本历史 + 退回此版本（把文件恢复成这一版的内容，历史版本不删） */}
+      <Modal
+        open={historyFor !== null}
+        title={historyFor === null ? '版本历史' : `版本历史 ·《${historyFor.title}》`}
+        footer={null}
+        width={860}
+        onCancel={() => setHistoryFor(null)}
+      >
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            共 {historyRows.length} 版（最新 v{latestVersion}）。「退回此版本」＝把工作目录里的文件恢复成这一版的内容
+            （等于撤销它之后的所有版本），并记为新版本 v{latestVersion + 1}；历史版本不会被删除。
+          </Typography.Text>
+          <Table<ArtifactVersionRow>
+            rowKey="version"
+            size="small"
+            loading={historyLoading}
+            pagination={false}
+            dataSource={[...historyRows]}
+            columns={[
+              {
+                title: '版本',
+                dataIndex: 'version',
+                width: 110,
+                render: (version: number, row) => (
+                  <Space size={4}>
+                    <Typography.Text strong>v{version}</Typography.Text>
+                    {row.isCurrent && <Tag color="blue">当前</Tag>}
+                  </Space>
+                ),
+              },
+              { title: '状态', dataIndex: 'stateText', width: 110, render: (text: string, row) => <Tag color={row.tone}>{text}</Tag> },
+              { title: '提交者', dataIndex: 'submitter', width: 110 },
+              { title: '时间', dataIndex: 'ts', width: 150, render: (ts: string) => localClock(ts, { withMs: false }) },
+              { title: '变更', width: 100, render: (_v, row) => `+${row.add}/-${row.del}` },
+              {
+                title: '文件',
+                render: (_v, row) => (
+                  <Space size={4} wrap>
+                    {row.files.map((file) => (
+                      <Tag key={`${file.action}-${file.relPath}`}>
+                        {file.actionText} {file.relPath}
+                      </Tag>
+                    ))}
+                  </Space>
+                ),
+              },
+              {
+                title: '操作',
+                width: 120,
+                render: (_v, row) =>
+                  row.isCurrent ? (
+                    <Typography.Text type="secondary">当前版本</Typography.Text>
+                  ) : (
+                    <Popconfirm
+                      title={`退回 v${row.version}？`}
+                      description={rollbackConfirmText({
+                        target: row.version,
+                        nextVersion: latestVersion + 1,
+                        plan: restorePlan({ target: row.version, versions: history }),
+                      })}
+                      okText="退回"
+                      cancelText="取消"
+                      onConfirm={() => revertTo(row.version, false)}
+                    >
+                      <Button size="small" danger loading={historyBusy}>
+                        退回此版本
+                      </Button>
+                    </Popconfirm>
+                  ),
+              },
+            ]}
+          />
+        </Space>
       </Modal>
     </Space>
   )
