@@ -327,6 +327,78 @@ describe('application/task-service（规则 15/17/24）', () => {
     expect(after.ok && after.value.state).toBe('in_progress')
   })
 
+  it('S55/D59：老板（actor=user）可以把任务改成任意状态，含 done/terminated → in_progress 重新开工', async () => {
+    const harness = await createHarness()
+    const created = await harness.tasks.create({
+      projectId: PROJECT,
+      title: '重做登录模块',
+      desc: '',
+      creator: 'user',
+      assignee: 'dev_1',
+      sessionId: 'u_dev_1',
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    const taskId = created.value.task.id
+
+    // 老板直接置「进行中」（跳过 todo）：允许
+    harness.notices.length = 0
+    const started = await harness.tasks.setState(PROJECT, taskId, 'in_progress', { actor: 'user' })
+    expect(started.ok && started.value.state).toBe('in_progress')
+    // 激活即唤醒：向受派人投递系统消息（否则"状态改了但角色不知道要开工"）
+    expect(harness.notices.map((item) => item.instanceId)).toEqual(['dev_1'])
+    expect(harness.notices[0]?.text).toContain('置为进行中')
+
+    // 已完成 → 进行中（重新开工）也允许
+    await harness.tasks.setState(PROJECT, taskId, 'done', { actor: 'user' })
+    harness.notices.length = 0
+    const reopened = await harness.tasks.setState(PROJECT, taskId, 'in_progress', { actor: 'user' })
+    expect(reopened.ok && reopened.value.state).toBe('in_progress')
+
+    // Agent 侧口径不变：不允许绕过 todo 直接开工
+    await harness.tasks.setState(PROJECT, taskId, 'done', { actor: 'user' })
+    const byAgent = await harness.tasks.setState(PROJECT, taskId, 'in_progress', { actor: 'dev_1' })
+    expect(byAgent.ok).toBe(false)
+    if (!byAgent.ok) expect(byAgent.error.code).toBe('ERR_CONFLICT')
+  })
+
+  it('S55/D59：单工槽位不放宽，但报错带出占位任务（面板据此提示"先收口再开工"）', async () => {
+    const harness = await createHarness()
+    const first = await harness.tasks.create({
+      projectId: PROJECT,
+      title: '正在做的活',
+      desc: '',
+      creator: 'user',
+      assignee: 'dev_1',
+      sessionId: 'u_dev_1',
+    })
+    const second = await harness.tasks.create({
+      projectId: PROJECT,
+      title: '想插队的活',
+      desc: '',
+      creator: 'user',
+      assignee: 'dev_1',
+      sessionId: 'u_dev_1',
+    })
+    expect(first.ok && second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+    await harness.tasks.setState(PROJECT, first.value.task.id, 'in_progress', { actor: 'user' })
+
+    const busy = await harness.tasks.setState(PROJECT, second.value.task.id, 'in_progress', { actor: 'user' })
+    expect(busy.ok).toBe(false)
+    if (!busy.ok) {
+      expect(busy.error.code).toBe('ERR_CONFLICT')
+      expect(busy.error.detail?.['holding']).toBe(first.value.task.id)
+      expect(busy.error.detail?.['holdingTitle']).toBe('正在做的活')
+      expect(busy.error.message).toContain('先把它标为已完成或已终止')
+    }
+
+    // 面板的两步调用：先把占位的收口，再开工 → 都能成功
+    expect((await harness.tasks.setState(PROJECT, first.value.task.id, 'done', { actor: 'user' })).ok).toBe(true)
+    const then = await harness.tasks.setState(PROJECT, second.value.task.id, 'in_progress', { actor: 'user' })
+    expect(then.ok && then.value.state).toBe('in_progress')
+  })
+
   it('规则 17：终止前先结算未结算改动为可回退的 code artifact', async () => {
     const harness = await createHarness()
     const created = await harness.tasks.create({

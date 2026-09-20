@@ -185,10 +185,14 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       const current = await store.get(projectId, taskId)
       if (!current.ok) return current
       const task = current.value
+      const actor = runOptions?.actor ?? 'user'
       if (task.state === state) {
         return err('ERR_CONFLICT', `任务已是 ${state} 状态`, { taskId, state })
       }
-      if (state === 'in_progress' && task.state !== 'todo') {
+      // S55/D59：老板（actor='user'，「任务与产出物」面板）可以把任务改成任何状态，含"重新开工"
+      // （done/terminated/in_progress → in_progress）——否则界面上点「进行中」只会得到一句报错。
+      // Agent 侧口径不变：仍要 `todo` → `claim` 才能开工（不绕过"先排队再开工"）。
+      if (state === 'in_progress' && task.state !== 'todo' && actor !== 'user') {
         return err('ERR_CONFLICT', `只有 todo 任务可以置为进行中（当前 ${task.state}）`, { taskId, state: task.state })
       }
       // S53/D57：任务不再有「受阻」概念——受阻往往只是"角色没执行/没做完"，不该停在中间态。
@@ -201,9 +205,12 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       if (state === 'in_progress') {
         const busy = await inProgressOf(projectId, task.assignee)
         if (busy !== null && busy.id !== taskId) {
-          return err('ERR_CONFLICT', `该角色已有进行中的任务（${busy.id}：${busy.title}），不能同时开工两个`, {
+          // 单工槽位不放宽（`activeFor`/任务上下文/会话顶部标签都以"至多一个 in_progress"为前提），
+          // 但把出路说清楚：面板据此提示"先把 X 收口再开工"（S55/D59）
+          return err('ERR_CONFLICT', `该角色已有进行中的任务（${busy.id}：${busy.title}）；先把它标为已完成或已终止，再开工这条`, {
             taskId,
             holding: busy.id,
+            holdingTitle: busy.title,
           })
         }
       }
@@ -236,6 +243,21 @@ export function createTaskService(options: TaskServiceOptions): TaskService {
       const saved = await store.update(projectId, updated)
       if (!saved.ok) return saved
       publish(projectId, saved.value)
+
+      // 激活即唤醒（D18-③/口径 18）：别人（老板经「任务与产出物」、或平台的运行时干预）把任务置为
+      // in_progress 时，向受派人投递一条系统消息并唤醒一轮——否则"状态改了但角色不知道要开工"（S55/D59）。
+      // 受派人自己置位（claim 后由本身回合处理）不再重复通知自己。
+      if (state === 'in_progress' && actor !== saved.value.assignee) {
+        await options
+          .notify({
+            projectId,
+            instanceId: saved.value.assignee,
+            text: `[任务] 用户把任务 ${saved.value.id} 置为进行中：《${saved.value.title}》。请开始执行：先用 task_view 看清要求，完成后用 task_update 汇报 done。`,
+          })
+          .catch((cause: unknown) => {
+            logger.warn('任务激活通知失败', { projectId, taskId, message: String(cause) })
+          })
+      }
 
       // 完成/终止 → 通知委派人**并要它继续**（S36/D39；用户创建的任务不必通知自己）
       // S53/D57：blocked 已在上方被拒，这里只剩 done/terminated 两种终结汇报

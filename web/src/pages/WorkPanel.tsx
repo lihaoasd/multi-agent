@@ -20,6 +20,7 @@ import {
   type ArtifactVersionRow,
 } from '../lib/artifact-versions'
 import { localClock } from '../lib/time-format'
+import { holdingTaskOf, taskStateOptions } from '../lib/task-state'
 
 const TASK_STATE_LABEL: Record<TaskState, string> = {
   todo: '待领取',
@@ -29,9 +30,6 @@ const TASK_STATE_LABEL: Record<TaskState, string> = {
   blocked: '受阻（旧数据）',
   terminated: '已终止',
 }
-
-/** 用户可手动改成的状态：不再包含 blocked（服务端也会拒绝） */
-const SELECTABLE_TASK_STATES: readonly TaskState[] = ['todo', 'in_progress', 'done', 'terminated']
 
 const ARTIFACT_TYPE_LABEL: Record<string, string> = {
   doc: '文档',
@@ -104,6 +102,62 @@ export function WorkPanel({
     } finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * 改任务状态（S55/D59）。用户口径："任务与产出物里任务状态是不能修改的"——实际拦路的两处是
+   * ① 服务端只允许 `todo → in_progress`（老板把一条已完成/已终止/别的状态改成「进行中」只会得到报错）
+   * ② 该角色已有进行中的任务时报 `ERR_CONFLICT`，界面没有任何出路。
+   * 这里：老板可以直接改任意状态（服务端对 `actor='user'` 放开），槽位冲突时给"先收口再开工"的确认。
+   */
+  const applyTaskState = async (record: TaskRecord, next: TaskState): Promise<void> => {
+    setBusy(true)
+    try {
+      const updated = await workApi.setTaskState(projectId, record.id, next)
+      message.success(`「${updated.title}」→ ${TASK_STATE_LABEL[next]}`)
+      await load()
+    } catch (cause) {
+      const holding = cause instanceof ApiError && cause.code === 'ERR_CONFLICT' ? holdingTaskOf(cause.detail) : null
+      if (holding === null) {
+        message.error(describeError(cause))
+        return
+      }
+      // 单工槽位仍不放宽：把"先收口再开工"做成一次确认（两步调用都走同一个接口）
+      Modal.confirm({
+        title: '该角色手上有进行中的任务',
+        content: `「${holding.title}」（${holding.id}）正在进行中。先把「${holding.title}」标为已完成，再开始「${record.title}」吗？`,
+        okText: '收口它并开工',
+        cancelText: '取消',
+        onOk: async () => {
+          try {
+            await workApi.setTaskState(projectId, holding.id, 'done')
+            await workApi.setTaskState(projectId, record.id, next)
+            message.success(`已把「${holding.title}」标为已完成，「${record.title}」→ ${TASK_STATE_LABEL[next]}`)
+            await load()
+          } catch (inner: unknown) {
+            message.error(describeError(inner))
+          }
+        },
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const changeTaskState = (record: TaskRecord, next: TaskState): void => {
+    // 终止是破坏性动作（先结算未结算改动为产出物快照）→ 按 D17-① 先确认
+    if (next === 'terminated') {
+      Modal.confirm({
+        title: `终止任务「${record.title}」？`,
+        content: '存在未结算改动时会先结算为一条 code 产出物快照（可回退）；已终止的任务可以再改回待领取重新排队。',
+        okText: '终止',
+        okButtonProps: { danger: true },
+        cancelText: '取消',
+        onOk: () => applyTaskState(record, next),
+      })
+      return
+    }
+    void applyTaskState(record, next)
   }
 
   /** 打开版本历史（S54/D58）：产出物列表每行只有最新版本，历史要单独拉 `.../versions` */
@@ -218,11 +272,8 @@ export function WorkPanel({
                     size="small"
                     value={record.state}
                     style={{ width: 110 }}
-                    onChange={(value) => void run(() => workApi.setTaskState(projectId, record.id, value as TaskState))}
-                    options={SELECTABLE_TASK_STATES.map((state) => ({
-                      value: state,
-                      label: TASK_STATE_LABEL[state],
-                    }))}
+                    onChange={(value) => changeTaskState(record, value as TaskState)}
+                    options={[...taskStateOptions(record.state, TASK_STATE_LABEL)]}
                   />
                 </Space>
               ),

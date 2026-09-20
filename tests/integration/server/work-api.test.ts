@@ -244,6 +244,38 @@ describe('API · 产出物 / 任务 / 询问（规则 4/10/12/15/21/24/25）', (
       .json<Array<{ instanceId: string; currentTask: unknown }>>()
       .find((item) => item.instanceId === 'dev_1')
     expect(devAfter?.currentTask).toBeNull()
+
+    // S55/D59：老板（缺省 actor=user）可以把 done 的任务直接改回「进行中」重新开工
+    const reopened = await inject({
+      method: 'PATCH',
+      url: `/api/projects/${work.projectId}/tasks/${task.task.id}`,
+      payload: { state: 'in_progress' },
+    })
+    expect(reopened.statusCode).toBe(200)
+    expect(reopened.json<TaskRecord>().state).toBe('in_progress')
+
+    // 激活即唤醒：受派人的 user 会话里出现"置为进行中"的系统消息（否则状态改了角色不知道要开工）
+    const logAfterReopen = await inject({ method: 'GET', url: `/api/projects/${work.projectId}/sessions/u_dev_1/log` })
+    const activationTexts = logAfterReopen
+      .json<Array<{ kind: string; payload: Record<string, unknown> }>>()
+      .filter((event) => event.kind === 'message' && event.payload['sender'] === 'system')
+      .map((event) => String(event.payload['text']))
+    expect(activationTexts.some((text) => text.includes('置为进行中'))).toBe(true)
+
+    // Agent 侧口径不变：仍不允许绕过 todo 直接开工（同一动作 actor=dev_1 → 409）
+    const closedAgain = await inject({
+      method: 'PATCH',
+      url: `/api/projects/${work.projectId}/tasks/${task.task.id}`,
+      payload: { state: 'done', actor: 'dev_1' },
+    })
+    expect(closedAgain.statusCode).toBe(200)
+    const agentBypass = await inject({
+      method: 'PATCH',
+      url: `/api/projects/${work.projectId}/tasks/${task.task.id}`,
+      payload: { state: 'in_progress', actor: 'dev_1' },
+    })
+    expect(agentBypass.statusCode).toBe(409)
+    expect(agentBypass.json<{ code: string }>().code).toBe('ERR_CONFLICT')
   })
 
   it('规则 12：任务级代码聚合——进行中任务的编辑按 taskId 暂存，任务 done 后结算为 code artifact', async () => {
