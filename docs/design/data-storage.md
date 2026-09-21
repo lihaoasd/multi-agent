@@ -219,8 +219,9 @@ agent_haness/                    # 平台仓库
 // 状态流转（2026-09-12 任务栏）：todo=已发布·待领取 → 受派人 task_claim 领取 → in_progress
 //   → 受派人 task_update 汇报 done/terminated（S53/D57 取消 blocked：做不下去就说明缺口、请求改派或 terminated，不允许停在中间态）；用户与委派人（creator）可干预。
 // 通知：create/领取 = 通知受派人「待领取」（系统消息 + 唤醒一轮）；done/terminated = 通知委派人安排后续（历史 blocked 记录仍按原文案播报）。
-// S55/D59：置为 in_progress 且操作者不是受派人（老板在面板上改）时，也通知受派人「已置为进行中，请开始执行」+ 唤醒一轮（激活即唤醒 D18-③）。
-// S55/D59：状态迁移的权限分两侧——Agent 只能 todo→claim→in_progress（防绕过排队）；`actor='user'`（面板/API 缺省）可把任意状态改成任意状态（含 done/terminated→in_progress 重新开工）。
+// S55/D59：置为 in_progress 且操作者不是受派人时，也通知受派人「已置为进行中，请开始执行」+ 唤醒一轮（激活即唤醒 D18-③）。
+// 状态迁移的权限分两侧：Agent 只能 todo→claim→in_progress（防绕过排队）；`actor='user'`（API 缺省）可把任意状态改成任意状态（含 done/terminated→in_progress 重新开工）。
+// S57/D61：「任务与产出物」面板不再提供用户派单与改状态入口——上面的能力现只由 API/脚本使用（任务由角色驱动）。
 // S53/D57：task_update/task_claim 的结果会带出**名下剩余任务**并附「不要等唤醒，立即 task_claim 续领」的指引。
 // 状态变化广播 WS task.updated，任务栏面板实时刷新。
 // 撞车去重（2026-09-12）：同 assignee + 归一化标题（去空白/标点+小写）+ 状态∈{todo,in_progress} 视为同一件事，

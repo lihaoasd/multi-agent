@@ -1,6 +1,6 @@
-import { Alert, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Space, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { ApiError, describeError } from '../api/client'
+import { describeError } from '../api/client'
 import {
   workApi,
   type ArtifactRecord,
@@ -9,8 +9,6 @@ import {
   type TaskRecord,
   type TaskState,
 } from '../api/work'
-import { projectApi, type InstanceView } from '../api/projects'
-import { holdingTaskOf, taskStateOptions } from '../lib/task-state'
 
 const TASK_STATE_LABEL: Record<TaskState, string> = {
   todo: '待领取',
@@ -30,10 +28,11 @@ const ARTIFACT_TYPE_LABEL: Record<string, string> = {
 }
 
 /**
- * 任务 / 询问 / 产出物面板（S6）：用户（老板）视角。
- * - 任务：发布、改状态（终止前平台会先结算未结算改动）、查看归属产出物；
- * - 询问：Agent 待答项就地答复（答复后该 Agent 继续其回合）；
- * - 产出物：版本列表 + 回退（回退即产生 state=reverted 的新版本）+ 署名归属表。
+ * 任务 / 询问 / 产出物面板（S6）：用户（老板）视角，**只读**。
+ * - 任务（**S57/D61**）：只展示（派发与状态流转由角色驱动：PM 按职能派单、受派人 task_claim/task_update 汇报）——
+ *   不再提供用户派单与改状态入口；要人工干预可走 API/脚本（`POST /tasks`、`PATCH /tasks/:tid`）。
+ * - 产出物（**S56/D60**）：只展示（登记免审批；回退入口已按用户要求删除，接口/Agent 工具仍在）。
+ * - 询问：待答项只做提示，答复入口在会话窗口（输入框上方，S32）。
  */
 export function WorkPanel({
   projectId,
@@ -47,26 +46,20 @@ export function WorkPanel({
   const [questions, setQuestions] = useState<QuestionRecord[]>([])
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([])
   const [owners, setOwners] = useState<FileOwnerRecord[]>([])
-  const [members, setMembers] = useState<InstanceView[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [assignOpen, setAssignOpen] = useState(false)
-  const [assignForm] = Form.useForm<{ assignee: string; title: string; desc?: string }>()
 
   const load = useCallback(async () => {
     try {
-      const [taskList, questionList, artifactList, ownerList, team] = await Promise.all([
+      const [taskList, questionList, artifactList, ownerList] = await Promise.all([
         workApi.tasks(projectId),
         workApi.questions(projectId),
         workApi.artifacts(projectId, { limit: 50 }),
         workApi.fileOwners(projectId),
-        projectApi.listTeam(projectId),
       ])
       setTasks(taskList)
       setQuestions(questionList)
       setArtifacts(artifactList)
       setOwners(ownerList)
-      setMembers(team)
       setError(null)
     } catch (cause) {
       setError(describeError(cause))
@@ -77,74 +70,6 @@ export function WorkPanel({
     void load()
   }, [load])
 
-  const run = async (action: () => Promise<unknown>): Promise<void> => {
-    setBusy(true)
-    try {
-      await action()
-      await load()
-    } catch (cause) {
-      setError(describeError(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /**
-   * 改任务状态（S55/D59）。用户口径："任务与产出物里任务状态是不能修改的"——实际拦路的两处是
-   * ① 服务端只允许 `todo → in_progress`（老板把一条已完成/已终止/别的状态改成「进行中」只会得到报错）
-   * ② 该角色已有进行中的任务时报 `ERR_CONFLICT`，界面没有任何出路。
-   * 这里：老板可以直接改任意状态（服务端对 `actor='user'` 放开），槽位冲突时给"先收口再开工"的确认。
-   */
-  const applyTaskState = async (record: TaskRecord, next: TaskState): Promise<void> => {
-    setBusy(true)
-    try {
-      const updated = await workApi.setTaskState(projectId, record.id, next)
-      message.success(`「${updated.title}」→ ${TASK_STATE_LABEL[next]}`)
-      await load()
-    } catch (cause) {
-      const holding = cause instanceof ApiError && cause.code === 'ERR_CONFLICT' ? holdingTaskOf(cause.detail) : null
-      if (holding === null) {
-        message.error(describeError(cause))
-        return
-      }
-      // 单工槽位仍不放宽：把"先收口再开工"做成一次确认（两步调用都走同一个接口）
-      Modal.confirm({
-        title: '该角色手上有进行中的任务',
-        content: `「${holding.title}」（${holding.id}）正在进行中。先把「${holding.title}」标为已完成，再开始「${record.title}」吗？`,
-        okText: '收口它并开工',
-        cancelText: '取消',
-        onOk: async () => {
-          try {
-            await workApi.setTaskState(projectId, holding.id, 'done')
-            await workApi.setTaskState(projectId, record.id, next)
-            message.success(`已把「${holding.title}」标为已完成，「${record.title}」→ ${TASK_STATE_LABEL[next]}`)
-            await load()
-          } catch (inner: unknown) {
-            message.error(describeError(inner))
-          }
-        },
-      })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const changeTaskState = (record: TaskRecord, next: TaskState): void => {
-    // 终止是破坏性动作（先结算未结算改动为产出物快照）→ 按 D17-① 先确认
-    if (next === 'terminated') {
-      Modal.confirm({
-        title: `终止任务「${record.title}」？`,
-        content: '存在未结算改动时会先结算为一条 code 产出物快照（可回退）；已终止的任务可以再改回待领取重新排队。',
-        okText: '终止',
-        okButtonProps: { danger: true },
-        cancelText: '取消',
-        onOk: () => applyTaskState(record, next),
-      })
-      return
-    }
-    void applyTaskState(record, next)
-  }
-
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       {error !== null && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
@@ -153,20 +78,20 @@ export function WorkPanel({
         size="small"
         title={`任务（${tasks.length}）`}
         extra={
-          <Space>
-            <Button size="small" onClick={() => void load()} loading={busy}>
-              刷新
-            </Button>
-            <Button size="small" type="primary" onClick={() => setAssignOpen(true)}>
-              派单
-            </Button>
-          </Space>
+          <Button size="small" onClick={() => void load()}>
+            刷新
+          </Button>
         }
       >
+        {/* S57/D61：用户只读——不派单、不改状态；派发与流转由角色驱动（PM 按职能派单、受派人领取/汇报） */}
+        <Typography.Text type="secondary">
+          任务由角色按职能派发与推进（派单走 PM、领取/汇报走受派人）；本面板只读，人工干预请用 API。
+        </Typography.Text>
         <Table<TaskRecord>
           rowKey="id"
           size="small"
           pagination={false}
+          style={{ marginTop: 8 }}
           dataSource={tasks}
           columns={[
             { title: '任务', dataIndex: 'title' },
@@ -197,21 +122,6 @@ export function WorkPanel({
                 ),
             },
             { title: '备注', dataIndex: 'note', render: (note: string | null) => note ?? '—' },
-            {
-              title: '操作',
-              width: 220,
-              render: (_v, record) => (
-                <Space size={4}>
-                  <Select
-                    size="small"
-                    value={record.state}
-                    style={{ width: 110 }}
-                    onChange={(value) => changeTaskState(record, value as TaskState)}
-                    options={[...taskStateOptions(record.state, TASK_STATE_LABEL)]}
-                  />
-                </Space>
-              ),
-            },
           ]}
         />
       </Card>
@@ -290,42 +200,6 @@ export function WorkPanel({
           ]}
         />
       </Card>
-
-      <Modal
-        open={assignOpen}
-        title="派单给某个角色"
-        onCancel={() => setAssignOpen(false)}
-        onOk={() => {
-          void assignForm.validateFields().then(async (values) => {
-            await run(() =>
-              workApi.createTask(projectId, {
-                assignee: values.assignee,
-                title: values.title,
-                ...(values.desc === undefined ? {} : { desc: values.desc }),
-              }),
-            )
-            setAssignOpen(false)
-            assignForm.resetFields()
-          })
-        }}
-        confirmLoading={busy}
-      >
-        <Form form={assignForm} layout="vertical">
-          <Form.Item name="assignee" label="受派人" rules={[{ required: true }]}>
-            <Select
-              options={members
-                .filter((member) => member.enabled)
-                .map((member) => ({ value: member.instanceId, label: `${member.displayName}（${member.instanceId}）` }))}
-            />
-          </Form.Item>
-          <Form.Item name="title" label="任务标题" rules={[{ required: true }]}>
-            <Input placeholder="如：实现登录模块" />
-          </Form.Item>
-          <Form.Item name="desc" label="任务说明">
-            <Input.TextArea rows={3} placeholder="验收标准、产出要求…" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </Space>
   )
 }
