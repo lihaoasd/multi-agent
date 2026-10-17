@@ -1,82 +1,257 @@
-# Agent Haness · 本地多 Agent 软件开发协作平台
+# Agent Haness
 
-> **当前状态：M0~M8 已交付（2026-09-08 编码完成轮次 1）；默认真实模型 deepseek-v4-flash；think 展示、甲模式任务分派、Agent 工具循环已落地（2026-09-09）。**
-> 代码可运行、**49 文件 / 315 用例**测试全绿（2026-09-14 纯重构后实测）；详见 [docs/plan/development.md](docs/plan/development.md) 与 [docs/changes/](docs/changes/)。
+本地运行的多 Agent 软件开发协作平台。用户以“老板/决策者”的身份创建项目、组建 AI 研发团队，并通过一对一会话、多人会议、任务派发、审批和产出物归属机制，把软件需求推进为可运行的代码与文档。
 
-一个**本地运行**的软件开发协作平台：用户以"老板"身份，与一组可自由编排的 AI 研发角色（Agent）组成虚拟团队，通过**一对一会话**与**多方会议**协作，把软件项目从想法推进到可运行、可部署的产出物。
+平台不依赖云服务、数据库或账号体系：服务端、前端工作台、会话记录、角色记忆、任务和审计日志都在本机运行与保存。首个内置场景是软件开发，但核心抽象是“角色模板 + 团队编排 + 工具权限 + 协作流程”，后续也可以扩展到其他协作场景。
 
-平台定位是可扩展的"角色 + 团队 + 场景"引擎，首个内置场景为**软件开发**；角色模板、agent loop、模型均可配置与扩展，后续可套用到任意协作场景。
+## 核心特性
 
-## 快速开始
-
-```bash
-npm install
-npm run dev        # 服务 :3000（含前端工作台 web/）；浏览器开 http://127.0.0.1:3000
-npm run test       # Vitest 全量（116 用例）
-npm run build && npm start   # 生产：tsc 编译后单端口运行
-```
-
-- 首次使用：把 `.env.example` 复制为 `.env`（填 `DEEPSEEK_API_KEY` 即用真实模型）→ 点「新建项目」→ 填项目名与**工作目录（绝对路径，可用「选择文件夹…」）** → 勾选角色 → 创建后即可与角色对话。
-- **配置唯一来源 = `.env`（2026-09-13 起，`config.yaml` 已删除）**：键名用 `__` 分层、数组用 JSON，例如 `SERVER__PORT=3000`、`MEETING__ENABLED=false`、`MODELS__PROVIDERS=[{...}]`；全部可用键与说明见入库的 `.env.example`，改完**重启服务**生效。`.env` 已在 `.gitignore` 中，不入库。
-- **默认模型 = deepseek-v4-flash（真实模型）**：`MODELS__DEFAULT=deepseek-v4-flash`，Key 由 provider 的 `apiKeyEnv`（`DEEPSEEK_API_KEY`）提供；新建角色实例默认走平台默认（模板里的 mock 占位会自动落到它）。
-- 无 Key 想离线演示：把 `.env` 的 `MODELS__DEFAULT` 临时改成 `mock` 再重启（内置 Mock 保留用于测试/演示）。
-- 换真实模型：改 `.env` 的 `MODELS__PROVIDERS`（openai-compatible/Ollama），把 `MODELS__DEFAULT` 或角色实例的 `model` 指到 provider id。
-- 默认绑定 127.0.0.1；被占用改 `.env` 的 `SERVER__HOST` / `SERVER__PORT`。
-
-## 已实现能力（对应 v0.2 需求基线）
-
-| 模块                     | 落地内容                                                                                                                                                                                                                                                                                                               |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 角色库与组队             | 8 内置模板(YAML) + 自定义模板 CRUD(内置只读) + 项目内实例化(模板快照/停用保留数据)                                                                                                                                                                                                                                     |
-| 会话与聊天               | user 会话骨架；消息/回合事件(seq/turn/turn_start/end)落盘；Mock/OpenAI/Ollama 网关；**WS 流式 chunk+commit、先盘后推**；重启恢复                                                                                                                                                                                       |
-| think 展示(2026-09-09)   | 模型 reasoning 增量经 `thought.chunk` 实时上屏（🧠 思考块**默认折叠**、点击展开，独立于回复气泡），流结束以 `thought` 事件落盘、重进可见；`plan/tool_call` 以"计划/将执行"行展示，告知用户 Agent 接下来要做什么                                                                                                        |
-| 回复渲染(2026-09-09)     | 助手回复按 Markdown 渲染（自研无依赖渲染器 `web/markdown.js`：标题/列表/代码块/行内代码/粗斜体/链接/引用/表格/hr）；先转义后渲染、链接仅放行 http(s)/mailto；用户消息与思考块保持纯文本                                                                                                                                |
-| Agent 运行时             | 单工占用 occupancy(runtime.state 落盘)；loop 按实例策略提示(direct/reflective/plan-execute)；**工具循环**：模型 function-calling → 角色白名单工具执行 → 结果回注，至多 6 步；**每个角色都注入团队名册**（知道队友实例 id）                                                                                             |
-| 团队状态(2026-09-09)     | `GET /projects/:pid/agents` 汇总角色实时状态：空闲/工作中/会议中/等待你处理/已停用 + 当前任务；左栏团队行显示状态徽标（WS `agent.state` + 5s 轮询刷新）。**状态推导单点（2026-09-12）**：停用 > 会议中 > 等待你处理(有待答提问/待批审批) > 工作中 > 空闲，HTTP 查询与 WS `agent.state` 共用同一纯函数；角色在等待你处理期间被唤醒的回合**不开工**（不占占用、不跑模型），因此不会再出现"左栏工作中、会话里却摆着待答卡片" |
-| 工具与审批               | PolicyEngine 命令判定 + 虚拟路径 L0 边界 + 工具执行器(fs/ws/cmd_run/workdir_edit/记忆检索/ask_user/task_assign/task_update/meeting_start/meeting_close) + 高危命令审批桥(approvals.jsonl，批准续跑/拒绝不执行)；**工具调用全程落审计事件，一次调用只占一行（进行中→✓/✗），与正文按时间线交错展示（多步回合分段落盘）** |
-| 角色提问(2026-09-09)     | `ask_user` 工具：Agent 向用户**确认/单选/多选/文本**提问（`questions.jsonl`）；**支持问题列表**（2026-09-12：一次调用传 `questions` 数组 1~6 题 → 一张卡片里**一题一屏 + 左右滑块**（含进度点与"已答 N/M"）、**一次提交全部答案**，不要并发多次调用）；**纯 WS 驱动**（前端不再轮询 `/questions`，只在开会话/重连时拉一次兜底）：`question.asked/answered` 在**回合结束、占用释放之后**推送，卡片出现的同时团队状态变「等待你处理」；`ask_user` 成功即**挂起本回合**（角色等待用户决策，不再继续执行任务）；多轮提问自动排队（答完一条下一条立刻弹出，全部答完才唤醒角色），同一批问题不重复问                                                                             |
-| 代码受控编辑(2026-09-09) | `workdir_edit` 单文件声明式写/替换 + diff 轨迹；dispatcher 注入**当前任务**为归属锚点（改动按 taskId 聚合），任务 done/terminated 时结算为 code artifact 快照（D14-⑧/D17-①）                                                                                                                                           |
-| 产出物署名与归属         | **所有角色的产出直接写进项目工作目录**（2026-09-12 取消私有区）：唯一写通道 `workdir_edit`（productive 角色全员开放，pm 除外）；每个文件在 `file-owners.jsonl` 登记 **owner + 署名（角色显示名）+ 时间 + 次数**；**他人产出物不可改**（`ERR_FORBIDDEN`，只能只读或另建新文件，无转交）；无主文件首写认领（用户既有仓库文件因此可接手）；`artifact_submit` 仅做"版本快照 + manifest + 署名"登记。`GET /file-owners` 可查，系统提示注入 `[我的产出物]/[他人产出物]`                     |
-| 记忆与检索               | L3 记忆(全局/角色, active/superseded)；滚动摘要(summary 事件+summaryRefs)；中文 2-gram 倒排索引(可再生)+跨会话/记忆搜索                                                                                                                                                                                                |
-| 会议                     | queued/proposed/open/blocked_waiting_user/closed 状态机；成员接受转 open；**用户决策点阻塞→拍板继续**；结束纪要回写参与者与全局记忆；**发起需填主题与描述**，会议窗口顶部显示主题/描述/主持人/参会人及各自回应状态；**任意角色都可用 `meeting_start` 发起**（平台代受邀 AI 成员接受，主持人可 `meeting_close` 收尾）   |
-| 工作台                   | 无构建静态 SPA(web/)：项目向导(角色可全选)、**左栏「团队=一对一会话 / 会议=全部会议」分区**、发起会议弹窗(主题+描述+参会人)、角色停用/启用、**角色详情弹窗(2026-09-13：只读查看该角色的提示词 / agent loop / 工具（user 会话实际可用 + 白名单里用不上的）/ 模型 / 实时状态)**、聊天(WS 流式 + Markdown 回复 + 折叠思考块)、审批、**任务栏面板(固定三列：待领取 / 进行中 / 已结束，只读；右栏只列进行中与待领取)**、记忆/纪要；**项目记录页(2026-09-12)**：项目级卡片流——任务完成/终止（带完成总结）与会议结束（带主题/主持/参会，可看纪要）按时间倒序，只读 + 一键跳源会话；项目导出 zip                                                                                      |
-| 存储                     | 纯文件系统(JSON/JSONL/YAML)；无数据库；数据目录不入库，拷贝即迁移                                                                                                                                                                                                                                                      |
-
-## 已知边界 / 待办（诚实清单）
-
-- **前端选型**：架构文档原定 React+Vite+AntD；本开发环境沙箱禁止 vite/esbuild 子进程，无法构建验证，前端暂为**无构建原生 ESM 静态页**（接口契约不变，可按 frontend/style.md 在非受限环境迁移 React 版）。
-- **代码受控编辑通道(code)**：`workdir_edit` + 任务级聚合(D14-⑧) 已落地（归属注入、结算为 code artifact 快照）；模型可自主调用；回退接口保留（`POST /artifacts/:id/rollback`，按版本快照恢复），**界面暂无回退入口**（2026-09-09 起右栏不再有产出物栏）。
-- **任务栏（2026-09-12 改为发布-领取制）**：**甲模式已开启**（`.env` 的 `TASK__ASSIGN_BY_AGENT=true`）——产品/项目经理（product/pm）在其 user 会话中用 **`task_assign` 工具**把任务**发布到任务栏**（也兼容回复里的 JSON 数组，解析失败会明确回执、绝不静默）：任务落 `todo`＝**已发布·待领取**，平台随即**通知受派人**（系统消息 + 唤醒一轮）。受派人调用 **`task_claim`** 领取（缺省领最早一条；手上有进行中任务或非本人任务会被拒）→ 置 `in_progress` 开工；每角色至多 1 个进行中任务，其它保持待领取。**任务状态由角色自己维护**（`task_update` 开工/完成/受阻/终止；用户不再需要点"完成/终止"）。**完成/受阻/终止 → 平台通知委派人**（系统消息 + 唤醒，**带上受派人总结**）以便安排后续（验收/派新任务/发起会议）；槽位释放只**通知**下一位待领取任务的受派人，不再自动开工。所有状态变化经 **WS `task.updated`** 实时刷新右栏「任务栏」与任务栏面板（按状态分组：待领取/进行中/受阻/已完成/已终止，只读）。**撞车防护（2026-09-12）**：pm 与 product 同时派同一件事时，平台按「同受派人 + 归一化标题」自动去重（只留一条 + 回执点名重复对象，`force=true` 可强制重复发布）；pm/product 的系统提示注入 `[任务栏现状]`（能看到对方已发布的任务）；`tasks.jsonl` 的读改写加**单项目串行锁**，并发发布不再丢任务。
-- **会议**：任意角色都可用 `meeting_start` 发起（平台代受邀 AI 成员接受→`open`，全员状态"会议中"），并发起后**自动开链**：主持人开场 → 依次请每位成员在会议会话发言 → 主持人收尾（结论/待办/待拍板）→ **平台代发起人自动结束会议并生成纪要**；主持人可用 `meeting_talk` 追加点名，用户也可在会话顶部随时「结束会议/取消会议」。会议里的**平台注入提示显示为系统消息**（不冒充用户发言），且成员能看到彼此的发言。**与「等待你处理」的冲突（2026-09-12）**：受邀入会 = 该角色手头的**待答提问作废、待批审批作废**（卡片消失、待办条清空，清单留档 `meeting-shed.jsonl`），徽标随即变「会议中」；主持人**等受邀成员都入会**后再开场（未就绪记 `hold` 事件，不无限期卡住整场会议）；散会时把「**会议纪要 + 入会时被搁置的事项**」自动回注每个参会者的 user 会话并**唤醒一轮**，让角色带着会议结论继续推进任务（需要重新拍板时它会重新提问）。**会议并发与两态（2026-09-12）**：**同一时刻只允许一个会议进行**，第二个及以后发起的一律**排队等待**（`queued`），等当前会议结束/取消后自动提升并**自动开场**（讨论链与立即开始共用同一条）；角色在已有会议进行时发起 → 回执明确「已**发起并排队等待**，本轮到此结束、不要重试发起」；对用户**只有「进行中」和「已结束」两态**（内部 `queued/proposed/open/blocked_waiting_user` 都是"进行中"的子态，排队时左栏标注「进行中 · 等待中」），`GET /meetings` 下发 `displayState` + `waiting` 供前端与项目记录页统一呈现。
-- **角色停用**：左栏团队行的「停用/启用」已可用（停用前二次确认、停用后保持当前会话、被停用角色会话只读并禁用输入框）；停用角色不会被拉入新会议。
-- **项目经理（pm）定位**：只做协调——跟踪进度、组织会议、`task_assign` 派单、写全局记忆与决策；**不产出任何交付物**（工具白名单无 `artifact_submit`/`workdir_edit`/`cmd_run`，`artifactTypes` 为空），需要产出时派给对应角色。
-- **Agent 工具循环**：通用 function-calling 已落地（OpenAI 兼容/Ollama 的 `tools` + `tool_calls`；Mock 不产出工具调用）；已注册平台工具：`ask_user`、`task_assign`、`task_claim`、`task_update`、`artifact_submit`、`meeting_start`、`meeting_talk`、`meeting_close`（`meeting_advance`/`meeting_ask_user` 仍未注册）。推理型模型默认 `max_tokens=8192`（可在 `.env` 的 `MODELS__PROVIDERS` 里给 provider 加 `"maxTokens": 16384` 按上限调大）。**挂起语义（2026-09-12）**：`ask_user` 与**需要审批的命令**提交后都会**立即结束本回合**——角色进入「等待你处理」，不再继续执行；用户回答/批准后平台把结果回注会话并唤醒它继续（**阻塞式审批**：批准即执行并把 stdout/退出码回给角色，拒绝也会唤醒并告知"不要重复申请、不要绕过"）。提示词要求"需要拍板/批准的事**先问再做**"。**步数、重试与收尾（2026-09-12）**：单回合工具步数**不设上限（无限轮）**——模型不再调用工具即结束，安全阀是**无进展保护**（同一「工具+入参+结果」连续 3 次判定原地空转，停止并收尾）；**"只出思考不出正文/工具调用"（或 `finish_reason=length`）会重试一次**，注入"直接输出/调用工具、不要再长篇推理"；**模型空手停下或检测到空转会追加"收尾回合"**（只暴露 task_update/task_claim/artifact_submit/ask_user + 明确"进入收尾"指令）；回合末若"调过工具但没上报任务状态"或"本轮没有任何正文"，平台追加**系统提示**提醒（只提醒，不替角色改状态）。
-- **`workdir_edit` 数据安全（2026-09-12）**：编辑缺 `type` 时按字段推断（`oldText/newText`→replace、`text`→write）；`write` 必须显式给非空 `text`（缺失或空串一律拒绝）；回执的"±N 字符"按真实净变化。此前"缺 type + 无 text"会被当整文件写入而**清空文件**（已修复并加回归测试）。
-- **任务完成总结（2026-09-12）**：受派人 `task_update(state=done, note=一句话完成总结)` → 总结落库 `resultNote`；任务栏面板卡片显示**完成总结/受阻原因**，`task.updated` 前端 toast 直接展示「任务「X」已完成（dev_1）：<总结>」，委派人收到带总结的系统通知。未领取就上报会自动**补领取**再完成（`task_update` 默认任务：显式 taskId > 进行中 > 我的最旧待领取）。
-- **工作区与归属（2026-09-12 起）**：**项目工作目录是唯一产出地**，私有工作区 `ws://` 已取消（`ws_read`/`ws_write` 工具下线，目录保留仅为兼容）。角色用 `workdir_edit` 直接写项目目录；写入前按 `file-owners.jsonl` 校验归属——**无主可写（写完认领）、自己的可写、别人的拒改**（`ERR_FORBIDDEN`，提示另建新文件）；写入后记录**署名**（角色显示名）与任务归属。不提供转交/接管（跨角色协作 = 另建新文件或由用户自己改）。后端 `POST /artifacts/:id/rollback` 保留（按版本快照恢复），界面无回退入口。
-- **已知边界**：`cmd_run` 的命令副作用不受归属锁约束（无法静态判定命令会写哪些文件）；回退接口不做 owner 校验（无 UI 入口）。
-- **agent loop 策略是"提示级"（2026-09-14 如实标注）**：`direct` / `reflective` / `plan-execute` **目前没有执行编排差异**，三条策略共用同一个回合实现——差别只在系统提示第 3 段注入的一句"执行模式"文案，外加 `plan-execute` 会在回合开始落一条**硬编码单步** `plan` 事件（`steps:[{step:1,title:'执行任务并汇报'}]`，前端画一行"计划"，**没有任何消费者**）。`reflective` 没有 critique 调用；`params.maxIterations` 从未被读取；`plan-execute` 也不"逐步执行"。**角色间真正的能力差异来自 `tools:` 白名单**，不是策略。补齐属独立方案（改行为），详见 `docs/design/agent-runtime.md` §3 的现状标注与 `docs/changes/2026-09-14-refactor-p6.md`。
-- **重构成果（2026-09-14 纯重构）**：分层规则已可机器校验（`eslint.config.js` 六层依赖，存量违规 50 → 11 warning / 0 error，`server`/`domain`/`ports`/`infra`/`shared` 五层为 error）；存储抽象落地（`src/ports/storage.ts` + `src/infra/store/`，15 个 store 全迁移、application 层持久化 IO 归零）；领域逻辑归位 `src/domain/`（2 → 7 文件：agent/task/meeting/approval 状态机 + 路径边界）；超大文件 9 → 3（`app.ts` 816→77、`service-tools` 998→80、`question-service` 448→307、`loop-runner` 875→691）；剩余 3 个超标文件（`composition` 692 / `loop-runner` 691 / `meeting-service` 643）按用户指示停止优化。收尾另做了一轮**旧代码审计**：删除 18 处零消费者声明（死函数/死方法/死端口成员）并把 4 处重复实现接线为 domain 单一来源，同时清掉重构前的陈旧 `dist/`（见 `docs/changes/2026-09-14-refactor-dead-code-audit.md`）。过程与遗留见 `docs/changes/2026-09-14-refactor-p*.md` 与 `docs/plan/2026-09-14-refactor-architecture.md`。
-- **角色详情（2026-09-13）**：左栏角色行「详情」= **只读配置一览**（提示词 / agent loop 策略与参数 / 工具 / 模型 / 实时状态 + 当前任务），数据来自 `GET /projects/:pid/agents/:iid`；「有什么工具」按**运行期口径**给出（角色白名单 ∩ 会话类型 ∩ 注册表，另加平台交互工具），因此会如实暴露"白名单里配了却没注册"的工具（当前：`fs_search`、`artifact_rollback`、`meeting_advance`、`meeting_ask_user`）。**只读**：不含编辑入口。**完整系统提示词预览（2026-09-13）**：弹窗里可一键查看"模型实际收到什么"——`GET /projects/:pid/agents/:iid/system-prompt` 按 user 会话实时拼装并逐段标注来源（**第 1 段=角色配置的提示词**，其余 10 段为平台注入：场景/执行模式/可用工具/产出物归属/当前任务/待领取任务/任务栏现状/团队名册/分派说明）；与运行期同源（`application/agent-loop/system-prompt.ts` 单点），不落盘；会议会话的工具段是只读子集，界面以文字说明。
-- **真实模型验收**：已在用户本机 DEEPSEEK_API_KEY 环境下对默认 deepseek-v4-flash 完成冒烟——正常回复、think/reasoning 展示、PM 派活→开发自动开工、**开发真实多步工具调用**（fs_list_dir → fs_read_file → workdir_edit 写入文件 → 回读复核）。
-- 其余按各 `docs/changes/2026-09-08-mN-*.md` 修改记录的"遗留"节为准。
-
-## 文档
-
-- 文档索引与术语表：[docs/README.md](docs/README.md)
-- 需求（PRD·决策表·验收脚本）：[docs/requirements/prd.md](docs/requirements/prd.md)
-- 分阶段开发方案与验收清单：[docs/plan/development.md](docs/plan/development.md)
-- 设计：架构 / 数据存储 / Agent 运行时 / 会话 / 会议 / 记忆 / 工作区产出物 / 工具 / 沙箱（见索引）
-- 前端风格 / 接口草案 / 测试计划 / 部署手册 / 修改记录（见索引）
-
-## 路线图
-
-- 文档评审：已完成（v0.2 基线 + D1~D18 决策 + 四轮评审）。
-- 编码：M0~M7 交付（工程骨架 → 组队 → 聊天 → 运行时/工具 → 产出物 → 记忆/检索 → 会议 → 工作台）；M8 质量收尾：测试补全、真实模型与 code 通道待非受限环境验证。
-- 场景化（远期）：把"角色库+团队编排+产出物类型+流程"打包为任意场景模板。
+- **本地项目工作台**：一个项目绑定一个本地工作目录，可从空目录开始，也可直接接入已有代码仓库。
+- **可编排 AI 团队**：内置产品、项目经理、架构、交互、UI、开发、测试、运维 8 类角色模板，支持项目内实例化、停用和自定义角色。
+- **一对一 Agent 会话**：每个角色拥有独立会话、状态、任务上下文和记忆，支持 WebSocket 流式输出、Markdown 渲染、推理过程折叠展示与断线恢复。
+- **Agent 工具循环**：支持 OpenAI 兼容接口和 Ollama 的 function-calling；模型可按角色白名单调用文件读取、受控编辑、命令执行、提问、派单、会议、产出物登记等工具。
+- **发布-领取式任务栏**：产品或项目经理可发布任务，成员领取、推进、完成或标记受阻；任务状态通过 WebSocket 实时同步。
+- **多人会议机制**：Agent 可发起会议，平台自动推进参会、发言、收尾和纪要生成；会议纪要会回写参与者记忆。
+- **用户决策闸门**：Agent 可通过 `ask_user` 发起确认、单选、多选或文本提问；高风险命令进入审批队列，用户批准后才继续执行。
+- **受控代码编辑与署名**：项目工作目录是正式产出地，文件首次写入会记录 owner；角色只能修改自己拥有的文件，修改轨迹按任务聚合。
+- **记忆与检索**：会话全量落盘，支持滚动摘要、全局/角色记忆以及中文关键词检索。
+- **纯文件存储**：使用 JSON、JSONL 和 YAML，无需 SQLite 或外部数据库；复制运行时目录即可迁移会话与记忆。
+- **离线 Mock 模式**：未配置模型 Key 时可使用内置 Mock 体验流程；真实工具调用需要 OpenAI 兼容模型或 Ollama。
 
 ## 技术栈
 
-Node.js ≥ 20 · TypeScript(strict) · Fastify(HTTP/WS) · 前端无构建 ESM(React+Vite 迁移预留) · 纯文件存储(无 SQLite) · Vitest · 模型网关(Mock/OpenAI 兼容/Ollama)
+| 层         | 技术                                        |
+| ---------- | ------------------------------------------- |
+| 服务端     | Node.js >= 20、TypeScript、Fastify          |
+| 实时通信   | WebSocket（`@fastify/websocket`）           |
+| 前端       | 原生 ESM 静态页面（`web/`，无构建步骤）     |
+| 模型接入   | Mock、OpenAI Compatible API、Ollama         |
+| 数据存储   | 本地文件系统（JSON / JSONL / YAML）         |
+| 测试与质量 | Vitest、TypeScript strict、ESLint、Prettier |
 
-> 本 README 于 2026-09-08 按 v0.2 需求重写，替代旧 v1 构想（固定 7 角色顺序流水线方案已弃用，见 PRD §7 D9）。
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+npm install
+```
+
+### 2. 启动开发服务
+
+```bash
+npm run dev
+```
+
+打开浏览器访问：
+
+```text
+http://127.0.0.1:3000
+```
+
+未创建 `.env` 时，服务使用内置默认配置：
+
+- 监听地址：`127.0.0.1:3000`
+- 数据目录：`data/`
+- 默认模型：`mock`
+- 会议功能：开启
+- Agent 派单：关闭
+
+### 3. 创建第一个项目
+
+1. 打开工作台，点击“新建项目”。
+2. 填写项目名称。
+3. 选择一个本地**工作目录**，正式代码和文档会写入该目录。
+4. 勾选需要的角色，例如产品、项目经理、架构、开发、测试。
+5. 创建项目后，从左侧团队列表进入任一角色会话即可开始协作。
+
+> 建议先使用一个测试目录熟悉流程，再把平台接入真实代码仓库。
+
+### 4. 生产模式运行
+
+```bash
+npm run build
+npm start
+```
+
+构建产物输出到 `dist/`，仍由 Fastify 在同一个端口托管 API、WebSocket 和 `web/` 静态页面。
+
+## 配置真实模型
+
+配置来源是仓库根目录的 `.env` 或进程环境变量。配置键使用双下划线表示层级，数组/对象使用 JSON。`.env` 已被 `.gitignore` 忽略，不要把 API Key 提交到仓库。
+
+### OpenAI 兼容服务示例（DeepSeek）
+
+在仓库根目录创建 `.env`：
+
+```dotenv
+SERVER__HOST=127.0.0.1
+SERVER__PORT=3000
+
+MODELS__DEFAULT=deepseek
+MODELS__PROVIDERS=[{"id":"deepseek","kind":"openai-compatible","baseUrl":"https://api.deepseek.com/v1","apiKeyEnv":"DEEPSEEK_API_KEY","model":"deepseek-chat","maxTokens":8192}]
+DEEPSEEK_API_KEY=sk-your-api-key
+```
+
+角色实例中的 `model` 字段引用的是 provider 的 `id`，例如 `deepseek`；具体模型名由 provider 配置中的 `model` 决定。
+
+### Ollama 示例
+
+```dotenv
+MODELS__DEFAULT=ollama-local
+MODELS__PROVIDERS=[{"id":"ollama-local","kind":"ollama","baseUrl":"http://127.0.0.1:11434","model":"qwen2.5-coder:7b","maxTokens":8192}]
+```
+
+### 离线演示
+
+不配置任何 provider 时，默认使用 `mock`。也可以显式设置：
+
+```dotenv
+MODELS__DEFAULT=mock
+```
+
+Mock 主要用于界面和流程测试，不会像真实模型那样自主产生工具调用。
+
+## 常用配置
+
+```dotenv
+# 服务
+SERVER__HOST=127.0.0.1
+SERVER__PORT=3000
+DATA_DIR=data
+ROLE_DIRS=["src/shared/roles","data/roles"]
+
+# 审批与沙箱
+APPROVAL__HIGH_RISK_COMMANDS=true
+APPROVAL__DOC_SUBMIT_APPROVAL=true
+APPROVAL__CODE_SUBMIT_APPROVAL=false
+SANDBOX__NETWORK=online
+
+# Agent 任务派发
+TASK__ASSIGN_BY_AGENT=true
+
+# 会议
+MEETING__ENABLED=true
+MEETING__AUTO_START=true
+MEETING__AUTO_CLOSE=true
+
+# 检索与上下文
+SEARCH__ENGINE=keyword
+CONTEXT__SESSION__RAW_WINDOW=60
+CONTEXT__SESSION__MAX_CHARS_PER_MSG=2000
+CONTEXT__GLOBAL__MAX_ENTRIES=12
+CONTEXT__ROLE__MAX_ENTRIES=12
+CONTEXT__SEARCH__MAX_SNIPPETS=3
+CONTEXT__TOOL__RESULT_MAX_CHARS=12000
+```
+
+修改 `.env` 后需要重启服务。若同一变量同时存在于进程环境和 `.env`，以进程环境为准。
+
+## 常用脚本
+
+| 命令                 | 说明                                            |
+| -------------------- | ----------------------------------------------- |
+| `npm run dev`        | 以 `tsx watch` 启动开发服务，代码变更后自动重启 |
+| `npm run build`      | 使用 TypeScript 编译到 `dist/`                  |
+| `npm start`          | 运行构建后的服务                                |
+| `npm test`           | 运行全量 Vitest 测试                            |
+| `npm run test:watch` | 测试监听模式                                    |
+| `npm run typecheck`  | TypeScript 类型检查                             |
+| `npm run lint`       | ESLint 分层依赖与代码规范检查                   |
+| `npm run format`     | 使用 Prettier 格式化仓库                        |
+
+## 项目结构
+
+```text
+agent_haness/
+├── src/
+│   ├── server/       # HTTP、WebSocket、静态资源与路由
+│   ├── application/  # 应用服务、Agent loop、任务、会议、工具协调
+│   ├── domain/       # 纯领域规则与状态机
+│   ├── ports/        # 存储等 IO 契约
+│   ├── infra/        # 文件存储、模型网关、命令执行器等实现
+│   └── shared/       # 配置、类型、通用工具与内置角色模板
+├── web/              # 无构建前端工作台
+├── tests/            # Vitest 测试
+├── docs/             # 需求、设计、运维、测试与变更记录
+└── data/             # 运行时数据（自动生成，不入库）
+```
+
+代码采用单向分层：
+
+```text
+server → application → domain → shared
+                      ↘ ports ← infra
+```
+
+`src/application/composition.ts` 是组合根，负责把文件存储、模型网关和工具执行器等具体实现注入应用服务。
+
+## 协作模型
+
+### 角色与状态
+
+平台统一推导角色状态，优先级为：
+
+```text
+已停用 > 会议中 > 等待你处理 > 工作中 > 空闲
+```
+
+“等待你处理”包括待回答问题和待审批命令。等待期间角色不会占用执行槽，也不会提前继续跑模型。
+
+### 工具与审批
+
+工具是 Agent 影响外部环境的唯一受控通道。平台会根据角色白名单、会话类型和工具注册表计算实际可用工具。高风险命令进入审批流程，批准后执行并把结果回注给模型；拒绝也会唤醒模型，并明确要求其不得绕过审批。
+
+### 任务流转
+
+启用 `TASK__ASSIGN_BY_AGENT=true` 后，产品或项目经理可发布任务：
+
+```text
+待领取 → 进行中 → 已完成
+                   ↘ 受阻
+                   ↘ 已终止
+```
+
+每个角色同一时间最多持有一个进行中任务。任务完成、受阻或终止时，平台会通知委派人并刷新任务栏。
+
+### 产出物归属
+
+- 项目工作目录是正式产出物的唯一保存位置。
+- 角色通过 `workdir_edit` 写入或修改文本文件。
+- 无主文件首次写入即认领；后续只有 owner 可修改。
+- 其他角色可以读取，但不能直接改写他人拥有的文件。
+- 每次写入记录角色署名、任务归属和变更轨迹。
+- `artifact_submit` 用于登记版本快照、manifest 和署名信息。
+
+## 数据与安全
+
+- 会话、任务、审批、记忆、会议纪要和审计事件保存在 `data/projects/<projectId>/`。
+- 用户正式代码保存在创建项目时选择的工作目录，不与平台运行时数据混放。
+- 默认只监听 `127.0.0.1`。若改为 `0.0.0.0` 暴露到局域网，需要自行评估安全风险；当前平台不提供登录鉴权。
+- API Key 只应放在 `.env` 或系统环境变量中。
+- 删除 `data/` 会清空平台会话与记忆，但不会删除项目工作目录中的正式产出。
+- `cmd_run` 产生的命令副作用无法像 `workdir_edit` 一样静态判定文件归属，因此执行命令前应关注审批提示。
+
+## 当前边界
+
+- 前端当前是无构建原生 ESM，而不是 React/Vite 生产工程；接口契约保持稳定，后续可迁移到组件化前端。
+- `direct`、`reflective`、`plan-execute` 等 agent loop 策略目前主要体现为系统提示词差异，尚未形成完全独立的执行编排器。
+- 产出物回退后端接口保留，但界面暂未提供回退入口。
+- 命令执行的副作用不受文件 owner 锁约束。
+- 平台面向本地单用户使用，没有内置多用户认证、权限体系或云端隔离。
+
+## 文档
+
+- [文档索引](docs/README.md)
+- [产品需求文档](docs/requirements/prd.md)
+- [开发计划](docs/plan/development.md)
+- [总体架构设计](docs/design/architecture.md)
+- [数据存储设计](docs/design/data-storage.md)
+- [Agent 运行时设计](docs/design/agent-runtime.md)
+- [会话设计](docs/design/sessions.md)
+- [会议设计](docs/design/meetings.md)
+- [工具设计](docs/design/tools.md)
+- [部署与运维手册](docs/operations/deploy.md)
+- [变更记录](docs/changes/)
+
+部分历史文档保留了开发阶段的决策、临时方案和日期记录；当文档与当前代码不一致时，以 `src/shared/config.ts`、路由实现和测试为准。
